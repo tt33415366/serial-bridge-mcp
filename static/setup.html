@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Serial Bridge — Setup</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Oxanium:wght@500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="app setup-app">
+    <header class="top">
+      <div class="brand">
+        <div class="logo" aria-hidden="true">SB</div>
+        <div class="brand-copy">
+          <h1>MCP Setup</h1>
+          <p>Wire an Agent client to this Hub</p>
+        </div>
+      </div>
+      <a class="setup-link" href="/">Console</a>
+    </header>
+
+    <main class="setup-panel">
+      <section class="setup-block">
+        <h2>Hub URL</h2>
+        <p class="setup-note" id="auth-note">Loading…</p>
+        <code class="setup-code" id="hub-url">—</code>
+      </section>
+
+      <section class="setup-block loopback-only" id="token-section" hidden>
+        <h2>Access Token</h2>
+        <p class="setup-note">Shown only on loopback. Required for MCP and remote send.</p>
+        <code class="setup-code" id="access-token">—</code>
+        <div class="setup-actions">
+          <button type="button" id="btn-copy-token" class="ghost">Copy token</button>
+          <button type="button" id="btn-rotate-token">Rotate</button>
+        </div>
+        <p class="setup-warning" id="env-warning" hidden></p>
+      </section>
+
+      <section class="setup-block loopback-only" id="snippet-section" hidden>
+        <h2>Cursor <code>mcpServers</code></h2>
+        <p class="setup-note">Paste into Cursor MCP settings. Host prefers LAN IP when detectable.</p>
+        <pre class="setup-snippet" id="cursor-snippet">—</pre>
+        <button type="button" id="btn-copy-snippet" class="ghost">Copy snippet</button>
+      </section>
+
+      <section class="setup-block remote-only" id="remote-note" hidden>
+        <h2>Remote viewer</h2>
+        <p class="setup-note">
+          Open this page on the Hub PC (<code>127.0.0.1</code>) to view the Access Token,
+          rotate it, and copy a secret-bearing Cursor snippet.
+        </p>
+      </section>
+    </main>
+  </div>
+  <script src="/static/setup.js"></script>
+</body>
+</html>
