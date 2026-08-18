@@ -1,0 +1,12 @@
+﻿serial_bridge.token
+serial_bridge.json
+live/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.worktrees/
+.superpowers/
+.scratch/
+*.egg-info/
+.pytest_cache/
