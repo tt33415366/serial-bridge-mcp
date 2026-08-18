@@ -1,0 +1,3 @@
+# Configurable Live Directory and Bridge-session log filenames
+
+The Hub stores Target transcripts and `bridge_status.json` under a single configurable Live Directory (default `<app-dir>\live\`), loaded like Port Binding (defaults → env/CLI → config file, file wins). Operators edit `live_dir` only in CRT Mode; the new path takes effect on the next CRT→Bridge transition without migrating old files. Each Bridge entry creates per-Target files named `<TargetName>-YYYY-MM-DD-HHMMSS.log` (local time). Rejected: hard-coded `C:\courtolab\CRT_LOG\live`, fixed `{name}.log` across sessions, and automatic log migration.

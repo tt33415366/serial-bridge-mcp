@@ -1,0 +1,3 @@
+# Setup Page guides MCP wiring; secrets stay loopback-visible
+
+Add `GET /setup` as an Operator Setup Page (linked from the main console) that explains wiring an Agent MCP client: Hub URL, Bearer Access Token, and a copy-paste Cursor `mcpServers` snippet (`url` + `Authorization: Bearer …`), plus a short generic URL/header note. Prefer an auto-detected LAN IP in the snippet (fall back to `127.0.0.1`). The page may load from non-loopback hosts, but Access Token plaintext, Rotate, and the full secret-bearing snippet are loopback-only; remote viewers see URL guidance without the secret. Rejected: embedding the token in static JS bundles, remote token disclosure even with Bearer, and a `/mcp` HTML route that collides with the Streamable HTTP endpoint.

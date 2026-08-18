@@ -1,0 +1,3 @@
+# Port discovery is an Operator-only listing
+
+The Web UI picks a Target's COM port from a dropdown of ports enumerated by `GET /api/ports`, with a Scan button to re-enumerate after hot-plugging. Enumeration reveals host hardware, so the endpoint is loopback-only like the other Operator endpoints and is not exposed as an MCP tool; Agents keep addressing Targets by name. The dropdown always keeps the currently bound port selectable even when it is not detected, so an unplugged adapter never silently rewrites a saved Port Binding. Rejected: free-text COM entry (the previous behaviour), and folding the port list into `/api/status`, which is polled and broadcast far more often than bindings change.
