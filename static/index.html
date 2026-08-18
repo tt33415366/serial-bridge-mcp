@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Serial Bridge</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Oxanium:wght@500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="top">
+      <div class="brand">
+        <div class="logo" aria-hidden="true">SB</div>
+        <div class="brand-copy">
+          <h1>Serial Bridge</h1>
+          <p id="bindings-summary">reading bindings…</p>
+        </div>
+      </div>
+
+      <div class="mode-switch" role="group" aria-label="Mode">
+        <button type="button" id="btn-bridge" class="mode-btn">Bridge</button>
+        <button type="button" id="btn-crt" class="mode-btn">CRT</button>
+      </div>
+
+      <div class="status-pill" id="status-pill">connecting…</div>
+      <a class="setup-link" href="/setup">Setup</a>
+    </header>
+
+    <section class="banner" id="banner" aria-live="polite">
+      <strong id="mode-label">—</strong>
+      <span id="mode-hint">Select a mode. Bridge owns the ports; CRT releases them.</span>
+    </section>
+
+    <form class="binding-panel" id="binding-form">
+      <div class="binding-bar">
+        <div class="binding-intro">
+          <strong>Bindings</strong>
+          <span id="binding-hint">Editable in CRT only.</span>
+        </div>
+        <div class="binding-actions">
+          <button type="button" id="btn-scan-ports" class="ghost">Scan</button>
+          <button type="submit" id="btn-save-bindings">Save</button>
+        </div>
+      </div>
+
+      <div class="binding-slots">
+        <div class="binding-slot">
+          <label class="field">
+            <span>Slot 0 title</span>
+            <input id="binding-slot0-title" name="slot0-title" type="text" maxlength="64" required />
+          </label>
+          <label class="field">
+            <span>COM</span>
+            <select id="binding-slot0-com" name="slot0-com" required></select>
+          </label>
+          <label class="field">
+            <span>Baud</span>
+            <input id="binding-slot0-baud" name="slot0-baud" type="number" min="1" step="1" required />
+          </label>
+          <p class="field-note" id="note-slot0" aria-live="polite">—</p>
+        </div>
+
+        <div class="binding-slot">
+          <label class="field">
+            <span>Slot 1 title</span>
+            <input id="binding-slot1-title" name="slot1-title" type="text" maxlength="64" required />
+          </label>
+          <label class="field">
+            <span>COM</span>
+            <select id="binding-slot1-com" name="slot1-com" required></select>
+          </label>
+          <label class="field">
+            <span>Baud</span>
+            <input id="binding-slot1-baud" name="slot1-baud" type="number" min="1" step="1" required />
+          </label>
+          <p class="field-note" id="note-slot1" aria-live="polite">—</p>
+        </div>
+      </div>
+
+      <label class="field binding-live-dir" id="binding-live-dir-field">
+        <span>Live Directory</span>
+        <input id="binding-live-dir" name="live-dir" type="text" required spellcheck="false" />
+      </label>
+    </form>
+
+    <main class="panes">
+      <section class="pane" data-slot="0">
+        <header class="pane-head">
+          <h2><span id="title-slot0">—</span> <span id="port-slot0">—</span></h2>
+          <span class="dot" id="dot-slot0" title="port open"></span>
+        </header>
+        <div class="term" id="term-slot0" tabindex="0"></div>
+        <form class="composer" data-slot="0">
+          <input type="text" placeholder="command → Enter" autocomplete="off" spellcheck="false" />
+          <button type="submit">Send</button>
+        </form>
+      </section>
+
+      <section class="pane" data-slot="1">
+        <header class="pane-head">
+          <h2><span id="title-slot1">—</span> <span id="port-slot1">—</span></h2>
+          <span class="dot" id="dot-slot1" title="port open"></span>
+        </header>
+        <div class="term" id="term-slot1" tabindex="0"></div>
+        <form class="composer" data-slot="1">
+          <input type="text" placeholder="command → Enter" autocomplete="off" spellcheck="false" />
+          <button type="submit">Send</button>
+        </form>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <div class="foot-meta">
+        <span>live</span>
+        <code id="foot-live-dir">—</code>
+        <span class="foot-logs-label" id="foot-logs-label" hidden>session</span>
+        <code id="foot-session-logs"></code>
+      </div>
+      <button type="button" id="btn-clear" class="ghost">Clear</button>
+    </footer>
+  </div>
+  <script src="/static/command_history.js"></script>
+  <script src="/static/ansi_render.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
