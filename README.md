@@ -1,8 +1,10 @@
 # Serial Bridge
 
-Serial Bridge is a Windows Hub that shares two serial consoles between a local
-Operator and MCP Agents. The Hub lives in the `serial_bridge/` package; start
-it with `python -m serial_bridge` or the root `app.py` shim.
+Serial Bridge is a Hub that shares two serial consoles between a local Operator
+and MCP Agents. It is not OS-specific: install the Python packages in
+`requirements.txt` and run it on any host with Python 3.10+. The Hub lives in
+the `serial_bridge/` package; start it with `python -m serial_bridge` or the
+root `app.py` shim.
 
 ## Install and start
 
@@ -12,6 +14,9 @@ Python 3.10 or newer is recommended.
 python -m pip install -r requirements.txt
 python -m serial_bridge
 ```
+
+Shell snippets below use PowerShell (`$env:NAME = "..."`). On bash or zsh, set the
+same names with `export NAME=...`.
 
 The Hub opens your browser to the console at `http://127.0.0.1:8765/` once it
 is listening. The root `app.py` shim is equivalent. To start without opening a
@@ -30,7 +35,7 @@ On first boot the Hub auto-generates an Access Token into `serial_bridge.token`
 beside the Port Binding config file (override the path with
 `SERIAL_BRIDGE_TOKEN_FILE`). Do not commit the secrets file.
 
-Open **Setup** (`http://127.0.0.1:8765/setup`) on the Hub PC to copy the Hub
+Open **Setup** (`http://127.0.0.1:8765/setup`) on the Hub host to copy the Hub
 URL, view the Access Token, rotate it, and paste a Cursor `mcpServers` snippet.
 Setup secrets (token plaintext, Rotate, and the secret-bearing snippet) are
 visible only on loopback (`127.0.0.1` / `::1`).
@@ -49,7 +54,7 @@ change modes or Port Bindings.
 
 ## MCP
 
-Use **Setup** (`/setup`) on the Hub PC for a copy-paste Cursor config. Manual
+Use **Setup** (`/setup`) on the Hub host for a copy-paste Cursor config. Manual
 wiring:
 
 Configure the Agent's Streamable HTTP MCP connection with:
@@ -79,7 +84,7 @@ To exercise status and Exec:
    `prompt_is_regex` to `true` only when the prompt value is a regular
    expression.
 
-Exec accepts the Target names `linux` and `rtos`, not COM port names. It
+Exec accepts the Target names `linux` and `rtos`, not serial device names. It
 returns captured `output` plus `timed_out`, `truncated`, and `aborted` flags.
 
 Exec output and the `live/*.log` transcripts are plain text with ANSI escapes
@@ -87,8 +92,9 @@ removed. The Web UI instead interprets the escapes and shows device colors.
 
 ## Port Binding
 
-A Port Binding assigns a Target to a COM port and baud rate. Defaults are
-`linux` on `COM3` at 115200 and `rtos` on `COM6` at 115200.
+A Port Binding assigns a Target to a serial device path and baud rate.
+Built-in defaults are Windows-style (`linux` on `COM3`, `rtos` on `COM6`, both
+115200); on Linux or macOS set paths such as `/dev/ttyUSB0` instead.
 
 Override defaults before startup with environment variables:
 
@@ -113,8 +119,8 @@ Changes made in the Web UI persist for restart.
 ## Live Directory
 
 The Live Directory is where the Hub writes per-Target Bridge session logs and
-`bridge_status.json`. The default is `<app-dir>/live/` beside the project root (same directory as
-`serial_bridge.json` and the root `app.py` shim).
+`bridge_status.json`. The default is `<app-dir>/live/` beside the project root
+(same directory as `serial_bridge.json` and the root `app.py` shim).
 
 Override before startup with:
 
