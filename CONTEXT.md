@@ -60,6 +60,14 @@ _Avoid_: run, shell (implies a local OS shell), send (see Send)
 One Agent request that writes a command to a Target and returns immediately without waiting for device output.
 _Avoid_: fire-and-forget (jargon), exec (implies waiting)
 
+**Agent Trace**:
+The Operator-facing list, in the Bridge console, of this Hub session’s Agent Exec and Send activity used for at-a-glance supervision.
+_Avoid_: spine (layout jargon), activity feed, agent history (sounds durable across Hub restarts)
+
+**Trace Jump**:
+The Operator action of selecting an Agent Trace Exec entry to scroll to and briefly highlight that Exec’s capture in the Target’s live transcript, only when that capture is still present in the current view.
+_Avoid_: clickable trace (UI-only phrasing), jump to log (ambiguous with session log files), replay (implies re-running)
+
 **Raw Payload**:
 Bytes written to a Target without the usual text-line framing (for example hex-encoded Ctrl-C), as an opt-in alternative to a normal text line.
 _Avoid_: binary mode (sounds like a session mode), unescaped (vague)
