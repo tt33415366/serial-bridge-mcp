@@ -20,18 +20,34 @@ class TokenStore:
     path: Path
     file_token: str
 
+    @staticmethod
+    def _env_token() -> str | None:
+        env_token = os.environ.get("SERIAL_BRIDGE_TOKEN")
+        return env_token.strip() if env_token and env_token.strip() else None
+
     @property
     def token(self) -> str:
-        env_token = os.environ.get("SERIAL_BRIDGE_TOKEN")
-        if env_token and env_token.strip():
-            return env_token.strip()
-        return self.file_token
+        return self._env_token() or self.file_token
 
-    def valid_bearer(self, authorization: str | None) -> bool:
-        token = self.token
+    @staticmethod
+    def _valid_bearer(authorization: str | None, token: str) -> bool:
         if not token or authorization is None:
             return False
         return secrets.compare_digest(authorization, f"Bearer {token}")
+
+    def valid_bearer(self, authorization: str | None) -> bool:
+        return self._valid_bearer(authorization, self.token)
+
+    @staticmethod
+    def env_overrides() -> bool:
+        return TokenStore._env_token() is not None
+
+    def rotate(self) -> tuple[str, bool]:
+        """Rewrite the secrets file and return (new_file_token, env_overrides)."""
+        new_token = secrets.token_urlsafe(32)
+        _write_token_file(self.path, new_token)
+        self.file_token = new_token
+        return new_token, self.env_overrides()
 
 
 def resolve_token_path(config_path: Path, environ: Mapping[str, str]) -> Path:
@@ -117,36 +133,3 @@ def get_token_store() -> TokenStore:
 def reset_token_store() -> None:
     global _store
     _store = None
-
-
-def runtime_access_token() -> str:
-    env_token = os.environ.get("SERIAL_BRIDGE_TOKEN")
-    if env_token and env_token.strip():
-        return env_token.strip()
-    return get_token_store().file_token
-
-
-def valid_bearer_token(authorization: str | None) -> bool:
-    if authorization is None:
-        return False
-    try:
-        token = runtime_access_token()
-    except RuntimeError:
-        return False
-    if not token:
-        return False
-    return secrets.compare_digest(authorization, f"Bearer {token}")
-
-
-def env_overrides_token() -> bool:
-    env_token = os.environ.get("SERIAL_BRIDGE_TOKEN")
-    return bool(env_token and env_token.strip())
-
-
-def rotate_access_token() -> tuple[str, bool]:
-    """Rewrite the secrets file with a new token and return (token, env_overrides)."""
-    store = get_token_store()
-    new_token = secrets.token_urlsafe(32)
-    _write_token_file(store.path, new_token)
-    store.file_token = new_token
-    return new_token, env_overrides_token()

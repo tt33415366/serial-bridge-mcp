@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from serial_bridge.constants import HUB_PORT
-from serial_bridge.token_store import valid_bearer_token
+from serial_bridge.token_store import get_token_store
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 UI_ORIGINS = {
@@ -17,13 +17,20 @@ def _is_loopback(host: str | None) -> bool:
     return host in {"127.0.0.1", "::1"}
 
 
+def _valid_bearer(authorization: str | None) -> bool:
+    try:
+        return get_token_store().valid_bearer(authorization)
+    except RuntimeError:
+        return False
+
+
 def _send_authorized(host: str | None, authorization: str | None) -> bool:
-    return _is_loopback(host) or valid_bearer_token(authorization)
+    return _is_loopback(host) or _valid_bearer(authorization)
 
 
 def _who_for(authorization: str | None) -> str:
     """Derive the transcript actor server-side; clients never pick their own."""
-    return "agent" if valid_bearer_token(authorization) else "user"
+    return "agent" if _valid_bearer(authorization) else "user"
 
 
 class McpBearerAuth:
@@ -36,7 +43,7 @@ class McpBearerAuth:
                 key.decode("latin-1").lower(): value.decode("latin-1")
                 for key, value in scope["headers"]
             }
-            if not valid_bearer_token(headers.get("authorization")):
+            if not _valid_bearer(headers.get("authorization")):
                 response = JSONResponse(
                     {"error": "Unauthorized"},
                     status_code=401,

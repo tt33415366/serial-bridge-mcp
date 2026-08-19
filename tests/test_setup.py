@@ -9,9 +9,9 @@ import serial_bridge.setup as bridge_setup
 from fastapi.testclient import TestClient
 from serial_bridge.token_store import (
     DEFAULT_TOKEN_FILENAME,
+    get_token_store,
     init_token_store,
     reset_token_store,
-    valid_bearer_token,
 )
 
 MCP_HEADERS = {
@@ -21,8 +21,16 @@ MCP_HEADERS = {
 
 
 class SetupPageTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.token_temp_dir = tempfile.TemporaryDirectory()
+        init_token_store(
+            config_path=Path(self.token_temp_dir.name) / "serial_bridge.json",
+            environ={},
+        )
+
     def tearDown(self) -> None:
         reset_token_store()
+        self.token_temp_dir.cleanup()
 
     def test_setup_helpers_live_in_bridge_setup(self):
         self.assertTrue(callable(bridge_setup.detect_lan_ip))
@@ -190,10 +198,10 @@ class SetupPageTest(unittest.TestCase):
             ):
                 init_token_store(config_path=config_path, environ={})
                 client = TestClient(app_module.app, client=("127.0.0.1", 50000))
-                self.assertTrue(valid_bearer_token("Bearer old-token"))
+                self.assertTrue(get_token_store().valid_bearer("Bearer old-token"))
                 rotate_response = client.post("/api/setup/rotate")
-                self.assertTrue(valid_bearer_token("Bearer new-token"))
-                self.assertFalse(valid_bearer_token("Bearer old-token"))
+                self.assertTrue(get_token_store().valid_bearer("Bearer new-token"))
+                self.assertFalse(get_token_store().valid_bearer("Bearer old-token"))
 
                 self.assertEqual(200, rotate_response.status_code)
 

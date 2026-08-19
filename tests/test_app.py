@@ -13,6 +13,7 @@ from serial_bridge.config import Config, load_config
 from fastapi import WebSocketDisconnect
 from fastapi.testclient import TestClient
 from serial_bridge.hub import Hub
+from serial_bridge.token_store import init_token_store, reset_token_store
 
 
 def _binding_slots(**overrides):
@@ -60,6 +61,17 @@ class FakeWebSocket:
 
 
 class AppSendTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.token_temp_dir = tempfile.TemporaryDirectory()
+        init_token_store(
+            config_path=Path(self.token_temp_dir.name) / "serial_bridge.json",
+            environ={},
+        )
+
+    def tearDown(self):
+        reset_token_store()
+        self.token_temp_dir.cleanup()
+
     def test_operator_routes_live_in_operator_module(self):
         self.assertTrue(callable(bridge_operator.register_operator_routes))
         self.assertTrue(callable(bridge_operator.ws_endpoint))
@@ -246,6 +258,17 @@ class AppSendTest(unittest.IsolatedAsyncioTestCase):
 
 
 class AppHttpAuthorizationTest(unittest.TestCase):
+    def setUp(self):
+        self.token_temp_dir = tempfile.TemporaryDirectory()
+        init_token_store(
+            config_path=Path(self.token_temp_dir.name) / "serial_bridge.json",
+            environ={},
+        )
+
+    def tearDown(self):
+        reset_token_store()
+        self.token_temp_dir.cleanup()
+
     def test_loopback_binding_update_persists_and_survives_restart(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "serial_bridge.json"

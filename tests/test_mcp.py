@@ -1,4 +1,5 @@
 import asyncio
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -11,6 +12,7 @@ from conftest import BlockingExecHub, FakeHub
 from fastapi.testclient import TestClient
 from serial_bridge.config import Config
 from serial_bridge.hub import Hub
+from serial_bridge.token_store import init_token_store, reset_token_store
 
 
 MCP_HEADERS = {
@@ -36,18 +38,25 @@ def call_tool(client, name, arguments=None, headers=None):
 class McpHttpTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        cls.token_temp_dir = tempfile.TemporaryDirectory()
         cls.env_patch = patch.dict(
             "os.environ",
             {"SERIAL_BRIDGE_TOKEN": "secret"},
             clear=False,
         )
         cls.env_patch.start()
+        init_token_store(
+            config_path=Path(cls.token_temp_dir.name) / "serial_bridge.json",
+            environ={"SERIAL_BRIDGE_TOKEN": "secret"},
+        )
         cls.client_context = TestClient(app_module.app)
         cls.client = cls.client_context.__enter__()
 
     @classmethod
     def tearDownClass(cls):
         cls.client_context.__exit__(None, None, None)
+        reset_token_store()
+        cls.token_temp_dir.cleanup()
         cls.env_patch.stop()
 
     def test_mcp_tools_live_in_mcp_server_module(self):

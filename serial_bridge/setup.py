@@ -10,11 +10,7 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.responses import FileResponse
 from serial_bridge.auth import _is_loopback, _require_operator_access
 from serial_bridge.constants import HUB_PORT
-from serial_bridge.token_store import (
-    env_overrides_token,
-    rotate_access_token,
-    runtime_access_token,
-)
+from serial_bridge.token_store import get_token_store
 
 
 def detect_lan_ip() -> str | None:
@@ -58,10 +54,11 @@ def setup_payload(*, loopback: bool) -> dict[str, Any]:
         ),
     }
     if loopback:
-        token = runtime_access_token()
+        store = get_token_store()
+        token = store.token
         payload["token"] = token
         payload["cursor_snippet"] = _cursor_snippet(host, token)
-        payload["env_override"] = env_overrides_token()
+        payload["env_override"] = store.env_overrides()
         if payload["env_override"]:
             payload["warning"] = (
                 "SERIAL_BRIDGE_TOKEN is set in the environment, so this process "
@@ -82,7 +79,7 @@ def register_setup_routes(app: FastAPI, static_dir: Path) -> None:
 
     @app.post("/api/setup/rotate", dependencies=[Depends(_require_operator_access)])
     async def api_setup_rotate() -> dict[str, Any]:
-        rotate_access_token()
+        get_token_store().rotate()
         payload = setup_payload(loopback=True)
         payload["rotated"] = True
         return payload

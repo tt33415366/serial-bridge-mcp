@@ -8,18 +8,28 @@ import serial_bridge.token_store as token_store_module
 from serial_bridge.config import persist_slots, load_config
 from serial_bridge.token_store import (
     DEFAULT_TOKEN_FILENAME,
+    get_token_store,
     init_token_store,
     load_or_create_token_store,
     reset_token_store,
     resolve_token_path,
-    rotate_access_token,
-    valid_bearer_token,
 )
 
 
 class TokenStoreTest(unittest.TestCase):
     def tearDown(self) -> None:
         reset_token_store()
+
+    def test_duplicate_module_level_access_token_helpers_are_removed(self) -> None:
+        for name in (
+            "runtime_access_token",
+            "valid_bearer_token",
+            "env_overrides_token",
+            "rotate_access_token",
+        ):
+            self.assertFalse(hasattr(token_store_module, name))
+        for name in ("runtime_token", "valid_runtime_bearer"):
+            self.assertFalse(hasattr(token_store_module.TokenStore, name))
 
     def test_resolve_token_path_default_beside_config(self) -> None:
         config_path = Path("/data/serial_bridge.json")
@@ -159,12 +169,88 @@ class TokenStoreTest(unittest.TestCase):
             with patch.dict("os.environ", {}, clear=True):
                 reset_token_store()
                 init_token_store(config_path=config_path, environ={})
-                self.assertTrue(valid_bearer_token("Bearer file-only-token"))
-                self.assertFalse(valid_bearer_token("Bearer wrong"))
+                self.assertTrue(get_token_store().valid_bearer("Bearer file-only-token"))
+                self.assertFalse(get_token_store().valid_bearer("Bearer wrong"))
 
                 reset_token_store()
                 init_token_store(config_path=config_path, environ={})
-                self.assertTrue(valid_bearer_token("Bearer file-only-token"))
+                self.assertTrue(get_token_store().valid_bearer("Bearer file-only-token"))
+
+    def test_store_reports_whether_env_overrides_file_token(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "serial_bridge.json"
+            token_path = config_path.with_name(DEFAULT_TOKEN_FILENAME)
+            token_path.write_text("file-token\n", encoding="utf-8")
+
+            with patch.dict(
+                "os.environ",
+                {"SERIAL_BRIDGE_TOKEN": "env-token"},
+                clear=True,
+            ):
+                store = load_or_create_token_store(
+                    config_path=config_path,
+                    environ={"SERIAL_BRIDGE_TOKEN": "env-token"},
+                )
+
+                self.assertTrue(store.env_overrides())
+
+            with patch.dict("os.environ", {}, clear=True):
+                self.assertFalse(store.env_overrides())
+
+    def test_store_rotate_updates_file_and_runtime_token_without_env(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "serial_bridge.json"
+            token_path = config_path.with_name(DEFAULT_TOKEN_FILENAME)
+            token_path.write_text("before-rotate\n", encoding="utf-8")
+
+            with (
+                patch.dict("os.environ", {}, clear=True),
+                patch(
+                    "serial_bridge.token_store.secrets.token_urlsafe",
+                    return_value="after-rotate",
+                ),
+            ):
+                store = load_or_create_token_store(config_path=config_path, environ={})
+                new_token, env_override = store.rotate()
+
+                self.assertEqual("after-rotate", new_token)
+                self.assertFalse(env_override)
+                self.assertEqual("after-rotate", store.token)
+
+            self.assertEqual("after-rotate", token_path.read_text(encoding="utf-8"))
+
+    def test_store_rotate_keeps_env_override_active(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "serial_bridge.json"
+            token_path = config_path.with_name(DEFAULT_TOKEN_FILENAME)
+            token_path.write_text("file-token\n", encoding="utf-8")
+
+            with (
+                patch.dict(
+                    "os.environ",
+                    {"SERIAL_BRIDGE_TOKEN": "env-token"},
+                    clear=True,
+                ),
+                patch(
+                    "serial_bridge.token_store.secrets.token_urlsafe",
+                    return_value="rotated-file-token",
+                ),
+            ):
+                store = load_or_create_token_store(
+                    config_path=config_path,
+                    environ={"SERIAL_BRIDGE_TOKEN": "env-token"},
+                )
+                new_token, env_override = store.rotate()
+
+                self.assertEqual("rotated-file-token", new_token)
+                self.assertTrue(env_override)
+                self.assertTrue(store.env_overrides())
+                self.assertEqual("env-token", store.token)
+
+            self.assertEqual(
+                "rotated-file-token",
+                token_path.read_text(encoding="utf-8"),
+            )
 
     def test_port_binding_json_never_contains_token(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -225,7 +311,7 @@ class TokenStoreTest(unittest.TestCase):
                 ),
             ):
                 init_token_store(config_path=config_path, environ={})
-                new_token, env_override = rotate_access_token()
+                new_token, env_override = get_token_store().rotate()
 
             self.assertEqual("after-rotate", new_token)
             self.assertFalse(env_override)
@@ -254,7 +340,7 @@ class TokenStoreTest(unittest.TestCase):
                     config_path=config_path,
                     environ={"SERIAL_BRIDGE_TOKEN": "env-token"},
                 )
-                _, env_override = rotate_access_token()
+                _, env_override = get_token_store().rotate()
 
                 self.assertTrue(env_override)
                 self.assertEqual(
