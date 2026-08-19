@@ -5,10 +5,10 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import serial_bridge.hub as hub_module
-from serial_bridge.config import Config, DEFAULT_LIVE_DIR
+from serial_bridge.config import Config, DEFAULT_LIVE_DIR, SlotDecision, SlotPolicy
 from serial_bridge.hub import Hub
 
 
@@ -229,6 +229,42 @@ class PortWorkerTest(unittest.TestCase):
 class HubTest(unittest.TestCase):
     def setUp(self):
         FakePortWorker.instances.clear()
+
+    def test_update_slots_asks_slot_policy_with_current_mode(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            hub = Hub(make_config(Path(temp_dir) / "serial_bridge.json"))
+            slots = [dict(slot) for slot in hub.config.slots]
+            decision = SlotDecision(
+                allowed=False,
+                title_only=True,
+                error="blocked by test policy",
+            )
+
+            with patch.object(SlotPolicy, "decide", return_value=decision) as decide:
+                result = hub.update_slots(slots)
+
+        self.assertEqual({"ok": False, "error": "blocked by test policy"}, result)
+        decide.assert_called_once_with(
+            slots,
+            live_dir=None,
+            mode="crt",
+            has_workers=False,
+        )
+
+    def test_bridge_mode_facade_delegates_to_mode_transition(self):
+        hub = Hub(make_config())
+        transition = Mock()
+        transition.start_bridge.return_value = {"start": "delegated"}
+        transition.stop_bridge.return_value = {"stop": "delegated"}
+        hub._mode_transition = transition
+
+        start_result = hub.start_bridge()
+        stop_result = hub.stop_bridge(quiet=True)
+
+        self.assertEqual({"start": "delegated"}, start_result)
+        self.assertEqual({"stop": "delegated"}, stop_result)
+        transition.start_bridge.assert_called_once_with()
+        transition.stop_bridge.assert_called_once_with(True)
 
     def test_starts_in_crt_mode_without_opening_ports(self):
         hub = Hub(make_config())

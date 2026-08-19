@@ -7,24 +7,39 @@ import threading
 from pathlib import Path
 from typing import Any, Mapping
 
-from serial import SerialException
-from serial_bridge.config import Config, load_config, persist_slots, validate_live_dir
+from serial_bridge.config import Config, SlotPolicy, load_config, persist_slots
+from serial_bridge.hub.mode_transition import ModeTransition
 from serial_bridge.hub.queue import exec_result
-from serial_bridge.hub.text import sanitize_display, strip_ansi, ts
+from serial_bridge.hub.trace import AgentTrace
+from serial_bridge.hub.transcript import Transcript
 
 
 class Hub:
     def __init__(self, config: Config | None = None) -> None:
         self.config = config or load_config()
+        self._slot_policy = SlotPolicy(self.config)
         self.ports: dict[str, dict[str, Any]] = {}
         for slot in self.config.slots:
             self._register_slot(slot)
         self.mode = "crt"  # crt | bridge — start released so we can open on demand
         self.clients: set[Any] = set()
-        self.lock = threading.Lock()
+        self._agent_trace = AgentTrace(lambda event: self.emit(event))
+        import serial_bridge.hub as hub
+
+        self._transcript = Transcript(
+            lambda: self.ports,
+            lambda: self.config.live_dir,
+            lambda event: self.emit(event),
+            lambda: hub.datetime.now(),
+        )
         self._state_lock = threading.Lock()
         self._transition_lock = threading.RLock()
         self.workers: dict[str, Any] = {}
+        self._mode_transition = ModeTransition(
+            self,
+            self._transcript,
+            lambda name, port, baud: hub.PortWorker(name, port, baud, self),
+        )
         self.loop: asyncio.AbstractEventLoop | None = None
 
     def _register_slot(self, slot: Mapping[str, str | int]) -> None:
@@ -38,36 +53,13 @@ class Hub:
         }
 
     def _session_log_path(self, name: str, session_time) -> Path:
-        stamp = session_time.strftime("%Y-%m-%d-%H%M%S")
-        return self.config.live_dir / f"{name}-{stamp}.log"
+        return self._transcript.session_log_path(name, session_time)
 
     def _assign_session_logs(self, session_time=None) -> None:
-        import serial_bridge.hub as hub
-
-        session_time = session_time or hub.datetime.now()
-        for name in self.ports:
-            path = self._session_log_path(name, session_time)
-            self.ports[name]["log"] = path
-            path.touch(exist_ok=True)
+        self._transcript.assign_session_logs(session_time)
 
     def _write_bridge_status(self) -> None:
-        live_dir = self.config.live_dir
-        if not live_dir.is_dir():
-            return
-        (live_dir / "bridge_status.json").write_text(
-            json.dumps(self.status(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-
-    def _title_only_change(self, slots: list[Mapping[str, object]]) -> bool:
-        if len(slots) != len(self.config.slots):
-            return False
-        for index, incoming in enumerate(slots):
-            current = self.config.slots[index]
-            for field in ("name", "com", "baud"):
-                if str(incoming.get(field, current[field])) != str(current[field]):
-                    return False
-        return True
+        self._mode_transition.write_bridge_status()
 
     def _apply_slot_updates(self, slots: list[dict[str, str | int]]) -> None:
         new_ports: dict[str, dict[str, Any]] = {}
@@ -125,33 +117,34 @@ class Hub:
         if self.loop and self.loop.is_running():
             asyncio.run_coroutine_threadsafe(self.broadcast(msg), self.loop)
 
-    def append_log(self, target: str, direction: str, text: str, who: str = "") -> None:
-        import serial_bridge.hub as hub
+    def record_exec_start(self, target: str, cmd: str, prompt: str | None) -> int:
+        return self._agent_trace.record_start(target, cmd, prompt)
 
-        cfg = self.ports[target]
-        log_path = cfg.get("log")
-        if log_path is None:
-            raise RuntimeError(f"no session log assigned for target {target!r}")
-        line = (
-            f"{hub.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]} "
-            f"{direction} [{cfg['title'].upper()}]"
+    def record_exec_end(
+        self,
+        id: int,
+        target: str,
+        ended_by: str,
+        ms: int,
+        bytes: int,
+        truncated: bool,
+        ok: bool,
+    ) -> None:
+        self._agent_trace.record_end(
+            id,
+            target,
+            ended_by,
+            ms,
+            bytes,
+            truncated,
+            ok,
         )
-        if who:
-            line += f" ({who})"
-        line += f" {strip_ansi(text).rstrip()}\n"
-        with self.lock:
-            with log_path.open("a", encoding="utf-8", errors="replace") as f:
-                f.write(line)
-        self.emit(
-            {
-                "type": "line",
-                "target": target,
-                "direction": direction,
-                "who": who,
-                "text": sanitize_display(text).rstrip(),
-                "ts": ts(),
-            }
-        )
+
+    def get_agent_log(self) -> list[dict[str, Any]]:
+        return self._agent_trace.get_agent_log()
+
+    def append_log(self, target: str, direction: str, text: str, who: str = "") -> None:
+        self._transcript.append_log(target, direction, text, who)
 
     def status(self) -> dict[str, Any]:
         with self._state_lock:
@@ -178,18 +171,7 @@ class Hub:
         return status
 
     def get_tail(self, target: str = "both", n: int = 80) -> dict[str, str]:
-        out: dict[str, str] = {}
-        keys = list(self.ports) if target == "both" else [target]
-        for key in keys:
-            if key not in self.ports:
-                continue
-            log_path = self.ports[key].get("log")
-            if log_path and log_path.is_file():
-                lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
-                out[key] = "\n".join(lines[-n:])
-            else:
-                out[key] = ""
-        return out
+        return self._transcript.get_tail(target, n)
 
     def update_slots(
         self,
@@ -198,33 +180,19 @@ class Hub:
     ) -> dict[str, Any]:
         with self._transition_lock:
             with self._state_lock:
-                title_only = self._title_only_change(slots)
-                new_live_dir: Path | None = None
-                if live_dir is not None:
-                    try:
-                        new_live_dir = validate_live_dir(live_dir)
-                    except ValueError as exc:
-                        return {"ok": False, "error": f"Invalid Live Directory: {exc}"}
-
-                live_dir_changing = (
-                    new_live_dir is not None
-                    and new_live_dir.resolve() != self.config.live_dir.resolve()
+                decision = self._slot_policy.decide(
+                    slots,
+                    live_dir=live_dir,
+                    mode=self.mode,
+                    has_workers=bool(self.workers),
                 )
-                if live_dir_changing and (self.mode != "crt" or self.workers):
-                    return {
-                        "ok": False,
-                        "error": "Live Directory can only be changed in CRT Mode",
-                    }
-                if (self.mode != "crt" or self.workers) and not title_only:
-                    return {
-                        "ok": False,
-                        "error": "Port Bindings can only be changed in CRT Mode",
-                    }
+                if not decision.allowed:
+                    return {"ok": False, "error": decision.error}
 
                 old_live_dir = self.config.live_dir
                 try:
-                    if new_live_dir is not None:
-                        self.config.live_dir = new_live_dir
+                    if decision.live_dir is not None:
+                        self.config.live_dir = decision.live_dir
                     validated = persist_slots(self.config, slots)
                 except (OSError, UnicodeError, ValueError) as exc:
                     self.config.live_dir = old_live_dir
@@ -255,89 +223,10 @@ class Hub:
         return self.update_slots(slots)
 
     def start_bridge(self) -> dict[str, Any]:
-        import serial_bridge.hub as hub
-
-        with self._transition_lock:
-            with self._state_lock:
-                if self.mode == "bridge" and all(
-                    k in self.workers and self.workers[k].is_open for k in self.ports
-                ):
-                    return {"ok": True, "mode": "bridge", "msg": "Already in Bridge Mode"}
-            errors: list[str] = []
-            self.stop_bridge(quiet=True)
-            try:
-                self.config.live_dir.mkdir(parents=True, exist_ok=True)
-            except OSError as exc:
-                self.emit(
-                    {
-                        "type": "status",
-                        **self.status(),
-                        "error": f"Could not create Live Directory: {exc}",
-                    }
-                )
-                return {
-                    "ok": False,
-                    "mode": "crt",
-                    "error": f"Could not create Live Directory: {exc}",
-                }
-            self._assign_session_logs()
-            for key, cfg in self.ports.items():
-                w = hub.PortWorker(key, cfg["com"], cfg["baud"], self)
-                try:
-                    w.open()
-                    w.start()
-                    with self._state_lock:
-                        self.workers[key] = w
-                except SerialException as e:
-                    errors.append(f"{cfg['com']}: {e}")
-            if errors:
-                self.stop_bridge(quiet=True)
-                self.emit({"type": "status", **self.status(), "error": "; ".join(errors)})
-                return {
-                    "ok": False,
-                    "mode": "crt",
-                    "error": (
-                        "Failed to open serial ports "
-                        "(confirm SecureCRT has disconnected the configured ports): "
-                        + "; ".join(errors)
-                    ),
-                }
-            with self._state_lock:
-                self.mode = "bridge"
-            self.emit({"type": "status", **self.status()})
-            self.emit(
-                {
-                    "type": "system",
-                    "text": "Entered Bridge Mode: Agent and Operator share both streams below",
-                }
-            )
-            self._write_bridge_status()
-            return {"ok": True, "mode": "bridge"}
+        return self._mode_transition.start_bridge()
 
     def stop_bridge(self, quiet: bool = False) -> dict[str, Any]:
-        with self._transition_lock:
-            with self._state_lock:
-                self.mode = "crt"
-                workers = list(self.workers.values())
-                for w in workers:
-                    w.abort_agent_work()
-                self.workers.clear()
-            for w in workers:
-                w.close()
-            if not quiet:
-                self.emit({"type": "status", **self.status()})
-                ports = "/".join(str(cfg["com"]) for cfg in self.ports.values())
-                self.emit(
-                    {
-                        "type": "system",
-                        "text": (
-                            f"Switched to CRT Mode: ports released; "
-                            f"SecureCRT can connect to {ports}"
-                        ),
-                    }
-                )
-            self._write_bridge_status()
-            return {"ok": True, "mode": "crt"}
+        return self._mode_transition.stop_bridge(quiet)
 
     def send(
         self,

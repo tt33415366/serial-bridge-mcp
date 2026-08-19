@@ -27,6 +27,104 @@ def _default_slots(**overrides):
 
 
 class ConfigTest(unittest.TestCase):
+    def test_slot_policy_allows_title_only_change_in_bridge_mode(self):
+        config = Config(slots=_default_slots(), path=Path("serial_bridge.json"))
+        slots = _default_slots(slot0={"title": "Main Console"})
+
+        decision = config_module.SlotPolicy(config).decide(
+            slots, live_dir=None, mode="bridge", has_workers=True
+        )
+
+        self.assertTrue(decision.allowed)
+        self.assertTrue(decision.title_only)
+        self.assertIsNone(decision.live_dir)
+
+    def test_slot_policy_rejects_binding_change_in_bridge_mode(self):
+        config = Config(slots=_default_slots(), path=Path("serial_bridge.json"))
+        slots = _default_slots(slot0={"com": "COM8"})
+
+        decision = config_module.SlotPolicy(config).decide(
+            slots, live_dir=None, mode="bridge", has_workers=True
+        )
+
+        self.assertFalse(decision.allowed)
+        self.assertFalse(decision.title_only)
+        self.assertEqual(
+            "Port Bindings can only be changed in CRT Mode", decision.error
+        )
+
+    def test_slot_policy_allows_binding_change_in_idle_crt_mode(self):
+        config = Config(slots=_default_slots(), path=Path("serial_bridge.json"))
+        slots = _default_slots(slot0={"com": "COM8"})
+
+        decision = config_module.SlotPolicy(config).decide(
+            slots, live_dir=None, mode="crt", has_workers=False
+        )
+
+        self.assertTrue(decision.allowed)
+        self.assertFalse(decision.title_only)
+
+    def test_slot_policy_allows_live_dir_change_only_in_idle_crt_mode(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            old_live = Path(temp_dir) / "old"
+            new_live = Path(temp_dir) / "new"
+            config = Config(
+                slots=_default_slots(),
+                path=Path(temp_dir) / "serial_bridge.json",
+                live_dir=old_live,
+            )
+
+            decision = config_module.SlotPolicy(config).decide(
+                _default_slots(),
+                live_dir=str(new_live),
+                mode="crt",
+                has_workers=False,
+            )
+
+        self.assertTrue(decision.allowed)
+        self.assertEqual(new_live.resolve(), decision.live_dir)
+
+    def test_slot_policy_rejects_live_dir_change_in_bridge_mode(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            old_live = Path(temp_dir) / "old"
+            new_live = Path(temp_dir) / "new"
+            config = Config(
+                slots=_default_slots(),
+                path=Path(temp_dir) / "serial_bridge.json",
+                live_dir=old_live,
+            )
+
+            decision = config_module.SlotPolicy(config).decide(
+                _default_slots(),
+                live_dir=str(new_live),
+                mode="bridge",
+                has_workers=True,
+            )
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(
+            "Live Directory can only be changed in CRT Mode", decision.error
+        )
+
+    def test_slot_policy_treats_same_live_dir_as_unchanged_in_bridge_mode(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            live = Path(temp_dir)
+            config = Config(
+                slots=_default_slots(),
+                path=live / "serial_bridge.json",
+                live_dir=live,
+            )
+
+            decision = config_module.SlotPolicy(config).decide(
+                _default_slots(),
+                live_dir=str(live),
+                mode="bridge",
+                has_workers=True,
+            )
+
+        self.assertTrue(decision.allowed)
+        self.assertEqual(live.resolve(), decision.live_dir)
+
     def test_file_wins_over_cli_environment_and_defaults(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "serial_bridge.json"

@@ -53,6 +53,68 @@ class Config:
     warning: str | None = None
 
 
+@dataclass(frozen=True)
+class SlotDecision:
+    allowed: bool
+    title_only: bool
+    live_dir: Path | None = None
+    error: str | None = None
+
+
+class SlotPolicy:
+    def __init__(self, config: Config):
+        self._config = config
+
+    def decide(
+        self,
+        slots: list[Mapping[str, object]],
+        *,
+        live_dir: str | None,
+        mode: str,
+        has_workers: bool,
+    ) -> SlotDecision:
+        title_only = self._title_only(slots)
+        new_live_dir: Path | None = None
+        if live_dir is not None:
+            try:
+                new_live_dir = validate_live_dir(live_dir)
+            except ValueError as exc:
+                return SlotDecision(
+                    False,
+                    title_only,
+                    error=f"Invalid Live Directory: {exc}",
+                )
+
+        live_dir_changing = (
+            new_live_dir is not None
+            and new_live_dir.resolve() != self._config.live_dir.resolve()
+        )
+        bindings_locked = mode != "crt" or has_workers
+        if live_dir_changing and bindings_locked:
+            return SlotDecision(
+                False,
+                title_only,
+                error="Live Directory can only be changed in CRT Mode",
+            )
+        if bindings_locked and not title_only:
+            return SlotDecision(
+                False,
+                title_only,
+                error="Port Bindings can only be changed in CRT Mode",
+            )
+        return SlotDecision(True, title_only, live_dir=new_live_dir)
+
+    def _title_only(self, slots: list[Mapping[str, object]]) -> bool:
+        if len(slots) != len(self._config.slots):
+            return False
+        for index, incoming in enumerate(slots):
+            current = self._config.slots[index]
+            for field in ("name", "com", "baud"):
+                if str(incoming.get(field, current[field])) != str(current[field]):
+                    return False
+        return True
+
+
 def _validated_com(value: object, source: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{source} must be a non-empty string")

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 import serial
 from serial import SerialException
 
-from serial_bridge.hub.exec import ExecEngine
+from serial_bridge.hub.exec import ExecEngine, ExecSession
 from serial_bridge.hub.queue import ExecRequest, TargetQueue, WriteRequest, exec_result
 
 if TYPE_CHECKING:
@@ -164,7 +164,10 @@ class PortWorker:
                     try:
                         if isinstance(request, ExecRequest):
                             try:
-                                request.result = self._exec_engine.execute(
+                                request.result = ExecSession(
+                                    self.hub,
+                                    self._exec_engine,
+                                ).execute(
                                     self._ser,
                                     self._tx,
                                     request,

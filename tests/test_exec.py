@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 from serial_bridge.config import Config
-from serial_bridge.hub import ExecEngine, Hub, PortWorker, TargetQueue
+from serial_bridge.hub import ExecEngine, ExecSession, Hub, PortWorker, TargetQueue
 
 
 class FakeClock:
@@ -40,7 +40,15 @@ class ScriptedSerial:
         return b""
 
 
-def execute(chunks=(), *, prompt=None, prompt_is_regex=False, serial_factory=None):
+def execute(
+    chunks=(),
+    *,
+    prompt=None,
+    prompt_is_regex=False,
+    serial_factory=None,
+    on_done=None,
+    abort_before_execute=False,
+):
     clock = FakeClock()
     serial = (
         serial_factory(clock)
@@ -55,16 +63,310 @@ def execute(chunks=(), *, prompt=None, prompt_is_regex=False, serial_factory=Non
         prompt_is_regex=prompt_is_regex,
     )
     assert queue.next_write() is request
+    if abort_before_execute:
+        queue.abort_agents()
     result = ExecEngine(clock=clock.monotonic, sleep=clock.sleep).execute(
         serial,
         queue,
         request,
         b"\n",
+        on_done=on_done,
     )
     return result, serial, clock
 
 
+class RecordingExecHub:
+    def __init__(self):
+        self.starts = []
+        self.ends = []
+
+    def record_exec_start(self, target, cmd, prompt):
+        self.starts.append((target, cmd, prompt))
+        return 17
+
+    def record_exec_end(
+        self, exec_id, target, ended_by, ms, captured_bytes, truncated, ok
+    ):
+        self.ends.append(
+            (exec_id, target, ended_by, ms, captured_bytes, truncated, ok)
+        )
+
+
+class ScriptedExecEngine:
+    def __init__(
+        self,
+        clock,
+        *,
+        result=None,
+        ended_by=None,
+        chunks=(),
+        elapsed=0.0,
+        error=None,
+    ):
+        self.clock = clock.monotonic
+        self._fake_clock = clock
+        self._result = result
+        self._ended_by = ended_by
+        self._chunks = chunks
+        self._elapsed = elapsed
+        self._error = error
+
+    def execute(self, _serial, _queue, _request, _line_ending, **callbacks):
+        for chunk in self._chunks:
+            callbacks["on_rx"](chunk)
+        self._fake_clock.sleep(self._elapsed)
+        if self._error is not None:
+            raise self._error
+        if self._ended_by is not None:
+            callbacks["on_done"](self._ended_by)
+        return self._result
+
+
+def execute_session(
+    chunks=(),
+    *,
+    prompt=None,
+    serial_factory=None,
+):
+    clock = FakeClock()
+    serial = (
+        serial_factory(clock)
+        if serial_factory
+        else ScriptedSerial(clock, chunks)
+    )
+    queue = TargetQueue()
+    request = queue.enqueue_exec("linux", "show", prompt=prompt)
+    assert queue.next_write() is request
+    hub = RecordingExecHub()
+    engine = ExecEngine(clock=clock.monotonic, sleep=clock.sleep)
+
+    result = ExecSession(hub, engine).execute(
+        serial,
+        queue,
+        request,
+        b"\n",
+    )
+    return result, hub
+
+
+class ExecSessionTest(unittest.TestCase):
+    def test_idle_result_and_supervision_come_from_session(self):
+        result, hub = execute_session(
+            [(0.0, b"show\r\n"), (0.2, b"answer\r\n")]
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("show\r\nanswer\r\n", result["output"])
+        self.assertEqual([("linux", "show", None)], hub.starts)
+        self.assertEqual(
+            [(17, "linux", "idle", 1200, 14, False, True)],
+            hub.ends,
+        )
+
+    def test_prompt_result_and_supervision_come_from_session(self):
+        result, hub = execute_session(
+            [(0.2, b"answer\r\ndevice> ")],
+            prompt="device> ",
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("answer\r\ndevice> ", result["output"])
+        self.assertEqual([("linux", "show", "device> ")], hub.starts)
+        self.assertEqual(
+            [
+                (
+                    17,
+                    "linux",
+                    "prompt",
+                    200,
+                    len(b"answer\r\ndevice> "),
+                    False,
+                    True,
+                )
+            ],
+            hub.ends,
+        )
+
+    def test_timeout_result_and_supervision_come_from_session(self):
+        def serial_factory(clock):
+            def read():
+                clock.sleep(0.5)
+                return b"x"
+
+            return ScriptedSerial(clock, on_read=read)
+
+        result, hub = execute_session(serial_factory=serial_factory)
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["timed_out"])
+        self.assertEqual(
+            [(17, "linux", "timeout", 60000, 120, False, False)],
+            hub.ends,
+        )
+
+    def test_exception_reraises_and_records_error_end(self):
+        clock = FakeClock()
+        hub = RecordingExecHub()
+        engine = ScriptedExecEngine(
+            clock,
+            chunks=(b"partial",),
+            elapsed=0.25,
+            error=OSError("flush failed"),
+        )
+        queue = TargetQueue()
+        request = queue.enqueue_exec("linux", "show")
+        self.assertIs(request, queue.next_write())
+
+        with self.assertRaisesRegex(OSError, "flush failed"):
+            ExecSession(hub, engine).execute(
+                ScriptedSerial(clock),
+                queue,
+                request,
+                b"\n",
+            )
+
+        self.assertEqual(
+            [(17, "linux", "error", 250, len(b"partial"), False, False)],
+            hub.ends,
+        )
+
+    def test_missing_completion_returns_failure_and_records_error_end(self):
+        clock = FakeClock()
+        hub = RecordingExecHub()
+        engine = ScriptedExecEngine(
+            clock,
+            result={
+                "ok": True,
+                "target": "linux",
+                "output": "partial",
+                "truncated": True,
+                "timed_out": False,
+                "aborted": False,
+            },
+            chunks=(b"partial",),
+            elapsed=0.5,
+        )
+        queue = TargetQueue()
+        request = queue.enqueue_exec("linux", "show")
+        self.assertIs(request, queue.next_write())
+
+        result = ExecSession(hub, engine).execute(
+            ScriptedSerial(clock),
+            queue,
+            request,
+            b"\n",
+        )
+
+        self.assertEqual("Exec failed", result["error"])
+        self.assertEqual(
+            [(17, "linux", "error", 500, len(b"partial"), False, False)],
+            hub.ends,
+        )
+
+    def test_abort_records_raw_bytes_and_result_truncated_flag(self):
+        clock = FakeClock()
+        hub = RecordingExecHub()
+        raw = (b"\x1b[31m" * 7000) + b"DONE"
+        engine = ScriptedExecEngine(
+            clock,
+            result={
+                "ok": False,
+                "target": "linux",
+                "output": "DONE",
+                "truncated": False,
+                "timed_out": False,
+                "aborted": True,
+            },
+            ended_by="abort",
+            chunks=(raw,),
+            elapsed=0.4,
+        )
+        queue = TargetQueue()
+        request = queue.enqueue_exec("linux", "show")
+        self.assertIs(request, queue.next_write())
+
+        result = ExecSession(hub, engine).execute(
+            ScriptedSerial(clock),
+            queue,
+            request,
+            b"\n",
+        )
+
+        self.assertTrue(result["aborted"])
+        self.assertGreater(len(raw), ExecEngine.OUTPUT_CAP_BYTES)
+        self.assertEqual(
+            [(17, "linux", "abort", 400, len(raw), False, False)],
+            hub.ends,
+        )
+
+
 class ExecEngineTest(unittest.TestCase):
+    def test_on_done_reports_idle_once(self):
+        calls = []
+
+        result, _serial, _clock = execute(
+            [(0.0, b"show\r\n"), (0.2, b"answer\r\n")],
+            on_done=calls.append,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(["idle"], calls)
+
+    def test_on_done_reports_prompt_once(self):
+        calls = []
+
+        result, _serial, _clock = execute(
+            [(0.2, b"answer\r\ndevice> ")],
+            prompt="device> ",
+            on_done=calls.append,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(["prompt"], calls)
+
+    def test_on_done_reports_timeout_once(self):
+        calls = []
+
+        def serial_factory(clock):
+            def read():
+                clock.sleep(0.5)
+                return b"x"
+
+            return ScriptedSerial(clock, on_read=read)
+
+        result, _serial, _clock = execute(
+            serial_factory=serial_factory,
+            on_done=calls.append,
+        )
+
+        self.assertTrue(result["timed_out"])
+        self.assertEqual(["timeout"], calls)
+
+    def test_on_done_reports_error_before_write(self):
+        calls = []
+
+        result, serial, _clock = execute(
+            prompt="rtos-[",
+            prompt_is_regex=True,
+            on_done=calls.append,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual([], serial.writes)
+        self.assertEqual(["error"], calls)
+
+    def test_on_done_reports_abort_when_write_is_disallowed(self):
+        calls = []
+
+        result, serial, _clock = execute(
+            abort_before_execute=True,
+            on_done=calls.append,
+        )
+
+        self.assertTrue(result["aborted"])
+        self.assertEqual([], serial.writes)
+        self.assertEqual(["abort"], calls)
+
     def test_idle_completion_uses_one_second_gap(self):
         result, serial, clock = execute(
             [(0.0, b"show\r\n"), (0.2, b"answer\r\n")]
@@ -189,13 +491,19 @@ class ExecEngineTest(unittest.TestCase):
 
         serial = ScriptedSerial(clock, on_read=read)
 
+        calls = []
         result = ExecEngine(clock=clock.monotonic, sleep=clock.sleep).execute(
-            serial, queue, request, b"\n"
+            serial,
+            queue,
+            request,
+            b"\n",
+            on_done=calls.append,
         )
 
         self.assertFalse(result["ok"])
         self.assertTrue(result["aborted"])
         self.assertEqual("partial", result["output"])
+        self.assertEqual(["abort"], calls)
 
 
 class FakeExecWorker:

@@ -5,11 +5,17 @@
   const modeHint = document.getElementById("mode-hint");
   const btnBridge = document.getElementById("btn-bridge");
   const btnCrt = document.getElementById("btn-crt");
+  const bindingStrip = document.getElementById("binding-strip");
   const bindingForm = document.getElementById("binding-form");
   const bindingHint = document.getElementById("binding-hint");
   const btnSaveBindings = document.getElementById("btn-save-bindings");
   const btnScanPorts = document.getElementById("btn-scan-ports");
   const bindingsSummary = document.getElementById("bindings-summary");
+  const bindingStripSlots = {
+    slot0: document.getElementById("binding-strip-slot0"),
+    slot1: document.getElementById("binding-strip-slot1"),
+  };
+  const wsLamp = document.getElementById("ws-lamp");
   const bindingLiveDir = document.getElementById("binding-live-dir");
   const bindingLiveDirField = document.getElementById("binding-live-dir-field");
   const footLiveDir = document.getElementById("foot-live-dir");
@@ -41,6 +47,12 @@
     slot0: document.getElementById("term-slot0"),
     slot1: document.getElementById("term-slot1"),
   };
+  const holders = {
+    slot0: document.getElementById("holder-slot0"),
+    slot1: document.getElementById("holder-slot1"),
+  };
+  const spineBody = document.getElementById("spine-body");
+  const spineTally = document.getElementById("spine-tally");
   const dots = {
     slot0: document.getElementById("dot-slot0"),
     slot1: document.getElementById("dot-slot1"),
@@ -53,6 +65,12 @@
   let slotTargets = ["linux", "rtos"];
   let targetToSlot = { linux: "slot0", rtos: "slot1" };
   const savedSlots = {};
+  const openCaptures = {};
+  const captureIndex = new Map();
+  let spineEntries = [];
+  let hydrateVersion = 0;
+  const termLineCounts = new WeakMap();
+  let jumpFlashTimer = null;
 
   function portEntries(ports) {
     if (!ports) return [];
@@ -66,6 +84,7 @@
     entries.forEach(([name], index) => {
       targetToSlot[name] = SLOT_KEYS[index] || name;
     });
+    restoreHydratedHolders();
   }
 
   function fillPortOptions(select, current) {
@@ -103,6 +122,10 @@
   function setPill(text, cls) {
     statusPill.textContent = text;
     statusPill.className = "status-pill " + (cls || "");
+  }
+
+  function setWsLamp(cls) {
+    wsLamp.className = "lamp " + (cls || "");
   }
 
   function setBindingEditability() {
@@ -181,6 +204,8 @@
     mode = s.mode || "crt";
     btnBridge.classList.toggle("active-bridge", mode === "bridge");
     btnCrt.classList.toggle("active-crt", mode === "crt");
+    bindingStrip.hidden = mode !== "bridge";
+    bindingForm.hidden = mode !== "crt";
     setBindingEditability();
     if (mode === "bridge") {
       modeLabel.textContent = "Bridge";
@@ -200,6 +225,8 @@
         dots[slot].classList.toggle("on", !!binding.open);
         paneTitles[slot].textContent = binding.title || name;
         portLabels[slot].textContent = `${name} · ${binding.com} @ ${binding.baud}`;
+        bindingStripSlots[slot].textContent =
+          `${binding.title || name} · ${name} · ${binding.com} · ${binding.baud}`;
         savedSlots[slot] = { name: binding.name || name, title: binding.title || name };
         if (!bindingsDirty) {
           bindingInputs[slot].title.value = binding.title || name;
@@ -225,35 +252,295 @@
 
   const MAX_TERM_LINES = 75000;
 
+  function hasClass(el, name) {
+    return el.className.split(" ").includes(name);
+  }
+
+  function oldestTermLine(el) {
+    for (const child of Array.from(el.children)) {
+      if (hasClass(child, "ln")) return { parent: el, row: child };
+      for (const nested of Array.from(child.children || [])) {
+        if (hasClass(nested, "ln")) return { parent: child, row: nested };
+      }
+    }
+    return null;
+  }
+
   function trimTerm(el) {
-    while (el.childElementCount > MAX_TERM_LINES) {
-      el.removeChild(el.firstElementChild);
+    let lineCount = termLineCounts.get(el) || 0;
+    while (lineCount > MAX_TERM_LINES) {
+      const oldest = oldestTermLine(el);
+      if (!oldest) break;
+      oldest.parent.removeChild(oldest.row);
+      if (
+        oldest.parent !== el &&
+        hasClass(oldest.parent, "sealed") &&
+        !Array.from(oldest.parent.children).some((child) => hasClass(child, "ln"))
+      ) {
+        el.removeChild(oldest.parent);
+      }
+      lineCount -= 1;
+    }
+    termLineCounts.set(el, lineCount);
+  }
+
+  function setHolder(slot, active) {
+    const holder = holders[slot];
+    if (!holder) return;
+    holder.className = active ? "holder agent" : "holder idle";
+    holder.textContent = "";
+    const pip = document.createElement("span");
+    pip.className = "pip";
+    holder.append(pip, document.createTextNode(active ? "AGENT EXEC" : "IDLE"));
+  }
+
+  function formatDuration(ms) {
+    return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(2)} s`;
+  }
+
+  function formatBytes(bytes) {
+    return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KiB`;
+  }
+
+  function normalizedEndReason(endedBy) {
+    const reasons = new Set(["idle", "prompt", "timeout", "abort", "error"]);
+    return reasons.has(endedBy) ? endedBy : "error";
+  }
+
+  function sealCopy(msg) {
+    const reason = normalizedEndReason(msg.ended_by);
+    const ending = reason === "abort" ? "aborted" : `closed on ${reason}`;
+    const capped = msg.truncated ? " · capped" : "";
+    return `captured ${formatDuration(msg.ms)} · ${formatBytes(msg.bytes)} · ${ending}${capped}`;
+  }
+
+  function median(values) {
+    if (!values.length) return null;
+    const ordered = values.slice().sort((a, b) => a - b);
+    const middle = Math.floor(ordered.length / 2);
+    if (ordered.length % 2) return ordered[middle];
+    return Math.round((ordered[middle - 1] + ordered[middle]) / 2);
+  }
+
+  function appendSpineText(parent, className, text) {
+    const child = document.createElement("div");
+    child.className = className;
+    child.textContent = text;
+    parent.appendChild(child);
+  }
+
+  function captureStillInTerm(el) {
+    let node = el;
+    while (node) {
+      if (node === terms.slot0 || node === terms.slot1) return true;
+      node = node.parentNode;
+    }
+    return false;
+  }
+
+  function registerCapture(id, el) {
+    captureIndex.set(Number(id), el);
+  }
+
+  function clearCaptureIndex() {
+    captureIndex.clear();
+  }
+
+  function traceJump(execId) {
+    const el = captureIndex.get(Number(execId));
+    if (!el || !captureStillInTerm(el)) {
+      setPill("not in view", "warn");
+      return;
+    }
+    if (typeof el.scrollIntoView === "function") {
+      el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+    el.classList.add("jump-flash");
+    if (jumpFlashTimer) clearTimeout(jumpFlashTimer);
+    jumpFlashTimer = setTimeout(() => {
+      el.classList.remove("jump-flash");
+      jumpFlashTimer = null;
+    }, 1200);
+  }
+
+  function renderSpine() {
+    spineBody.textContent = "";
+    for (const entry of spineEntries) {
+      const node = document.createElement("article");
+      if (entry.kind === "send") {
+        node.className = "spine-node send";
+        appendSpineText(node, "spine-kicker", `SEND · ${entry.target} · ${entry.ts || "now"}`);
+        appendSpineText(node, "spine-command", entry.cmd);
+        appendSpineText(node, "spine-meta", "fire-and-forget");
+      } else {
+        const running = entry.phase === "start";
+        const endedBy = normalizedEndReason(entry.ended_by);
+        const flags = [
+          "spine-node",
+          "exec",
+          running ? "running" : "sealed",
+          endedBy === "abort" ? "aborted" : "",
+          entry.truncated ? "capped" : "",
+        ].filter(Boolean);
+        node.className = flags.join(" ");
+        node.dataset.execId = String(entry.id);
+        node.title = "Jump to capture";
+        node.addEventListener("click", () => traceJump(entry.id));
+        appendSpineText(node, "spine-kicker", `EXEC · ${entry.target} · #${entry.id}`);
+        appendSpineText(node, "spine-command", entry.cmd || "—");
+        appendSpineText(
+          node,
+          "spine-meta",
+          running
+            ? "running"
+            : `${endedBy === "abort" ? "aborted" : endedBy} · ` +
+              `${formatDuration(entry.ms || 0)} · ${formatBytes(entry.bytes || 0)}` +
+              (entry.truncated ? " · capped" : "")
+        );
+      }
+      spineBody.appendChild(node);
+    }
+
+    const execs = spineEntries.filter((entry) => entry.kind === "exec");
+    const sends = spineEntries.filter((entry) => entry.kind === "send");
+    const sealed = execs.filter((entry) => entry.phase === "end");
+    const aborted = sealed.filter((entry) => entry.ended_by === "abort").length;
+    const capped = sealed.filter((entry) => entry.truncated).length;
+    const medianMs = median(sealed.map((entry) => Number(entry.ms) || 0));
+    spineTally.textContent =
+      `exec ${execs.length} · send ${sends.length} · aborted ${aborted} · capped ${capped}` +
+      ` · median ${medianMs === null ? "—" : formatDuration(medianMs)}`;
+  }
+
+  const MAX_SPINE_ENTRIES = 50;
+
+  function capSpineEntries() {
+    spineEntries = spineEntries.slice(0, MAX_SPINE_ENTRIES);
+  }
+
+  function recordExecStart(msg) {
+    spineEntries = [
+      { kind: "exec", ...msg },
+      ...spineEntries.filter((entry) => entry.kind !== "exec" || entry.id !== msg.id),
+    ];
+    capSpineEntries();
+    renderSpine();
+  }
+
+  function recordExecEnd(msg) {
+    const index = spineEntries.findIndex(
+      (entry) => entry.kind === "exec" && entry.id === msg.id
+    );
+    if (index < 0) return false;
+    spineEntries[index] = { ...spineEntries[index], ...msg, phase: "end" };
+    capSpineEntries();
+    renderSpine();
+    return true;
+  }
+
+  function recordAgentSend(target, cmd, ts) {
+    spineEntries.unshift({ kind: "send", target, cmd, ts });
+    capSpineEntries();
+    renderSpine();
+  }
+
+  function entriesFromAgentLog(entries) {
+    return (entries || [])
+      .map((entry) => ({ kind: "exec", ...entry }))
+      .slice(0, MAX_SPINE_ENTRIES);
+  }
+
+  function restoreHydratedHolders() {
+    for (const slot of SLOT_KEYS) setHolder(slot, false);
+    for (const entry of spineEntries) {
+      if (entry.kind !== "exec" || entry.phase !== "start") continue;
+      const slot = targetToSlot[entry.target];
+      if (slot) setHolder(slot, true);
     }
   }
 
+  async function hydrateAgentLog() {
+    const version = ++hydrateVersion;
+    try {
+      const response = await fetch("/api/agent_log");
+      const data = await response.json();
+      if (version !== hydrateVersion || !response.ok || !data.ok) return;
+      spineEntries = entriesFromAgentLog(data.entries);
+      restoreHydratedHolders();
+      renderSpine();
+    } catch {
+      // Keep the current client buffer when hydration is unavailable.
+    }
+  }
+
+  function onExecStart(msg) {
+    recordExecStart(msg);
+    const slot = targetToSlot[msg.target];
+    const term = terms[slot];
+    if (!term) return;
+    const capture = document.createElement("div");
+    capture.className = "capture running";
+    capture.dataset.execId = String(msg.id);
+    openCaptures[msg.target] = { id: msg.id, slot, el: capture, attached: false };
+    setHolder(slot, true);
+    term.scrollTop = term.scrollHeight;
+  }
+
+  function onExecEnd(msg) {
+    const recorded = recordExecEnd(msg);
+    const open = openCaptures[msg.target];
+    if (!open || open.id !== msg.id) {
+      const slot = targetToSlot[msg.target];
+      if (recorded && slot) setHolder(slot, false);
+      return;
+    }
+    const foot = document.createElement("div");
+    foot.className = "cap-foot";
+    foot.textContent = sealCopy(msg);
+    open.el.appendChild(foot);
+    open.el.className = "capture sealed";
+    delete openCaptures[msg.target];
+    setHolder(open.slot, false);
+  }
+
   function appendLine(target, direction, text, who, tstamp) {
+    if (direction === ">>>" && who === "agent" && !openCaptures[target]) {
+      recordAgentSend(target, text, tstamp);
+    }
     const slot = targetToSlot[target] || SLOT_KEYS[0];
     const el = terms[slot];
     if (!el) return;
     const row = document.createElement("div");
-    let cls = "line out";
-    let tag = "DEV";
+    let cls = "ln dev";
+    let prefix = "";
     if (direction === ">>>") {
-      cls = who === "agent" ? "line in-agent" : "line in-user";
-      tag = who === "agent" ? "AGENT" : "YOU";
+      if (who === "agent") {
+        cls = "ln agent";
+        prefix = "◆ agent  ";
+      } else {
+        cls = "ln op";
+        prefix = "▲ you  ";
+      }
     } else if (direction === "---") {
-      cls = "line sys";
-      tag = "SYS";
+      cls = "ln sys";
     }
     row.className = cls;
-    const meta = document.createElement("span");
-    meta.className = "meta";
-    meta.textContent = `${tstamp || ""} ${tag}`;
+    const stamp = document.createElement("span");
+    stamp.className = "t";
+    stamp.textContent = tstamp || "";
     const body = document.createElement("span");
-    body.className = "body";
+    body.className = "b";
+    if (prefix) body.appendChild(document.createTextNode(prefix));
     AnsiRender.renderAnsi(body, text);
-    row.append(meta, document.createTextNode(" "), body);
-    el.appendChild(row);
+    row.append(stamp, body);
+    const capture = direction === "<<<" ? openCaptures[target] : null;
+    if (capture && !capture.attached) {
+      el.appendChild(capture.el);
+      capture.attached = true;
+      registerCapture(capture.id, capture.el);
+    }
+    (capture ? capture.el : el).appendChild(row);
+    termLineCounts.set(el, (termLineCounts.get(el) || 0) + 1);
     trimTerm(el);
     el.scrollTop = el.scrollHeight;
   }
@@ -261,17 +548,27 @@
   function connect() {
     const proto = location.protocol === "https:" ? "wss" : "ws";
     ws = new WebSocket(`${proto}://${location.host}/ws`);
-    ws.onopen = () => setPill("WS linked", "ok");
+    ws.onopen = () => {
+      setPill("WS linked", "ok");
+      setWsLamp("live");
+      return hydrateAgentLog();
+    };
     ws.onclose = () => {
       setPill("WS dropped · retry", "warn");
+      setWsLamp("warn");
       setTimeout(connect, 1200);
     };
-    ws.onerror = () => setPill("WS error", "err");
+    ws.onerror = () => {
+      setPill("WS error", "err");
+      setWsLamp("err");
+    };
     ws.onmessage = (ev) => {
       let msg;
       try { msg = JSON.parse(ev.data); } catch { return; }
       if (msg.type === "status" || (msg.mode && msg.ports)) applyStatus(msg);
       if (msg.type === "line") appendLine(msg.target, msg.direction, msg.text, msg.who, msg.ts);
+      if (msg.type === "exec" && msg.phase === "start") onExecStart(msg);
+      if (msg.type === "exec" && msg.phase === "end") onExecEnd(msg);
       if (msg.type === "system") {
         for (const target of slotTargets) {
           appendLine(target, "---", msg.text, "system", "");
@@ -433,9 +730,19 @@
   document.getElementById("btn-clear").addEventListener("click", () => {
     terms.slot0.innerHTML = "";
     terms.slot1.innerHTML = "";
+    termLineCounts.set(terms.slot0, 0);
+    termLineCounts.set(terms.slot1, 0);
+    for (const target of Object.keys(openCaptures)) {
+      delete openCaptures[target];
+    }
+    clearCaptureIndex();
+    for (const slot of SLOT_KEYS) {
+      setHolder(slot, false);
+    }
   });
 
   connect();
+  hydrateAgentLog();
   fetch("/api/status")
     .then((r) => r.json())
     .then(applyStatus)

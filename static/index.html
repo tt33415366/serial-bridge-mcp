@@ -3,38 +3,60 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Serial Bridge</title>
+  <title>Ground Station — Serial Bridge</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Oxanium:wght@500;600;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Michroma&family=Martian+Mono:wght@300;400;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
-  <div class="app">
-    <header class="top">
-      <div class="brand">
-        <div class="logo" aria-hidden="true">SB</div>
-        <div class="brand-copy">
-          <h1>Serial Bridge</h1>
+  <div class="shell">
+    <aside class="rail" aria-label="Serial Bridge status">
+      <div class="sigil" aria-hidden="true">SB</div>
+      <div class="rail-word">Serial Bridge</div>
+      <div class="rail-spacer"></div>
+      <div class="rail-mini">ws link</div>
+      <div class="lamp" id="ws-lamp" aria-hidden="true"></div>
+    </aside>
+
+    <div class="main">
+      <header class="head">
+        <div class="title-block">
+          <h1>Ground Station</h1>
           <p id="bindings-summary">reading bindings…</p>
         </div>
-      </div>
 
-      <div class="mode-switch" role="group" aria-label="Mode">
-        <button type="button" id="btn-bridge" class="mode-btn">Bridge</button>
-        <button type="button" id="btn-crt" class="mode-btn">CRT</button>
-      </div>
+        <div class="mode" role="group" aria-label="Mode">
+          <span class="knob" aria-hidden="true"></span>
+          <button type="button" id="btn-bridge" class="mode-btn">Bridge</button>
+          <button type="button" id="btn-crt" class="mode-btn">CRT</button>
+        </div>
 
-      <div class="status-pill" id="status-pill">connecting…</div>
-      <a class="setup-link" href="/setup">Setup</a>
-    </header>
+        <div class="readout">
+          <span class="readout-key">Hub</span>
+          <div class="status-pill" id="status-pill">connecting…</div>
+        </div>
+        <a class="setup-link" href="/setup">Setup</a>
+      </header>
 
-    <section class="banner" id="banner" aria-live="polite">
-      <strong id="mode-label">—</strong>
-      <span id="mode-hint">Select a mode. Bridge owns the ports; CRT releases them.</span>
-    </section>
+      <section class="banner" id="banner" aria-live="polite">
+        <strong id="mode-label">—</strong>
+        <span id="mode-hint">Select a mode. Bridge owns the ports; CRT releases them.</span>
+      </section>
 
-    <form class="binding-panel" id="binding-form">
+      <section class="binding-strip" id="binding-strip" aria-label="Current bindings" hidden>
+        <div class="binding-segment slot0">
+          <span class="binding-tag">Slot 0</span>
+          <strong id="binding-strip-slot0">—</strong>
+        </div>
+        <div class="binding-segment slot1">
+          <span class="binding-tag">Slot 1</span>
+          <strong id="binding-strip-slot1">—</strong>
+        </div>
+        <div class="binding-segment binding-locked">Bindings locked while ports are held — switch to CRT to edit</div>
+      </section>
+
+      <form class="binding-panel" id="binding-form">
       <div class="binding-bar">
         <div class="binding-intro">
           <strong>Bindings</strong>
@@ -84,43 +106,59 @@
         <span>Live Directory</span>
         <input id="binding-live-dir" name="live-dir" type="text" required spellcheck="false" />
       </label>
-    </form>
+      </form>
 
-    <main class="panes">
-      <section class="pane" data-slot="0">
-        <header class="pane-head">
-          <h2><span id="title-slot0">—</span> <span id="port-slot0">—</span></h2>
-          <span class="dot" id="dot-slot0" title="port open"></span>
-        </header>
-        <div class="term" id="term-slot0" tabindex="0"></div>
-        <form class="composer" data-slot="0">
-          <input type="text" placeholder="command → Enter" autocomplete="off" spellcheck="false" />
-          <button type="submit">Send</button>
-        </form>
-      </section>
+      <main class="field">
+        <section class="tube slot0" data-slot="0">
+          <header class="tube-head">
+            <h2><span id="title-slot0">—</span></h2>
+            <span class="tube-sub" id="port-slot0">—</span>
+            <span class="dot" id="dot-slot0" title="port open"></span>
+            <div class="holder idle" id="holder-slot0"><span class="pip"></span>IDLE</div>
+          </header>
+          <div class="screen" id="term-slot0" tabindex="0"></div>
+          <form class="composer" data-slot="0">
+            <span class="caret" aria-hidden="true">▸</span>
+            <input type="text" placeholder="operator command — barges in ahead of the agent queue" autocomplete="off" spellcheck="false" />
+            <button type="submit">Send</button>
+          </form>
+        </section>
 
-      <section class="pane" data-slot="1">
-        <header class="pane-head">
-          <h2><span id="title-slot1">—</span> <span id="port-slot1">—</span></h2>
-          <span class="dot" id="dot-slot1" title="port open"></span>
-        </header>
-        <div class="term" id="term-slot1" tabindex="0"></div>
-        <form class="composer" data-slot="1">
-          <input type="text" placeholder="command → Enter" autocomplete="off" spellcheck="false" />
-          <button type="submit">Send</button>
-        </form>
-      </section>
-    </main>
+        <aside class="agent-spine" id="agent-spine" aria-label="Agent Trace">
+          <header class="spine-head">
+            <span>Agent Trace</span>
+            <small>live supervision</small>
+          </header>
+          <div class="spine-body" id="spine-body"></div>
+          <footer class="spine-tally" id="spine-tally"></footer>
+        </aside>
 
-    <footer class="foot">
-      <div class="foot-meta">
-        <span>live</span>
-        <code id="foot-live-dir">—</code>
-        <span class="foot-logs-label" id="foot-logs-label" hidden>session</span>
-        <code id="foot-session-logs"></code>
-      </div>
-      <button type="button" id="btn-clear" class="ghost">Clear</button>
-    </footer>
+        <section class="tube slot1" data-slot="1">
+          <header class="tube-head">
+            <h2><span id="title-slot1">—</span></h2>
+            <span class="tube-sub" id="port-slot1">—</span>
+            <span class="dot" id="dot-slot1" title="port open"></span>
+            <div class="holder idle" id="holder-slot1"><span class="pip"></span>IDLE</div>
+          </header>
+          <div class="screen" id="term-slot1" tabindex="0"></div>
+          <form class="composer" data-slot="1">
+            <span class="caret" aria-hidden="true">▸</span>
+            <input type="text" placeholder="operator command — barges in ahead of the agent queue" autocomplete="off" spellcheck="false" />
+            <button type="submit">Send</button>
+          </form>
+        </section>
+      </main>
+
+      <footer class="foot">
+        <div class="foot-meta">
+          <span>live</span>
+          <code id="foot-live-dir">—</code>
+          <span class="foot-logs-label" id="foot-logs-label" hidden>session</span>
+          <code id="foot-session-logs"></code>
+        </div>
+        <button type="button" id="btn-clear" class="ghost">Clear</button>
+      </footer>
+    </div>
   </div>
   <script src="/static/command_history.js"></script>
   <script src="/static/ansi_render.js"></script>

@@ -115,6 +115,10 @@ def register_operator_routes(app: FastAPI, static_dir: Path) -> None:
     async def api_ports() -> dict[str, Any]:
         return {"ok": True, "ports": await offload(available_ports)}
 
+    @app.get("/api/agent_log", dependencies=[Depends(_require_operator_access)])
+    async def api_agent_log() -> dict[str, Any]:
+        return {"ok": True, "entries": await offload(_get_hub().get_agent_log)}
+
     @app.post("/api/mode", dependencies=[Depends(_require_operator_access)])
     async def api_mode(body: ModeBody) -> dict[str, Any]:
         hub = _get_hub()
