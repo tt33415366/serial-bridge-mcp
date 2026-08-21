@@ -137,6 +137,7 @@ class McpHttpTest(unittest.TestCase):
             host="0.0.0.0",
             port=8765,
             log_level="info",
+            timeout_graceful_shutdown=app_module.SHUTDOWN_GRACE_SECONDS,
         )
 
     def test_serial_status_returns_bindings_open_and_busy_hints(self):
