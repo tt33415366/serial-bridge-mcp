@@ -1,6 +1,8 @@
 import threading
+import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from serial_bridge.config import Config
 from serial_bridge.hub import ExecEngine, ExecSession, Hub, PortWorker, TargetQueue
@@ -504,6 +506,83 @@ class ExecEngineTest(unittest.TestCase):
         self.assertTrue(result["aborted"])
         self.assertEqual("partial", result["output"])
         self.assertEqual(["abort"], calls)
+
+
+class SilentHub:
+    def append_log(self, *args, **kwargs):
+        pass
+
+    def record_exec_start(self, *args, **kwargs):
+        return 1
+
+    def record_exec_end(self, *args, **kwargs):
+        pass
+
+
+class FloodSerial:
+    is_open = True
+
+    def write(self, raw):
+        pass
+
+    def flush(self):
+        pass
+
+    def read(self, _size):
+        time.sleep(0.01)
+        return b"flood\n"
+
+    def close(self):
+        self.is_open = False
+
+
+class PortWorkerExecWaitTest(unittest.TestCase):
+    def test_queued_exec_wait_budget_starts_when_execution_starts(self):
+        with (
+            patch.object(ExecEngine, "TOTAL_SECONDS", 2.0),
+            patch.object(ExecEngine, "IDLE_SECONDS", 0.05),
+        ):
+            worker = PortWorker("linux", "COM3", 115200, SilentHub())
+            worker._ser = FloodSerial()
+            worker.is_open = True
+            worker.start()
+            first = {}
+            second = {}
+            try:
+                first_thread = threading.Thread(
+                    target=lambda: first.update(worker.exec("first")),
+                    daemon=True,
+                )
+                first_thread.start()
+                self.assertTrue(self._wait_busy(worker))
+                queued_at = time.monotonic()
+                second_thread = threading.Thread(
+                    target=lambda: second.update(worker.exec("second")),
+                    daemon=True,
+                )
+                second_thread.start()
+                first_thread.join(10)
+                second_thread.join(10)
+                queued_waited = time.monotonic() - queued_at
+            finally:
+                worker.close()
+
+        self.assertFalse(first_thread.is_alive())
+        self.assertFalse(second_thread.is_alive())
+        self.assertNotEqual(
+            second.get("error"),
+            "Exec wait exceeded total timeout",
+        )
+        self.assertTrue(second.get("timed_out"))
+        self.assertGreaterEqual(queued_waited, 3.5)
+
+    def _wait_busy(self, worker):
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline:
+            if worker.is_busy:
+                return True
+            time.sleep(0.01)
+        return False
 
 
 class FakeExecWorker:

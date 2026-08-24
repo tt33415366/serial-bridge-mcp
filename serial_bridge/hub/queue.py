@@ -21,6 +21,7 @@ class ExecRequest(WriteRequest):
     prompt: str | None = None
     prompt_is_regex: bool = False
     done: threading.Event = field(default_factory=threading.Event)
+    started: threading.Event = field(default_factory=threading.Event)
     result: dict[str, Any] | None = None
 
     def finish_queued_abort(self) -> None:

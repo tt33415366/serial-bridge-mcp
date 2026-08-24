@@ -95,6 +95,8 @@ class PortWorker:
 
     def wait_exec(self, request: ExecRequest) -> dict[str, Any]:
         wait_seconds = ExecEngine.TOTAL_SECONDS + ExecEngine.IDLE_SECONDS + 1.0
+        while not (request.started.is_set() or request.done.is_set() or self._stop.is_set()):
+            request.done.wait(0.05)
         if not request.done.wait(wait_seconds):
             request.aborted.set()
             return exec_result(
@@ -163,6 +165,7 @@ class PortWorker:
                 if request is not None:
                     try:
                         if isinstance(request, ExecRequest):
+                            request.started.set()
                             try:
                                 request.result = ExecSession(
                                     self.hub,
