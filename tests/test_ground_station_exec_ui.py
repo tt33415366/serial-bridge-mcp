@@ -52,10 +52,13 @@ class FakeClassList {{
   }}
 }}
 
+globalThis.layoutReads = 0;
+globalThis.childrenReads = 0;
+
 class FakeElement {{
   constructor(id = "") {{
     this.id = id;
-    this.children = [];
+    this._children = [];
     this.dataset = {{}};
     this.className = "";
     this.classList = new FakeClassList(this);
@@ -69,35 +72,45 @@ class FakeElement {{
     this._textContent = "";
     this.listeners = {{}};
   }}
+  get children() {{
+    globalThis.childrenReads += 1;
+    return this._children;
+  }}
   get textContent() {{
-    return this._textContent + this.children.map((child) => child.textContent || "").join("");
+    return this._textContent + this._children.map((child) => child.textContent || "").join("");
   }}
   set textContent(value) {{
     this._textContent = String(value);
-    this.children = [];
+    this._children = [];
   }}
   set innerHTML(value) {{
     this.textContent = value;
   }}
   get childElementCount() {{
-    return this.children.length;
+    return this._children.length;
   }}
   get firstElementChild() {{
-    return this.children[0] || null;
+    return this._children[0] || null;
+  }}
+  get nextElementSibling() {{
+    const parent = this.parentNode;
+    if (!parent) return null;
+    return parent._children[parent._children.indexOf(this) + 1] || null;
   }}
   get scrollHeight() {{
-    return this.children.length;
+    globalThis.layoutReads += 1;
+    return this._children.length;
   }}
   appendChild(child) {{
     if (child && typeof child === "object") child.parentNode = this;
-    this.children.push(child);
+    this._children.push(child);
     return child;
   }}
   append(...children) {{
     children.forEach((child) => this.appendChild(child));
   }}
   removeChild(child) {{
-    this.children.splice(this.children.indexOf(child), 1);
+    this._children.splice(this._children.indexOf(child), 1);
     if (child) child.parentNode = null;
   }}
   addEventListener(type, listener) {{
@@ -144,6 +157,8 @@ globalThis.document = {{
 }};
 globalThis.location = {{ protocol: "http:", host: "localhost" }};
 globalThis.setTimeout = () => {{}};
+globalThis.frameCallbacks = [];
+globalThis.requestAnimationFrame = (callback) => frameCallbacks.push(callback);
 globalThis.localStorage = {{ getItem: () => null, setItem: () => {{}} }};
 globalThis.CommandHistory = {{}};
 globalThis.AnsiRender = {{
@@ -180,6 +195,9 @@ const send = (message) => socket.onmessage({{ data: JSON.stringify(message) }});
 const term = (slot) => document.getElementById(`term-${{slot}}`);
 const holder = (slot) => document.getElementById(`holder-${{slot}}`);
 const nextTurn = () => new Promise((resolve) => setImmediate(resolve));
+const flushFrames = () => {{
+  frameCallbacks.splice(0).forEach((callback) => callback());
+}};
 const result = await (async () => {{
 {scenario}
 }})();
@@ -445,6 +463,71 @@ class GroundStationExecUiTest(unittest.TestCase):
         self.assertEqual(75000, result["captureRows"])
         self.assertNotIn("line-0", result["text"])
         self.assertIn("line-75009", result["text"])
+
+    def test_batched_line_items_append_in_order(self):
+        result = run_ui_scenario(
+            """
+  send({
+    type: "line",
+    items: [
+      { target: "linux", direction: "<<<", text: "first", ts: "1" },
+      { target: "linux", direction: "<<<", text: "second", ts: "2" },
+    ],
+  });
+  flushFrames();
+  return {
+    rows: term("slot0").children.length,
+    text: term("slot0").textContent,
+  };
+"""
+        )
+
+        self.assertEqual(2, result["rows"])
+        self.assertIn("first", result["text"])
+        self.assertIn("second", result["text"])
+
+    def test_flooding_target_forces_one_layout_read_per_frame(self):
+        result = run_ui_scenario(
+            """
+  await nextTurn();
+  const before = layoutReads;
+  for (let index = 0; index < 500; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `line-${index}` });
+  }
+  const duringBurst = layoutReads - before;
+  flushFrames();
+  return {
+    duringBurst,
+    afterFlush: layoutReads - before,
+    rows: term("slot0").children.length,
+    scrollTop: term("slot0").scrollTop,
+  };
+"""
+        )
+
+        self.assertEqual(500, result["rows"])
+        self.assertEqual(0, result["duringBurst"])
+        self.assertEqual(1, result["afterFlush"])
+        self.assertEqual(500, result["scrollTop"])
+
+    def test_trimming_past_the_budget_does_not_rescan_the_scrollback(self):
+        result = run_ui_scenario(
+            """
+  for (let index = 0; index < 75000; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `fill-${index}` });
+  }
+  flushFrames();
+  const before = childrenReads;
+  for (let index = 0; index < 200; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `trim-${index}` });
+  }
+  flushFrames();
+  return { scans: childrenReads - before, rows: term("slot0").children.length };
+"""
+        )
+
+        self.assertEqual(75000, result["rows"])
+        self.assertEqual(0, result["scans"])
 
     def test_spine_client_buffer_is_capped_at_server_ring_size(self):
         result = run_ui_scenario(

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from serial_bridge.config import Config, SlotPolicy, load_config, persist_slots
+from serial_bridge.hub.coalesce import LineCoalescer
 from serial_bridge.hub.mode_transition import ModeTransition
 from serial_bridge.hub.queue import exec_result
 from serial_bridge.hub.trace import AgentTrace
@@ -41,6 +42,7 @@ class Hub:
             lambda name, port, baud: hub.PortWorker(name, port, baud, self),
         )
         self.loop: asyncio.AbstractEventLoop | None = None
+        self._line_coalescer = LineCoalescer(self._dispatch)
 
     def _register_slot(self, slot: Mapping[str, str | int]) -> None:
         name = str(slot["name"])
@@ -114,6 +116,9 @@ class Hub:
             self.clients.discard(ws)
 
     def emit(self, msg: dict[str, Any]) -> None:
+        self._line_coalescer.emit(msg)
+
+    def _dispatch(self, msg: dict[str, Any]) -> None:
         if self.loop and self.loop.is_running():
             asyncio.run_coroutine_threadsafe(self.broadcast(msg), self.loop)
 

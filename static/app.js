@@ -257,11 +257,10 @@
   }
 
   function oldestTermLine(el) {
-    for (const child of Array.from(el.children)) {
+    for (let child = el.firstElementChild; child; child = child.nextElementSibling) {
       if (hasClass(child, "ln")) return { parent: el, row: child };
-      for (const nested of Array.from(child.children || [])) {
-        if (hasClass(nested, "ln")) return { parent: child, row: nested };
-      }
+      const nested = child.firstElementChild;
+      if (nested && hasClass(nested, "ln")) return { parent: child, row: nested };
     }
     return null;
   }
@@ -272,16 +271,30 @@
       const oldest = oldestTermLine(el);
       if (!oldest) break;
       oldest.parent.removeChild(oldest.row);
-      if (
-        oldest.parent !== el &&
-        hasClass(oldest.parent, "sealed") &&
-        !Array.from(oldest.parent.children).some((child) => hasClass(child, "ln"))
-      ) {
-        el.removeChild(oldest.parent);
+      const parent = oldest.parent;
+      if (parent !== el && hasClass(parent, "sealed")) {
+        const remaining = parent.firstElementChild;
+        if (!remaining || !hasClass(remaining, "ln")) el.removeChild(parent);
       }
       lineCount -= 1;
     }
     termLineCounts.set(el, lineCount);
+  }
+
+  const pendingScrolls = new Set();
+  let scrollPending = false;
+
+  function flushScrolls() {
+    scrollPending = false;
+    for (const el of pendingScrolls) el.scrollTop = el.scrollHeight;
+    pendingScrolls.clear();
+  }
+
+  function scheduleScroll(el) {
+    pendingScrolls.add(el);
+    if (scrollPending) return;
+    scrollPending = true;
+    requestAnimationFrame(flushScrolls);
   }
 
   function setHolder(slot, active) {
@@ -483,7 +496,7 @@
     capture.dataset.execId = String(msg.id);
     openCaptures[msg.target] = { id: msg.id, slot, el: capture, attached: false };
     setHolder(slot, true);
-    term.scrollTop = term.scrollHeight;
+    scheduleScroll(term);
   }
 
   function onExecEnd(msg) {
@@ -542,7 +555,7 @@
     (capture ? capture.el : el).appendChild(row);
     termLineCounts.set(el, (termLineCounts.get(el) || 0) + 1);
     trimTerm(el);
-    el.scrollTop = el.scrollHeight;
+    scheduleScroll(el);
   }
 
   function connect() {
@@ -566,7 +579,12 @@
       let msg;
       try { msg = JSON.parse(ev.data); } catch { return; }
       if (msg.type === "status" || (msg.mode && msg.ports)) applyStatus(msg);
-      if (msg.type === "line") appendLine(msg.target, msg.direction, msg.text, msg.who, msg.ts);
+      if (msg.type === "line") {
+        const items = msg.items || [msg];
+        for (const item of items) {
+          appendLine(item.target, item.direction, item.text, item.who, item.ts);
+        }
+      }
       if (msg.type === "exec" && msg.phase === "start") onExecStart(msg);
       if (msg.type === "exec" && msg.phase === "end") onExecEnd(msg);
       if (msg.type === "system") {
