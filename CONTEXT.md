@@ -68,6 +68,18 @@ _Avoid_: spine (layout jargon), activity feed, agent history (sounds durable acr
 The Operator action of selecting an Agent Trace Exec entry to scroll to and briefly highlight that Exec’s capture in the Target’s live transcript, only when that capture is still present in the current view.
 _Avoid_: clickable trace (UI-only phrasing), jump to log (ambiguous with session log files), replay (implies re-running)
 
+**Transcript Gap**:
+A placeholder in a Target’s live pane for consecutive transcript lines that exist in the session log but were not materialized in the current view.
+_Avoid_: omitted lines (as the concept name), skipped logs, ellipsis (UI chrome)
+
+**Follow**:
+Whether that Target pane is pinned to the live tail; leaving the tail pauses materializing new lines into the view.
+_Avoid_: auto-scroll (implementation), stick (vague), tail mode (jargon)
+
+**Live View Budget**:
+The Operator-chosen cap, shared by both Target panes, on how many lines the current view may materialize, including Transcript Gap markers. Tightening it drops the oldest materialized rows; it does not change the session log.
+_Avoid_: max term lines, scrollback (alone — sounds like the session log), buffer size
+
 **Raw Payload**:
 Bytes written to a Target without the usual text-line framing (for example hex-encoded Ctrl-C), as an opt-in alternative to a normal text line.
 _Avoid_: binary mode (sounds like a session mode), unescaped (vague)
