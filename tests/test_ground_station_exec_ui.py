@@ -57,6 +57,8 @@ class FakeClassList {{
 globalThis.layoutReads = 0;
 globalThis.rowLayoutReads = 0;
 globalThis.childrenReads = 0;
+globalThis.measureRowHeight = null;
+globalThis.onCreateElement = null;
 
 class FakeElement {{
   constructor(id = "") {{
@@ -76,6 +78,8 @@ class FakeElement {{
     this.disabled = false;
     this.hidden = false;
     this.clientHeight = 0;
+    this.style = {{}};
+    this._offsetHeight = null;
     this._scrollTop = 0;
     this.scrolledIntoView = false;
     this.scrollIntoViewOptions = null;
@@ -124,6 +128,22 @@ class FakeElement {{
     if (this.tracksLayoutReads) globalThis.layoutReads += 1;
     else globalThis.rowLayoutReads += 1;
     return this._scrollHeight === null ? this._children.length : this._scrollHeight;
+  }}
+  // A materialized row's rendered height. A scenario either pins it per element or
+  // supplies globalThis.measureRowHeight; unmeasured rows report 0, which the app treats
+  // as "not measurable" and leaves on its estimate.
+  get offsetHeight() {{
+    if (this._offsetHeight !== null) return this._offsetHeight;
+    return globalThis.measureRowHeight ? globalThis.measureRowHeight(this) : 0;
+  }}
+  set offsetHeight(value) {{
+    this._offsetHeight = Number(value);
+  }}
+  // The app measures rows sub-pixel; the fake layout has only whole-pixel heights, so the
+  // rect simply reports the same height a real browser would round into offsetHeight.
+  getBoundingClientRect() {{
+    const height = this.offsetHeight;
+    return {{ top: 0, left: 0, right: 0, bottom: height, width: 0, height }};
   }}
   set scrollHeight(value) {{
     this._scrollHeight = Number(value);
@@ -190,6 +210,7 @@ globalThis.document = {{
     element.tagName = String(tag || "div").toUpperCase();
     // A freshly created row is not overflowed until a scenario says so.
     element.scrollHeight = 0;
+    if (globalThis.onCreateElement) globalThis.onCreateElement(element);
     return element;
   }},
   createTextNode(text) {{
@@ -256,10 +277,22 @@ eval(fs.readFileSync({json.dumps(str(TRANSCRIPT_VIEW_JS))}, "utf8"));
 // app deliberately does not expose to the page.
 const createRealPane = globalThis.TranscriptView.createPane;
 globalThis.paneModelSpies = [];
+// Reading the whole retained list is the thing detached scrolling must never do, so the
+// spy counts both the full-copy and the windowed read.
+globalThis.paneReads = {{ entries: 0, slice: 0 }};
 globalThis.TranscriptView.createPane = (budget) => {{
   const pane = createRealPane(budget);
-  paneModelSpies.push(pane);
-  return pane;
+  const spy = {{ ...pane }};
+  spy.entries = (...args) => {{
+    paneReads.entries += 1;
+    return pane.entries(...args);
+  }};
+  spy.slice = (...args) => {{
+    paneReads.slice += 1;
+    return pane.slice(...args);
+  }};
+  paneModelSpies.push(spy);
+  return spy;
 }};
 eval(fs.readFileSync({json.dumps(str(APP_JS))}, "utf8"));
 const send = (message) => socket.onmessage({{ data: JSON.stringify(message) }});
@@ -1976,6 +2009,1236 @@ class FollowedWindowTest(unittest.TestCase):
         self.assertEqual("BUTTON", result["tag"])
         self.assertEqual("button", result["type"])
         self.assertTrue(result["label"])
+
+
+# 1000 retained lines, a 240-row followed window, then one genuine scroll away from the
+# live tail. Every entry is estimated at 18px, so the virtual content is 18000px tall and
+# every offset below is exact rather than approximate.
+DETACH_1000 = """
+  const linux = term("slot0");
+  for (let index = 0; index < 1000; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `line-${index}` });
+  }
+  flushFrames();
+  linux.clientHeight = 400;
+  linux.scrollHeight = 18000;
+  linux.scrollTop = 100;
+  linux.dispatch("scroll");
+  flushFrames();
+"""
+
+# 300 leading lines, a sealed 100-line capture (its footer is retained entry 400), then
+# 700 trailing lines: 1101 retained entries, 19818px of virtual content.
+DETACH_CAPTURE = """
+  const linux = term("slot0");
+  for (let index = 0; index < 300; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `pre-${index}` });
+  }
+  send({ type: "exec", phase: "start", id: 7, target: "linux", cmd: "dmesg" });
+  for (let index = 0; index < 100; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `cap-${index}` });
+  }
+  send({
+    type: "exec", phase: "end", id: 7, target: "linux",
+    ended_by: "idle", ms: 12, bytes: 100, truncated: false, ok: true,
+  });
+  for (let index = 0; index < 700; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `post-${index}` });
+  }
+  flushFrames();
+  linux.clientHeight = 400;
+  linux.scrollHeight = 19818;
+  linux.scrollTop = 100;
+  linux.dispatch("scroll");
+  flushFrames();
+"""
+
+# 800 leading lines and a capture that is still open when the pane detaches, so its last
+# row is materialized and `openCaptures` still points at it. Sealing from here is what
+# used to splice a footer into the historical DOM behind the window's back. 900 retained
+# entries, one more once the footer lands, so 16218px of virtual content.
+DETACH_OPEN_CAPTURE = """
+  const linux = term("slot0");
+  for (let index = 0; index < 800; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `pre-${index}` });
+  }
+  send({ type: "exec", phase: "start", id: 7, target: "linux", cmd: "dmesg" });
+  for (let index = 0; index < 100; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `cap-${index}` });
+  }
+  flushFrames();
+  linux.clientHeight = 400;
+  linux.scrollHeight = 16218;
+  linux.scrollTop = 500;
+  linux.dispatch("scroll");
+  flushFrames();
+"""
+
+# Materialized rows read against the retained entries they claim to be showing, so a
+# misalignment names the row that drifted instead of failing as a bare count.
+ALIGNED_WITH = """
+  const alignedWith = (from, to) => {
+    const rows = linux.children.filter((c) => c.className !== "transcript-spacer");
+    const entries = paneModelSpies[0].slice(from, to);
+    if (rows.length !== entries.length) {
+      return `${rows.length} rows vs ${entries.length} entries`;
+    }
+    for (let i = 0; i < rows.length; i += 1) {
+      if (!rows[i].textContent.includes(entries[i].text)) {
+        return `row ${i} "${rows[i].textContent}" vs entry "${entries[i].text}"`;
+      }
+    }
+    return "aligned";
+  };
+"""
+
+# 800 leading lines and a 100-row capture still running when the pane detaches. The two
+# re-windows matter: they hand the capture's rows from the live append path to the history
+# renderer, which is the ownership boundary a capture spanning the detach has to survive.
+# 900 retained entries, 901 once the seal lands, so 16218px of virtual content.
+DETACH_SPANNING_CAPTURE = """
+  const linux = term("slot0");
+  for (let index = 0; index < 800; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `pre-${index}` });
+  }
+  send({ type: "exec", phase: "start", id: 7, target: "linux", cmd: "dmesg" });
+  for (let index = 0; index < 100; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `cap-${index}` });
+  }
+  flushFrames();
+  linux.clientHeight = 400;
+  linux.scrollHeight = 16218;
+  linux.scrollTop = 500;
+  linux.dispatch("scroll");
+  flushFrames();
+"""
+
+# One capture must read as one run: the chrome is counted across the whole pane, and the
+# capture rows have to occupy one unbroken stretch of it.
+CAPTURE_SHAPE = """
+  const shape = () => {
+    const rows = linux.children;
+    const spread = rows
+      .map((c, i) => (c.classList.contains("capture-row") ? i : -1))
+      .filter((i) => i >= 0);
+    return {
+      capTops: rows.filter((c) => c.classList.contains("cap-top")).length,
+      capBots: rows.filter((c) => c.classList.contains("cap-bot")).length,
+      feet: rows.filter((c) => c.className === "cap-foot").length,
+      gaps: rows.filter((c) => c.className === "ln gap").length,
+      gapAt: rows.findIndex((c) => c.className === "ln gap"),
+      topAt: rows.findIndex((c) => c.classList.contains("cap-top")),
+      footAt: rows.findIndex((c) => c.className === "cap-foot"),
+      capRows: spread.length,
+      contiguous: spread.length > 0 && spread[spread.length - 1] - spread[0] === spread.length - 1,
+      firstCapText: spread.length ? rows[spread[0]].textContent : "",
+      lastCapText: spread.length ? rows[spread[spread.length - 1]].textContent : "",
+    };
+  };
+  const jump = () => {
+    const node = document.getElementById("spine-body").children[0];
+    node.dispatch("click");
+    const hit = linux.children.find((c) => c.classList.contains("jump-flash"));
+    return {
+      node: node.className,
+      row: hit ? hit.textContent : null,
+      rowClass: hit ? hit.className : null,
+    };
+  };
+  const bufferAndSeal = (count) => {
+    for (let index = 0; index < count; index += 1) {
+      send({ type: "line", target: "linux", direction: "<<<", text: `buffered-${index}` });
+    }
+    send({
+      type: "exec", phase: "end", id: 7, target: "linux",
+      ended_by: "idle", ms: 12, bytes: 100, truncated: false, ok: true,
+    });
+    flushFrames();
+  };
+  const reattach = () => {
+    linux.scrollTop = 15818;
+    linux.dispatch("scroll");
+    flushFrames();
+  };
+"""
+
+# Unmeasured fake rows report 0px, which collapses the virtual extent and leaves the pane
+# unable to notice it has scrolled off its own window — so no re-window ever happens.
+# Reporting the same 18px the height index estimates makes the geometry coherent, and a
+# scroll then re-windows for the reason it would in a browser.
+MEASURED_ROWS = """
+  globalThis.measureRowHeight = () => 18;
+"""
+
+SCROLL_TO = """
+  const scrollTo = (top) => {
+    linux.scrollTop = top;
+    linux.dispatch("scroll");
+    flushFrames();
+  };
+  const kids = () => linux.children;
+  const chrome = () => {
+    const rows = linux.children;
+    return {
+      children: rows.length,
+      counted: rows.filter((c) => c.classList.contains("ln")).length,
+      tops: rows.filter((c) => c.classList.contains("cap-top")).length,
+      mids: rows.filter((c) => c.classList.contains("cap-mid")).length,
+      bots: rows.filter((c) => c.classList.contains("cap-bot")).length,
+      feet: rows.filter((c) => c.className === "cap-foot").length,
+    };
+  };
+"""
+
+
+class DetachedHistoryWindowTest(unittest.TestCase):
+    def test_scrolling_away_renders_an_older_slice_between_two_spacers(self):
+        result = run_ui_scenario(
+            DETACH_1000
+            + """
+  const rows = linux.children;
+  return {
+    children: rows.length,
+    counted: rows.filter((c) => c.classList.contains("ln")).length,
+    spacers: rows.filter((c) => c.className === "transcript-spacer").length,
+    topClass: rows[0].className,
+    bottomClass: rows[rows.length - 1].className,
+    topHeight: rows[0].style.height,
+    bottomHeight: rows[rows.length - 1].style.height,
+    firstText: rows[1].textContent,
+    lastText: rows[rows.length - 2].textContent,
+    retained: paneModelSpies[0].countedSize(),
+  };
+"""
+        )
+
+        self.assertEqual(242, result["children"])
+        self.assertEqual(240, result["counted"])
+        self.assertEqual(2, result["spacers"])
+        self.assertEqual("transcript-spacer", result["topClass"])
+        self.assertEqual("transcript-spacer", result["bottomClass"])
+        # 645 unmaterialized entries above, 115 below, at the 18px estimate.
+        self.assertEqual("11610px", result["topHeight"])
+        self.assertEqual("2070px", result["bottomHeight"])
+        self.assertIn("line-645", result["firstText"])
+        self.assertIn("line-884", result["lastText"])
+        self.assertEqual(1000, result["retained"])
+
+    def test_repeated_window_shifts_expose_contiguous_ordered_lines(self):
+        result = run_ui_scenario(
+            DETACH_1000
+            + SCROLL_TO
+            + r"""
+  const snapshot = () => {
+    const nums = linux.children
+      .filter((c) => c.classList.contains("ln"))
+      .map((c) => Number(c.textContent.match(/line-(\d+)/)[1]));
+    let contiguous = true;
+    for (let i = 1; i < nums.length; i += 1) {
+      if (nums[i] !== nums[i - 1] + 1) contiguous = false;
+    }
+    return {
+      count: nums.length,
+      unique: new Set(nums).size,
+      first: nums[0],
+      last: nums[nums.length - 1],
+      contiguous,
+      top: linux.children[0].style.height,
+    };
+  };
+  const shots = [snapshot()];
+  for (const top of [11700, 3600, 8100, 900, 15000]) {
+    scrollTo(top);
+    shots.push(snapshot());
+  }
+  return { shots };
+"""
+        )
+
+        expected = [(645, 884), (530, 769), (80, 319), (330, 569), (0, 239), (713, 952)]
+        for shot, (first, last) in zip(result["shots"], expected):
+            with self.subTest(first=first):
+                self.assertEqual(240, shot["count"])
+                self.assertEqual(240, shot["unique"])
+                self.assertTrue(shot["contiguous"])
+                self.assertEqual(first, shot["first"])
+                self.assertEqual(last, shot["last"])
+        self.assertEqual("0px", result["shots"][4]["top"])
+
+    def test_slice_holding_a_whole_capture_draws_one_box_and_one_footer(self):
+        result = run_ui_scenario(
+            DETACH_CAPTURE
+            + SCROLL_TO
+            + """
+  scrollTo(6300);
+  const rows = linux.children;
+  return {
+    ...chrome(),
+    topRowClass: rows[71].className,
+    topRowText: rows[71].textContent,
+    botRowClass: rows[170].className,
+    botRowText: rows[170].textContent,
+    footClass: rows[171].className,
+    footText: rows[171].textContent,
+    beforeCapture: rows[70].textContent,
+    afterFoot: rows[172].textContent,
+    execIds: [...new Set(rows.filter((c) => c.classList.contains("capture-row")).map((c) => c.dataset.execId))],
+  };
+"""
+        )
+
+        self.assertEqual(242, result["children"])
+        self.assertEqual(239, result["counted"])
+        self.assertEqual(1, result["tops"])
+        self.assertEqual(98, result["mids"])
+        self.assertEqual(1, result["bots"])
+        self.assertEqual(1, result["feet"])
+        self.assertEqual("ln dev capture-row cap-top", result["topRowClass"])
+        self.assertIn("cap-0", result["topRowText"])
+        self.assertEqual("ln dev capture-row cap-bot", result["botRowClass"])
+        self.assertIn("cap-99", result["botRowText"])
+        self.assertEqual("cap-foot", result["footClass"])
+        self.assertIn("closed on idle", result["footText"])
+        self.assertIn("pre-299", result["beforeCapture"])
+        self.assertIn("post-0", result["afterFoot"])
+        self.assertEqual(["7"], result["execIds"])
+
+    def test_slice_cut_by_a_capture_boundary_keeps_the_box_without_a_stray_footer(self):
+        result = run_ui_scenario(
+            DETACH_CAPTURE
+            + SCROLL_TO
+            + """
+  scrollTo(3600);
+  const ending = {
+    ...chrome(),
+    topRowClass: kids()[221].className,
+    topRowText: kids()[221].textContent,
+    botRowClass: kids()[240].className,
+    botRowText: kids()[240].textContent,
+  };
+  scrollTo(8100);
+  const starting = {
+    ...chrome(),
+    topRowClass: kids()[1].className,
+    topRowText: kids()[1].textContent,
+    botRowClass: kids()[70].className,
+    botRowText: kids()[70].textContent,
+    footClass: kids()[71].className,
+  };
+  return { ending, starting };
+"""
+        )
+
+        ending = result["ending"]
+        self.assertEqual(240, ending["counted"])
+        self.assertEqual(1, ending["tops"])
+        self.assertEqual(18, ending["mids"])
+        self.assertEqual(1, ending["bots"])
+        self.assertEqual(0, ending["feet"])
+        self.assertEqual("ln dev capture-row cap-top", ending["topRowClass"])
+        self.assertIn("cap-0", ending["topRowText"])
+        self.assertEqual("ln dev capture-row cap-bot", ending["botRowClass"])
+        self.assertIn("cap-19", ending["botRowText"])
+
+        starting = result["starting"]
+        self.assertEqual(239, starting["counted"])
+        self.assertEqual(1, starting["tops"])
+        self.assertEqual(68, starting["mids"])
+        self.assertEqual(1, starting["bots"])
+        self.assertEqual(1, starting["feet"])
+        self.assertEqual("ln dev capture-row cap-top", starting["topRowClass"])
+        self.assertIn("cap-30", starting["topRowText"])
+        self.assertEqual("ln dev capture-row cap-bot", starting["botRowClass"])
+        self.assertIn("cap-99", starting["botRowText"])
+        self.assertEqual("cap-foot", starting["footClass"])
+
+    def test_transcript_gap_renders_as_one_row_inside_a_historical_slice(self):
+        result = run_ui_scenario(
+            """
+  const linux = term("slot0");
+"""
+            + SCROLL_TO
+            + """
+  for (let index = 0; index < 300; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `line-${index}` });
+  }
+  flushFrames();
+  linux.clientHeight = 400;
+  linux.scrollHeight = 100000;
+  linux.scrollTop = 100;
+  linux.dispatch("scroll");
+  for (let index = 0; index < 40; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `omitted-${index}` });
+  }
+  linux.scrollTop = 99600;
+  linux.dispatch("scroll");
+  for (let index = 0; index < 500; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `tail-${index}` });
+  }
+  flushFrames();
+  linux.scrollTop = 100;
+  linux.dispatch("scroll");
+  scrollTo(5400);
+  const rows = linux.children;
+  return {
+    children: rows.length,
+    counted: rows.filter((c) => c.classList.contains("ln")).length,
+    gaps: rows.filter((c) => c.className === "ln gap").length,
+    gapClass: rows[121].className,
+    gapText: rows[121].textContent,
+    beforeGap: rows[120].textContent,
+    afterGap: rows[122].textContent,
+    firstText: rows[1].textContent,
+    retained: paneModelSpies[0].countedSize(),
+  };
+"""
+        )
+
+        self.assertEqual(242, result["children"])
+        self.assertEqual(240, result["counted"])
+        self.assertEqual(1, result["gaps"])
+        self.assertEqual("ln gap", result["gapClass"])
+        self.assertEqual(
+            "— 8 lines in session log, not in this view —",
+            result["gapText"],
+        )
+        self.assertIn("line-299", result["beforeGap"])
+        self.assertIn("omitted-8", result["afterGap"])
+        self.assertIn("line-180", result["firstText"])
+        self.assertEqual(833, result["retained"])
+
+    def test_detach_and_rewindow_keep_the_top_visible_row_pinned(self):
+        result = run_ui_scenario(
+            """
+  const linux = term("slot0");
+  for (let index = 0; index < 1000; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `line-${index}` });
+  }
+  flushFrames();
+  linux.clientHeight = 400;
+  linux.scrollHeight = 18000;
+  linux.scrollTop = 100;
+  const attached = { scrollTop: linux.scrollTop, firstText: linux.children[0].textContent };
+  linux.dispatch("scroll");
+  const detached = { scrollTop: linux.scrollTop, top: linux.children[0].style.height };
+  flushFrames();
+  const windowed = { scrollTop: linux.scrollTop, top: linux.children[0].style.height };
+  linux.scrollTop = 11700;
+  linux.dispatch("scroll");
+  flushFrames();
+  const shifted = { scrollTop: linux.scrollTop, top: linux.children[0].style.height };
+  return { attached, detached, windowed, shifted };
+"""
+        )
+
+        # Attached: 100px into a window whose first row is retained entry 760.
+        self.assertEqual(100, result["attached"]["scrollTop"])
+        self.assertIn("line-760", result["attached"]["firstText"])
+        # Detaching inserts 13680px of history above that row, so the row keeps its
+        # position only if scrollTop moves by exactly the same amount.
+        self.assertEqual("13680px", result["detached"]["top"])
+        self.assertEqual(13780, result["detached"]["scrollTop"])
+        # Re-windowing moves the slice but not the pixel the operator is looking at:
+        # entry 765 starts at 13770px, and the viewport stays 10px into it.
+        self.assertEqual("11610px", result["windowed"]["top"])
+        self.assertEqual(13780, result["windowed"]["scrollTop"])
+        self.assertEqual("9540px", result["shifted"]["top"])
+        self.assertEqual(11700, result["shifted"]["scrollTop"])
+
+    def test_expanding_a_row_corrects_the_index_without_moving_the_anchor(self):
+        result = run_ui_scenario(
+            """
+  globalThis.onCreateElement = (el) => {
+    el.scrollHeight = 72;
+    el.clientHeight = 24;
+  };
+  globalThis.measureRowHeight = (row) =>
+    String(row.className).split(" ").includes("expanded") ? 54 : 18;
+"""
+            + DETACH_1000
+            + """
+  const rows = linux.children;
+  const target = rows[56];
+  const toggle = target.children[2];
+  const before = {
+    scrollTop: linux.scrollTop,
+    top: rows[0].style.height,
+    bottom: rows[rows.length - 1].style.height,
+    rowClass: target.className,
+  };
+  linux.dispatch("click", { target: toggle });
+  return {
+    before,
+    scrollTop: linux.scrollTop,
+    top: rows[0].style.height,
+    bottom: rows[rows.length - 1].style.height,
+    rowClass: target.className,
+    targetText: target.textContent,
+  };
+"""
+        )
+
+        self.assertIn("line-700", result["targetText"])
+        self.assertNotIn("expanded", result["before"]["rowClass"].split(" "))
+        self.assertIn("expanded", result["rowClass"].split(" "))
+        self.assertEqual(13780, result["before"]["scrollTop"])
+        # Entry 700 grew 18px -> 54px above the anchor, so the anchor row only stays put
+        # if scrollTop absorbs the same 36px. The spacers bound unchanged content.
+        self.assertEqual(13816, result["scrollTop"])
+        self.assertEqual(result["before"]["top"], result["top"])
+        self.assertEqual(result["before"]["bottom"], result["bottom"])
+
+    def test_flood_while_detached_leaves_history_alone_and_recovers_once_at_the_bottom(self):
+        result = run_ui_scenario(
+            DETACH_1000
+            + """
+  const texts = () => linux.children.map((c) => c.textContent);
+  const before = texts();
+  for (let index = 0; index < 100; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `flood-${index}` });
+  }
+  flushFrames();
+  const during = texts();
+  const detached = {
+    spacers: linux.children.filter((c) => c.className === "transcript-spacer").length,
+    firstText: linux.children[1].textContent,
+  };
+  linux.scrollTop = 17600;
+  linux.dispatch("scroll");
+  flushFrames();
+  send({ type: "line", target: "linux", direction: "<<<", text: "after-reattach" });
+  const rows = linux.children;
+  const rowTexts = texts();
+  return {
+    unchanged: JSON.stringify(before) === JSON.stringify(during),
+    detached,
+    spacers: rows.filter((c) => c.className === "transcript-spacer").length,
+    counted: rows.filter((c) => c.classList.contains("ln")).length,
+    gaps: rows.filter((c) => c.className === "ln gap").length,
+    gapIndex: rows.findIndex((c) => c.className === "ln gap"),
+    gapText: rowTexts[rows.findIndex((c) => c.className === "ln gap")],
+    firstText: rowTexts[0],
+    lastText: rowTexts[rowTexts.length - 1],
+    text: linux.textContent,
+  };
+"""
+        )
+
+        self.assertTrue(result["unchanged"])
+        self.assertEqual(2, result["detached"]["spacers"])
+        self.assertIn("line-645", result["detached"]["firstText"])
+        self.assertEqual(0, result["spacers"])
+        self.assertEqual(240, result["counted"])
+        self.assertEqual(1, result["gaps"])
+        self.assertEqual(
+            "— 68 lines in session log, not in this view —",
+            result["gapText"],
+        )
+        self.assertIn("line-999", result["text"])
+        self.assertIn("flood-68", result["text"])
+        self.assertNotIn("flood-67", result["text"])
+        self.assertIn("after-reattach", result["lastText"])
+
+    def test_tightening_retention_while_detached_clamps_history_without_a_gap(self):
+        result = run_ui_scenario(
+            DETACH_1000
+            + """
+  document.getElementById("live-depth-500").dispatch("click");
+  const rows = linux.children;
+  return {
+    children: rows.length,
+    counted: rows.filter((c) => c.classList.contains("ln")).length,
+    gaps: rows.filter((c) => c.className === "ln gap").length,
+    spacers: rows.filter((c) => c.className === "transcript-spacer").length,
+    top: rows[0].style.height,
+    bottom: rows[rows.length - 1].style.height,
+    firstText: rows[1].textContent,
+    lastText: rows[rows.length - 2].textContent,
+    retained: paneModelSpies[0].countedSize(),
+    scrollTop: linux.scrollTop,
+  };
+"""
+        )
+
+        self.assertEqual(242, result["children"])
+        self.assertEqual(240, result["counted"])
+        self.assertEqual(0, result["gaps"])
+        self.assertEqual(2, result["spacers"])
+        self.assertEqual(500, result["retained"])
+        # The 500 oldest entries left the model, so the same lines are still on screen
+        # with 500 fewer estimated rows (9000px) above them.
+        self.assertEqual("2610px", result["top"])
+        self.assertEqual("2070px", result["bottom"])
+        self.assertIn("line-645", result["firstText"])
+        self.assertIn("line-884", result["lastText"])
+        self.assertEqual(4780, result["scrollTop"])
+
+    def test_clear_drops_history_and_panes_hold_independent_virtual_state(self):
+        result = run_ui_scenario(
+            """
+  const linux = term("slot0");
+  const rtos = term("slot1");
+  for (let index = 0; index < 1000; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `line-${index}` });
+    send({ type: "line", target: "rtos", direction: "<<<", text: `rtos-${index}` });
+  }
+  flushFrames();
+  linux.clientHeight = 400;
+  linux.scrollHeight = 18000;
+  linux.scrollTop = 100;
+  linux.dispatch("scroll");
+  flushFrames();
+  const spacers = (el) => el.children.filter((c) => c.className === "transcript-spacer").length;
+  send({ type: "line", target: "rtos", direction: "<<<", text: "rtos-live" });
+  send({ type: "line", target: "linux", direction: "<<<", text: "linux-omitted" });
+  const independent = {
+    linuxSpacers: spacers(linux),
+    rtosSpacers: spacers(rtos),
+    rtosRows: rtos.children.length,
+    rtosLive: rtos.children[rtos.children.length - 1].textContent,
+    linuxOmitted: linux.textContent.includes("linux-omitted"),
+  };
+  document.getElementById("btn-clear").dispatch("click");
+  const cleared = { linux: linux.children.length, rtos: rtos.children.length };
+  send({ type: "line", target: "linux", direction: "<<<", text: "after-clear" });
+  return {
+    independent,
+    cleared,
+    linuxAfter: linux.children.length,
+    linuxSpacersAfter: spacers(linux),
+    linuxText: linux.textContent,
+    retained: paneModelSpies[0].countedSize(),
+  };
+"""
+        )
+
+        self.assertEqual(2, result["independent"]["linuxSpacers"])
+        self.assertEqual(0, result["independent"]["rtosSpacers"])
+        self.assertEqual(240, result["independent"]["rtosRows"])
+        self.assertIn("rtos-live", result["independent"]["rtosLive"])
+        self.assertFalse(result["independent"]["linuxOmitted"])
+        self.assertEqual({"linux": 0, "rtos": 0}, result["cleared"])
+        self.assertEqual(1, result["linuxAfter"])
+        self.assertEqual(0, result["linuxSpacersAfter"])
+        self.assertIn("after-clear", result["linuxText"])
+        self.assertEqual(1, result["retained"])
+
+    def test_scroll_bursts_coalesce_into_one_frame_without_rescanning_retention(self):
+        result = run_ui_scenario(
+            DETACH_1000
+            + """
+  const before = { slice: paneReads.slice, entries: paneReads.entries };
+  const childrenBefore = childrenReads;
+  for (const top of [13000, 12800, 12600, 12400, 12200, 12000, 11800, 11600, 11400, 11200, 11000, 10800]) {
+    linux.scrollTop = top;
+    linux.dispatch("scroll");
+  }
+  const duringBurst = { slice: paneReads.slice - before.slice, frames: frameCallbacks.length };
+  flushFrames();
+  const scans = childrenReads - childrenBefore;
+  return {
+    duringBurst,
+    scans,
+    slice: paneReads.slice - before.slice,
+    entries: paneReads.entries - before.entries,
+    counted: linux.children.filter((c) => c.classList.contains("ln")).length,
+  };
+"""
+        )
+
+        self.assertEqual(0, result["duringBurst"]["slice"])
+        self.assertEqual(1, result["duringBurst"]["frames"])
+        self.assertEqual(1, result["slice"])
+        self.assertEqual(0, result["entries"])
+        self.assertEqual(0, result["scans"])
+        self.assertEqual(240, result["counted"])
+
+    def test_sealing_a_capture_while_detached_keeps_rows_and_model_aligned(self):
+        result = run_ui_scenario(
+            DETACH_OPEN_CAPTURE
+            + SCROLL_TO
+            + ALIGNED_WITH
+            + """
+  send({
+    type: "exec", phase: "end", id: 7, target: "linux",
+    ended_by: "idle", ms: 12, bytes: 100, truncated: false, ok: true,
+  });
+  flushFrames();
+  const sealed = {
+    ...chrome(),
+    spacers: kids().filter((c) => c.className === "transcript-spacer").length,
+    top: kids()[0].style.height,
+    bottom: kids()[kids().length - 1].style.height,
+    scrollTop: linux.scrollTop,
+    aligned: alignedWith(660, 900),
+  };
+  scrollTo(15500);
+  const rewindowed = {
+    ...chrome(),
+    top: kids()[0].style.height,
+    bottom: kids()[kids().length - 1].style.height,
+    footClass: kids()[240].className,
+    footText: kids()[240].textContent,
+    lastCapText: kids()[239].textContent,
+    firstText: kids()[1].textContent,
+    aligned: alignedWith(661, 901),
+  };
+  linux.scrollTop = 15818;
+  linux.dispatch("scroll");
+  flushFrames();
+  const reattached = {
+    ...chrome(),
+    spacers: kids().filter((c) => c.className === "transcript-spacer").length,
+    footClass: kids()[239].className,
+    firstText: kids()[0].textContent,
+    aligned: alignedWith(661, 901),
+  };
+  send({ type: "line", target: "linux", direction: "<<<", text: "after-reattach" });
+  return {
+    sealed,
+    rewindowed,
+    reattached,
+    afterReattachText: kids()[kids().length - 1].textContent,
+    liveChildren: kids().length,
+  };
+"""
+        )
+
+        # Sealing while detached must leave the historical DOM exactly as the slice
+        # describes it: the footer is a retained entry at model position 900, which is
+        # outside the materialized [660, 900), so it is not drawn yet.
+        self.assertEqual("aligned", result["sealed"]["aligned"])
+        self.assertEqual(242, result["sealed"]["children"])
+        self.assertEqual(240, result["sealed"]["counted"])
+        self.assertEqual(0, result["sealed"]["feet"])
+        self.assertEqual(2, result["sealed"]["spacers"])
+        self.assertEqual("11880px", result["sealed"]["top"])
+        # The retained model grew by that footer, so the virtual extent has to grow with
+        # it. A stale bottom spacer is what puts the true virtual bottom one entry too
+        # high and reattaches Follow early.
+        self.assertEqual("18px", result["sealed"]["bottom"])
+        self.assertEqual(12380, result["sealed"]["scrollTop"])
+
+        # Re-windowing onto the tail draws the footer from the model, exactly once, in
+        # its retained position right after the capture's last row.
+        self.assertEqual("aligned", result["rewindowed"]["aligned"])
+        self.assertEqual(242, result["rewindowed"]["children"])
+        self.assertEqual(239, result["rewindowed"]["counted"])
+        self.assertEqual(1, result["rewindowed"]["feet"])
+        self.assertEqual(1, result["rewindowed"]["tops"])
+        self.assertEqual(98, result["rewindowed"]["mids"])
+        self.assertEqual(1, result["rewindowed"]["bots"])
+        self.assertEqual("11898px", result["rewindowed"]["top"])
+        self.assertEqual("0px", result["rewindowed"]["bottom"])
+        self.assertEqual("cap-foot", result["rewindowed"]["footClass"])
+        self.assertIn("closed on idle", result["rewindowed"]["footText"])
+        self.assertIn("cap-99", result["rewindowed"]["lastCapText"])
+        self.assertIn("pre-661", result["rewindowed"]["firstText"])
+
+        self.assertEqual("aligned", result["reattached"]["aligned"])
+        self.assertEqual(0, result["reattached"]["spacers"])
+        self.assertEqual(240, result["reattached"]["children"])
+        self.assertEqual(1, result["reattached"]["feet"])
+        self.assertEqual("cap-foot", result["reattached"]["footClass"])
+        self.assertIn("pre-661", result["reattached"]["firstText"])
+        self.assertIn("after-reattach", result["afterReattachText"])
+        self.assertEqual(241, result["liveChildren"])
+
+    def test_capture_spanning_detach_reattaches_as_one_run_without_a_gap(self):
+        result = run_ui_scenario(
+            DETACH_SPANNING_CAPTURE
+            + SCROLL_TO
+            + CAPTURE_SHAPE
+            + """
+  scrollTo(3600);
+  scrollTo(15500);
+  const historical = shape();
+  bufferAndSeal(5);
+  reattach();
+  const model = paneModelSpies[0]
+    .slice(0, paneModelSpies[0].size())
+    .map((e) => (e.kind === "foot" ? "foot" : e.captureId === 7 ? "cap" : "line"));
+  return {
+    historical,
+    shape: shape(),
+    jump: jump(),
+    model: {
+      caps: model.filter((k) => k === "cap").length,
+      feet: model.filter((k) => k === "foot").length,
+      contiguous:
+        model.lastIndexOf("cap") - model.indexOf("cap") ===
+        model.filter((k) => k === "cap").length - 1,
+      footLast: model.indexOf("foot") === model.length - 1,
+    },
+  };
+"""
+        )
+
+        # The history renderer owns the capture's rows before the buffered ones replay.
+        self.assertEqual(1, result["historical"]["capTops"])
+        self.assertEqual(100, result["historical"]["capRows"])
+
+        # Replay has to continue that one run rather than open a second box below it.
+        self.assertEqual(0, result["shape"]["gaps"])
+        self.assertEqual(1, result["shape"]["capTops"])
+        self.assertEqual(1, result["shape"]["capBots"])
+        self.assertEqual(1, result["shape"]["feet"])
+        self.assertTrue(result["shape"]["contiguous"])
+        self.assertEqual(105, result["shape"]["capRows"])
+        self.assertIn("cap-0", result["shape"]["firstCapText"])
+        self.assertIn("buffered-4", result["shape"]["lastCapText"])
+        # The footer seals the whole run, so it sits directly under its last row.
+        self.assertEqual(
+            result["shape"]["topAt"] + result["shape"]["capRows"],
+            result["shape"]["footAt"],
+        )
+
+        self.assertIn("jump-hit", result["jump"]["node"])
+        self.assertIn("cap-0", result["jump"]["row"])
+        self.assertIn("cap-top", result["jump"]["rowClass"].split(" "))
+
+        # Retention has to agree, since a later detach re-draws this region from it.
+        self.assertEqual(105, result["model"]["caps"])
+        self.assertEqual(1, result["model"]["feet"])
+        self.assertTrue(result["model"]["contiguous"])
+        self.assertTrue(result["model"]["footLast"])
+
+    def test_capture_spanning_detach_moves_after_its_gap_as_one_run(self):
+        result = run_ui_scenario(
+            DETACH_SPANNING_CAPTURE
+            + SCROLL_TO
+            + CAPTURE_SHAPE
+            + """
+  scrollTo(3600);
+  scrollTo(15500);
+  bufferAndSeal(40);
+  reattach();
+  const rows = linux.children;
+  return {
+    shape: shape(),
+    jump: jump(),
+    gapText: rows[rows.findIndex((c) => c.className === "ln gap")].textContent,
+  };
+"""
+        )
+
+        # 40 buffered captured rows overflow the 32-row tail, so 8 are evicted and the
+        # recovery Gap appears. The already materialized run has to move below it whole.
+        self.assertEqual(1, result["shape"]["gaps"])
+        self.assertEqual(
+            "— 8 lines in session log, not in this view —",
+            result["gapText"],
+        )
+        self.assertLess(result["shape"]["gapAt"], result["shape"]["topAt"])
+        self.assertEqual(1, result["shape"]["capTops"])
+        self.assertEqual(1, result["shape"]["capBots"])
+        self.assertEqual(1, result["shape"]["feet"])
+        self.assertTrue(result["shape"]["contiguous"])
+        self.assertEqual(132, result["shape"]["capRows"])
+        self.assertIn("cap-0", result["shape"]["firstCapText"])
+        self.assertIn("buffered-39", result["shape"]["lastCapText"])
+        self.assertEqual(
+            result["shape"]["topAt"] + result["shape"]["capRows"],
+            result["shape"]["footAt"],
+        )
+
+        self.assertIn("jump-hit", result["jump"]["node"])
+        self.assertIn("cap-0", result["jump"]["row"])
+        self.assertIn("cap-top", result["jump"]["rowClass"].split(" "))
+
+    def test_second_detach_over_a_recovered_capture_shows_the_model_visual_order(self):
+        result = run_ui_scenario(
+            MEASURED_ROWS
+            + DETACH_SPANNING_CAPTURE
+            + SCROLL_TO
+            + CAPTURE_SHAPE
+            + """
+  scrollTo(3600);
+  scrollTo(15500);
+  bufferAndSeal(40);
+  reattach();
+  const live = shape();
+  const model = paneModelSpies[0]
+    .slice(0, paneModelSpies[0].countedSize() + 8)
+    .map((e) => (e.kind === "gap" ? "gap" : e.kind === "foot" ? "foot" : e.captureId === 7 ? "cap" : "line"));
+  const gapAt = model.indexOf("gap");
+  const capFrom = model.indexOf("cap");
+  const capTo = model.lastIndexOf("cap");
+  const footAt = model.indexOf("foot");
+  // Detach again. The pane ignores the scroll that leaves the tail and takes the next
+  // one as the genuine gesture, at which point history mode adopts the rows already
+  // materialized rather than re-rendering them.
+  scrollTo(8000);
+  scrollTo(1000);
+  // Every row the pane is holding right now is branded, so a slice that still carries
+  // the brand would mean the renderer never ran and these assertions are reading
+  // leftover live rows.
+  linux.children.forEach((row) => { row.__live = true; });
+  const beforeReads = paneReads.slice;
+  // Both of these land outside the materialized band, so each one has to draw a new
+  // slice straight from the retained model.
+  scrollTo(5000);
+  scrollTo(15000);
+  const revisited = shape();
+  return {
+    live,
+    model: {
+      gapAt,
+      capFrom,
+      capTo,
+      footAt,
+      gaps: model.filter((k) => k === "gap").length,
+      feet: model.filter((k) => k === "foot").length,
+      caps: model.filter((k) => k === "cap").length,
+      contiguous: capTo - capFrom === model.filter((k) => k === "cap").length - 1,
+    },
+    rendered: {
+      reads: paneReads.slice - beforeReads,
+      carriedOver: linux.children.filter(
+        (row) => row.__live === true && row.className !== "transcript-spacer",
+      ).length,
+      spacersKept: linux.children.filter(
+        (row) => row.__live === true && row.className === "transcript-spacer",
+      ).length,
+      rows: linux.children.length,
+    },
+    revisited,
+    jump: jump(),
+  };
+"""
+        )
+
+        # The history renderer really ran: two re-windows, each reading the model, and not
+        # one row object survived them. What follows is drawn from retention.
+        self.assertEqual(2, result["rendered"]["reads"])
+        self.assertEqual(0, result["rendered"]["carriedOver"])
+        self.assertEqual(242, result["rendered"]["rows"])
+        # The two spacers are the frame around the slice and are meant to be reused.
+        self.assertEqual(2, result["rendered"]["spacersKept"])
+
+        # Live recovery: one Gap, one run, one seal.
+        self.assertEqual(1, result["live"]["gaps"])
+        self.assertEqual(1, result["live"]["capTops"])
+        self.assertEqual(1, result["live"]["capBots"])
+        self.assertEqual(1, result["live"]["feet"])
+        self.assertTrue(result["live"]["contiguous"])
+
+        # The retained model carries that same order, which is the whole point: the Gap
+        # first, then one unbroken run, then the seal after every replayed row.
+        self.assertEqual(1, result["model"]["gaps"])
+        self.assertEqual(1, result["model"]["feet"])
+        self.assertEqual(132, result["model"]["caps"])
+        self.assertTrue(result["model"]["contiguous"])
+        self.assertLess(result["model"]["gapAt"], result["model"]["capFrom"])
+        self.assertLess(result["model"]["capTo"], result["model"]["footAt"])
+
+        # Re-windowing over the region draws from the model, so it must agree with what
+        # the operator saw live rather than showing a second box or an early seal.
+        self.assertEqual(1, result["revisited"]["gaps"])
+        self.assertEqual(1, result["revisited"]["capTops"])
+        self.assertEqual(1, result["revisited"]["capBots"])
+        self.assertEqual(1, result["revisited"]["feet"])
+        self.assertTrue(result["revisited"]["contiguous"])
+        self.assertEqual(132, result["revisited"]["capRows"])
+        self.assertIn("cap-0", result["revisited"]["firstCapText"])
+        self.assertIn("buffered-39", result["revisited"]["lastCapText"])
+        self.assertLess(result["revisited"]["gapAt"], result["revisited"]["topAt"])
+        self.assertEqual(
+            result["revisited"]["topAt"] + result["revisited"]["capRows"],
+            result["revisited"]["footAt"],
+        )
+
+        # Trace Jump still anchors the unified top even though the slice was re-rendered.
+        self.assertIn("jump-hit", result["jump"]["node"])
+        self.assertIn("cap-0", result["jump"]["row"])
+        self.assertIn("cap-top", result["jump"]["rowClass"].split(" "))
+
+    def test_a_row_interleaved_into_a_running_capture_stays_below_the_run(self):
+        result = run_ui_scenario(
+            MEASURED_ROWS
+            + DETACH_SPANNING_CAPTURE
+            + SCROLL_TO
+            + CAPTURE_SHAPE
+            + """
+  const kinds = () => paneModelSpies[0]
+    .slice(0, paneModelSpies[0].size())
+    .map((e) => (e.kind === "foot" ? "foot" : e.captureId === 7 ? "cap" : e.text));
+  const runShape = () => {
+    const model = kinds();
+    const caps = model.filter((k) => k === "cap").length;
+    return {
+      caps,
+      contiguous: model.lastIndexOf("cap") - model.indexOf("cap") === caps - 1,
+      noteBelowRun: model.indexOf("interleaved-note") > model.lastIndexOf("cap"),
+      typedBelowRun: model.indexOf("typed-mid-capture") > model.lastIndexOf("cap"),
+      footAt: model.indexOf("foot"),
+      capTo: model.lastIndexOf("cap"),
+      noteAt: model.indexOf("interleaved-note"),
+    };
+  };
+  scrollTo(3600);
+  scrollTo(15500);
+  for (let index = 0; index < 5; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `buffered-${index}` });
+  }
+  // Reattach with the Exec still running, then let a system row and an Operator write
+  // barge in before more captured output arrives.
+  reattach();
+  send({ type: "line", target: "linux", direction: "---", text: "interleaved-note" });
+  send({ type: "line", target: "linux", direction: ">>>", text: "typed-mid-capture" });
+  send({ type: "line", target: "linux", direction: "<<<", text: "after-note-0" });
+  send({ type: "line", target: "linux", direction: "<<<", text: "after-note-1" });
+  flushFrames();
+  const live = shape();
+  const liveModel = runShape();
+
+  // Detach a second time. The pane ignores the scroll that leaves the tail, adopts the
+  // materialized rows on the next one, and only then can a scroll outside that band
+  // force the renderer to draw a fresh slice from retention.
+  scrollTo(8000);
+  scrollTo(1000);
+  linux.children.forEach((row) => { row.__live = true; });
+  const beforeReads = paneReads.slice;
+  scrollTo(5000);
+  scrollTo(15000);
+  const rendered = {
+    reads: paneReads.slice - beforeReads,
+    carriedOver: linux.children.filter(
+      (row) => row.__live === true && row.className !== "transcript-spacer",
+    ).length,
+  };
+  const historical = shape();
+  const rows = linux.children;
+  const capIdx = rows
+    .map((c, i) => (c.classList.contains("capture-row") ? i : -1))
+    .filter((i) => i >= 0);
+  const historicalOrder = {
+    noteAt: rows.findIndex((c) => c.textContent.includes("interleaved-note")),
+    typedAt: rows.findIndex((c) => c.textContent.includes("typed-mid-capture")),
+    capTo: capIdx[capIdx.length - 1],
+    lastCapText: rows[capIdx[capIdx.length - 1]].textContent,
+  };
+  const jumped = jump();
+
+  // Seal while the pane is still detached: the footer is a model entry, so it has to
+  // land on the run rather than under whatever happens to be at the tail.
+  send({
+    type: "exec", phase: "end", id: 7, target: "linux",
+    ended_by: "idle", ms: 12, bytes: 100, truncated: false, ok: true,
+  });
+  flushFrames();
+  // A seal that lands inside the materialized band is still only drawn when the slice is
+  // rendered again, so re-window across it before reading the footer's position.
+  scrollTo(5000);
+  scrollTo(15000);
+  const sealedRows = linux.children;
+  const sealedFootAt = sealedRows.findIndex((c) => c.className === "cap-foot");
+  return {
+    live,
+    liveModel,
+    rendered,
+    historical,
+    historicalOrder,
+    jump: jumped,
+    sealedModel: runShape(),
+    sealed: {
+      ...shape(),
+      aboveFoot: sealedFootAt < 0 ? "" : sealedRows[sealedFootAt - 1].textContent,
+      belowFoot: sealedFootAt < 0 ? "" : sealedRows[sealedFootAt + 1].textContent,
+    },
+  };
+"""
+        )
+
+        # Live: one box, still running, and the two non-captured rows sit below the whole
+        # run rather than splitting it.
+        self.assertEqual(1, result["live"]["capTops"])
+        self.assertEqual(0, result["live"]["feet"])
+        self.assertEqual(107, result["live"]["capRows"])
+        self.assertTrue(result["live"]["contiguous"])
+        self.assertIn("cap-0", result["live"]["firstCapText"])
+        self.assertIn("after-note-1", result["live"]["lastCapText"])
+
+        # Retention has to say the same thing, since that is what a second detach draws.
+        self.assertEqual(107, result["liveModel"]["caps"])
+        self.assertTrue(result["liveModel"]["contiguous"])
+        self.assertTrue(result["liveModel"]["noteBelowRun"])
+        self.assertTrue(result["liveModel"]["typedBelowRun"])
+
+        # The re-windows genuinely re-rendered from the model, replacing every row.
+        self.assertEqual(2, result["rendered"]["reads"])
+        self.assertEqual(0, result["rendered"]["carriedOver"])
+
+        # Historical DOM: still one box, with the interleaved rows still below it.
+        self.assertEqual(1, result["historical"]["capTops"])
+        self.assertEqual(0, result["historical"]["feet"])
+        self.assertTrue(result["historical"]["contiguous"])
+        self.assertEqual(107, result["historical"]["capRows"])
+        self.assertIn("cap-0", result["historical"]["firstCapText"])
+        self.assertIn("after-note-1", result["historicalOrder"]["lastCapText"])
+        self.assertGreater(
+            result["historicalOrder"]["noteAt"], result["historicalOrder"]["capTo"]
+        )
+        self.assertGreater(
+            result["historicalOrder"]["typedAt"], result["historicalOrder"]["capTo"]
+        )
+
+        self.assertIn("jump-hit", result["jump"]["node"])
+        self.assertIn("cap-0", result["jump"]["row"])
+        self.assertIn("cap-top", result["jump"]["rowClass"].split(" "))
+
+        # Sealing closes the run itself: the footer follows the capture's last line, and
+        # the rows that barged in stay below it.
+        self.assertEqual(1, result["sealedModel"]["footAt"] - result["sealedModel"]["capTo"])
+        self.assertGreater(
+            result["sealedModel"]["noteAt"], result["sealedModel"]["footAt"]
+        )
+        self.assertEqual(1, result["sealed"]["feet"])
+        self.assertEqual(1, result["sealed"]["capTops"])
+        self.assertTrue(result["sealed"]["contiguous"])
+        self.assertIn("after-note-1", result["sealed"]["aboveFoot"])
+        self.assertIn("interleaved-note", result["sealed"]["belowFoot"])
+
+    def test_reattaching_drops_a_footer_whose_capture_rows_are_no_longer_retained(self):
+        result = run_ui_scenario(
+            """
+  document.getElementById("live-depth-500").dispatch("click");
+  const linux = term("slot0");
+  send({ type: "exec", phase: "start", id: 9, target: "linux", cmd: "one-liner" });
+  send({ type: "line", target: "linux", direction: "<<<", text: "capture-line-0" });
+  for (let index = 0; index < 499; index += 1) {
+    send({ type: "line", target: "linux", direction: "---", text: `filler-${index}` });
+  }
+  flushFrames();
+  linux.clientHeight = 400;
+  linux.scrollHeight = 9000;
+  linux.scrollTop = 100;
+  linux.dispatch("scroll");
+  flushFrames();
+  send({ type: "line", target: "linux", direction: "<<<", text: "buffered-into-capture" });
+  send({
+    type: "exec", phase: "end", id: 9, target: "linux",
+    ended_by: "idle", ms: 5, bytes: 14, truncated: false, ok: true,
+  });
+  flushFrames();
+  linux.scrollTop = 8000;
+  linux.dispatch("scroll");
+  flushFrames();
+  const detached = {
+    feet: linux.children.filter((c) => c.className === "cap-foot").length,
+    capRows: linux.children.filter((c) => c.classList.contains("capture-row")).length,
+    rows: linux.children.filter((c) => c.className !== "transcript-spacer").length,
+  };
+  linux.scrollTop = 8600;
+  linux.dispatch("scroll");
+  flushFrames();
+  const rows = linux.children;
+  const footAt = rows.findIndex((c) => c.className === "cap-foot");
+  return {
+    detached,
+    feet: rows.filter((c) => c.className === "cap-foot").length,
+    footAt,
+    aboveFoot: footAt < 0 ? "" : rows[footAt - 1].className,
+    aboveFootText: footAt < 0 ? "" : rows[footAt - 1].textContent,
+    retainedFeet: paneModelSpies[0]
+      .slice(0, paneModelSpies[0].size())
+      .filter((entry) => entry.kind === "foot").length,
+  };
+"""
+        )
+
+        # The seal closes its own run, so it is retained beside capture 9's single line
+        # near the top of the transcript — far outside the window a pane scrolled to the
+        # bottom is showing. Neither the run nor its seal is drawn here.
+        self.assertEqual(0, result["detached"]["feet"])
+        self.assertEqual(0, result["detached"]["capRows"])
+        self.assertEqual(240, result["detached"]["rows"])
+        self.assertEqual(1, result["retainedFeet"])
+        self.assertEqual(1, result["feet"])
+        self.assertIn("capture-row", result["aboveFoot"].split(" "))
+        self.assertIn("buffered-into-capture", result["aboveFootText"])
+
+    def test_reattached_history_capture_anchor_survives_followed_trimming(self):
+        result = run_ui_scenario(
+            """
+  const linux = term("slot0");
+  for (let index = 0; index < 100; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `pre-${index}` });
+  }
+  send({ type: "exec", phase: "start", id: 7, target: "linux", cmd: "dmesg" });
+  for (let index = 0; index < 300; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `cap-${index}` });
+  }
+  send({
+    type: "exec", phase: "end", id: 7, target: "linux",
+    ended_by: "idle", ms: 12, bytes: 300, truncated: false, ok: true,
+  });
+  for (let index = 0; index < 50; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `post-${index}` });
+  }
+  flushFrames();
+  linux.clientHeight = 400;
+  linux.scrollHeight = 8118;
+  linux.scrollTop = 100;
+  linux.dispatch("scroll");
+  flushFrames();
+  const detached = { firstText: linux.children[1].textContent };
+  linux.scrollTop = 7718;
+  linux.dispatch("scroll");
+  flushFrames();
+  const jump = () => {
+    const node = document.getElementById("spine-body").children[0];
+    node.dispatch("click");
+    const hit = linux.children.find((c) => c.classList.contains("jump-flash"));
+    return {
+      node: node.className,
+      row: hit ? hit.textContent : null,
+      rowClass: hit ? hit.className : null,
+      head: linux.children[0].textContent,
+    };
+  };
+  const feed = (count, tag) => {
+    for (let index = 0; index < count; index += 1) {
+      send({ type: "line", target: "linux", direction: "<<<", text: `${tag}-${index}` });
+    }
+    flushFrames();
+  };
+  const afterReattach = jump();
+  feed(2, "tail");
+  const afterTrim = jump();
+  feed(188, "more");
+  const afterEviction = jump();
+  return {
+    detached,
+    afterReattach,
+    afterTrim,
+    afterEviction,
+    capRows: linux.children.filter((c) => c.classList.contains("capture-row")).length,
+    feet: linux.children.filter((c) => c.className === "cap-foot").length,
+  };
+"""
+        )
+
+        # The window the operator scrolled to is drawn by the history renderer, so the
+        # capture's Trace Jump anchor is one of its rows rather than a followed one.
+        self.assertIn("pre-95", result["detached"]["firstText"])
+
+        self.assertIn("jump-hit", result["afterReattach"]["node"])
+        self.assertIn("cap-111", result["afterReattach"]["row"])
+
+        # Trimming the anchor away must hand the anchor to the capture's next surviving
+        # row. A historical row the followed window cannot account for leaves the index
+        # pointing at a removed node, and the jump misses a capture that is on screen.
+        self.assertIn("jump-hit", result["afterTrim"]["node"])
+        self.assertIn("cap-112", result["afterTrim"]["row"])
+        self.assertIn("cap-top", result["afterTrim"]["rowClass"].split(" "))
+        self.assertIn("cap-112", result["afterTrim"]["head"])
+
+        # Once no row of the capture is materialized the anchor must be gone, not stale.
+        self.assertIn("jump-miss", result["afterEviction"]["node"])
+        self.assertIsNone(result["afterEviction"]["row"])
+        self.assertEqual(0, result["capRows"])
+        self.assertEqual(0, result["feet"])
 
 
 if __name__ == "__main__":

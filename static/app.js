@@ -83,10 +83,13 @@
   const LIVE_TAIL_TOLERANCE_PX = 32;
   const OMITTED_TAIL_LIMIT = 32;
   const OMITTED_WRITE_LIMIT = 200;
+  const ESTIMATED_ROW_HEIGHT_PX = 18;
+  const HISTORY_REWINDOW_MARGIN_PX = 300;
   let retainedLineSequence = 0;
   const followState = Object.fromEntries(
     SLOT_KEYS.map((slot) => [slot, { following: true, evicted: 0, tail: [], writes: [] }])
   );
+  const historyStates = Object.fromEntries(SLOT_KEYS.map((slot) => [slot, null]));
 
   function portEntries(ports) {
     if (!ports) return [];
@@ -298,7 +301,8 @@
     updateLiveDepthInstrument();
     for (const slot of SLOT_KEYS) {
       paneModels[slot].setBudget(budget);
-      trimFollowedWindow(slot);
+      if (historyStates[slot]) rebuildHistoryIndex(slot);
+      else trimFollowedWindow(slot);
     }
   }
 
@@ -349,6 +353,7 @@
   }
 
   function trimFollowedWindow(slot) {
+    if (historyStates[slot]) return;
     const el = terms[slot];
     const limit = followedWindowLimit();
     while (windowCounts[slot] > limit) {
@@ -447,6 +452,54 @@
   }
 
   /**
+   * The three row shapes a transcript entry can take. Both the followed tail and a
+   * detached historical slice build their rows here, so a retained entry looks the same
+   * whichever path materialized it.
+   */
+  function createLineRow(direction, text, who, tstamp) {
+    const row = document.createElement("div");
+    let cls = "ln dev";
+    let prefix = "";
+    if (direction === ">>>") {
+      if (who === "agent") {
+        cls = "ln agent";
+        prefix = "◆ agent  ";
+      } else {
+        cls = "ln op";
+        prefix = "▲ you  ";
+      }
+    } else if (direction === "---") {
+      cls = "ln sys";
+    }
+    row.className = cls;
+    const stamp = document.createElement("span");
+    stamp.className = "t";
+    stamp.textContent = tstamp || "";
+    const body = document.createElement("span");
+    body.className = "b";
+    if (prefix) body.appendChild(document.createTextNode(prefix));
+    AnsiRender.renderAnsi(body, text);
+    row.append(stamp, body);
+    queueOverflowProbe(row, body);
+    return row;
+  }
+
+  function createGapRow(count) {
+    const row = document.createElement("div");
+    row.className = "ln gap";
+    setGapCount(row, count);
+    return row;
+  }
+
+  function createFootRow(execId, text) {
+    const foot = document.createElement("div");
+    foot.className = "cap-foot";
+    foot.dataset.execId = String(execId);
+    foot.textContent = text;
+    return foot;
+  }
+
+  /**
    * A Gap always keeps its own trailing replay content attached right after it: a Gap is
    * only counted once the retained tail is full, so at least 32 replayed rows follow it,
    * and one recovery appends at most 233 entries (232 retained rows plus the Gap) which
@@ -463,10 +516,7 @@
       setGapCount(prior, (Number(prior.dataset.evictedCount) || 0) + count);
       return;
     }
-    const row = document.createElement("div");
-    row.className = "ln gap";
-    setGapCount(row, count);
-    el.appendChild(row);
+    el.appendChild(createGapRow(count));
     countWindowRow(slot);
   }
 
@@ -517,8 +567,13 @@
    * materialized has its own rows (and footer) relocated after the new Gap. Replay then
    * continues that one run instead of opening a visually separate second box below the
    * Gap.
+   *
+   * Retention is reordered in the same breath, and unconditionally: it is the authority on
+   * visual order and the thing a later detach renders from, so a capture whose rows are
+   * currently off-window still has to end up where the operator just saw it.
    */
   function moveCaptureRowsAfterGap(slot, record) {
+    paneModels[slot].moveCaptureToEnd(record.id);
     const el = terms[slot];
     const rows = [];
     for (let child = el.firstElementChild; child; child = child.nextElementSibling) {
@@ -556,6 +611,347 @@
     });
   }
 
+  /**
+   * Detached history. A pane that has scrolled off the live tail can be looking anywhere
+   * in up to 75k retained entries, so it materializes only the slice under the viewport
+   * and represents everything above and below it as a single spacer height each. All the
+   * pixel arithmetic goes through a height index, so a scroll costs O(window) DOM work
+   * plus O(log retained) lookups — never the retained depth.
+   */
+  function createSpacer() {
+    const spacer = document.createElement("div");
+    spacer.className = "transcript-spacer";
+    spacer.style.height = "0px";
+    return spacer;
+  }
+
+  function setSpacerHeight(spacer, px) {
+    spacer.style.height = `${px > 0 && isFinite(px) ? Math.round(px) : 0}px`;
+  }
+
+  function childElements(from, stop) {
+    const rows = [];
+    for (let child = from; child && child !== stop; child = child.nextElementSibling) {
+      rows.push(child);
+    }
+    return rows;
+  }
+
+  function historyRows(state) {
+    return childElements(state.top.nextElementSibling, state.bottom);
+  }
+
+  /**
+   * Sub-pixel, deliberately: offsetHeight rounds to whole pixels, and a half-pixel error
+   * per row accumulates into a visible jump once a couple of hundred rows separate the
+   * anchor from the top of the slice.
+   */
+  function measuredHeight(row) {
+    return row.getBoundingClientRect().height;
+  }
+
+  function enterHistoryMode(slot) {
+    const el = terms[slot];
+    const count = paneModels[slot].size();
+    const rows = childElements(el.firstElementChild, null);
+    // Everything retained is already on screen, so there is no history to virtualize and
+    // the pane keeps its plain followed window.
+    if (count <= rows.length) return;
+    flushOverflowProbes();
+    const index = TranscriptView.createHeightIndex(count, ESTIMATED_ROW_HEIGHT_PX);
+    const start = count - rows.length;
+    rows.forEach((row, i) => index.setHeight(start + i, measuredHeight(row)));
+    const offset = index.offsetOf(start);
+    const top = createSpacer();
+    const bottom = createSpacer();
+    setSpacerHeight(top, offset);
+    el.insertBefore(top, el.firstElementChild);
+    el.appendChild(bottom);
+    historyStates[slot] = { index, count, start, end: count, top, bottom };
+    // The spacer pushed the visible rows down by exactly its own height, so matching it
+    // leaves the Operator looking at the same pixel of the same row.
+    el.scrollTop = el.scrollTop + offset;
+    scheduleHistoryRender(slot);
+  }
+
+  /**
+   * Retention can still grow while a pane is detached — a capture sealing appends its
+   * footer — and nothing else about the pane may move when it does. Taking the new depth
+   * into the index and the bottom spacer is what keeps the virtual bottom one entry
+   * further down, so Follow does not reattach at what is no longer the end.
+   */
+  function syncHistoryCount(slot) {
+    const state = historyStates[slot];
+    const count = paneModels[slot].size();
+    if (count <= state.count) return;
+    state.index.grow(count);
+    state.count = count;
+    setSpacerHeight(state.bottom, state.index.total() - state.index.offsetOf(state.end));
+  }
+
+  /**
+   * The followed window only ever shows a footer directly under the rows it seals, which
+   * `normalizeWindowHead` enforces at the head. A historical slice has to be laxer: it
+   * draws one row per retained entry so measurements line up, and retention keeps a
+   * capture's footer even after budget trimming took every line it sealed. Adopting such
+   * a slice as the followed window is where those strays have to go, otherwise a capture
+   * replayed on reattach seals itself twice.
+   */
+  function dropOrphanedFooters(el) {
+    let previous = null;
+    for (const row of childElements(el.firstElementChild, null)) {
+      const sealsTheRowAbove =
+        previous &&
+        hasClass(previous, "capture-row") &&
+        previous.dataset.execId === row.dataset.execId;
+      if (hasClass(row, "cap-foot") && !sealsTheRowAbove) {
+        forgetTrimmedRow(row);
+        el.removeChild(row);
+      } else {
+        previous = row;
+      }
+    }
+  }
+
+  function exitHistoryMode(slot) {
+    const state = historyStates[slot];
+    if (!state) return;
+    const el = terms[slot];
+    syncHistoryCount(slot);
+    // A drag straight to the bottom can reattach from a slice that is not the model tail;
+    // the followed window has to be the tail before Follow resumes appending to it.
+    if (state.end < state.count) {
+      renderHistorySlice(slot, Math.max(0, state.count - followedWindowLimit()));
+    }
+    el.removeChild(state.top);
+    el.removeChild(state.bottom);
+    historyStates[slot] = null;
+    dropOrphanedFooters(el);
+    trimFollowedWindow(slot);
+  }
+
+  /**
+   * The capture records a pane will still append to, by exec id. A capture is live while
+   * `openCaptures` holds it, and stays live after it seals if any omitted row is waiting
+   * to replay through it, because that replay continues the same visual run.
+   */
+  function liveCaptureRecords(slot) {
+    const live = new Map();
+    for (const record of Object.values(openCaptures)) {
+      if (record.slot === slot) live.set(record.id, record);
+    }
+    for (const item of followState[slot].tail) {
+      if (item.capture) live.set(item.capture.id, item.capture);
+    }
+    return live;
+  }
+
+  function clearHistorySlice(slot) {
+    const state = historyStates[slot];
+    const el = terms[slot];
+    for (const row of historyRows(state)) {
+      forgetTrimmedRow(row);
+      el.removeChild(row);
+    }
+    windowCounts[slot] = 0;
+  }
+
+  /**
+   * Capture chrome is derived from the slice rather than from live bookkeeping: a run of
+   * consecutive rows sharing a capture id is drawn as one box, so a run cut by either
+   * window edge still reads as a self-contained capture. A footer is only drawn where the
+   * model actually holds one, which keeps a windowed capture from growing a second seal.
+   *
+   * Every row a run produces joins `rowCapture` under one record per capture, exactly as
+   * `attachCapturedRow` does for a followed row. These rows outlive history mode —
+   * reattaching keeps them and the followed window trims them later — so without a record
+   * the trimmer cannot retire their Trace Jump anchor or hand it to the next surviving
+   * row of the same capture.
+   */
+  function renderHistorySlice(slot, start) {
+    const state = historyStates[slot];
+    const el = terms[slot];
+    const end = Math.min(state.count, start + followedWindowLimit());
+    clearHistorySlice(slot);
+    const live = liveCaptureRecords(slot);
+    const records = new Map();
+    let counted = 0;
+    let run = [];
+    let runId = null;
+
+    /**
+     * A capture that outlives the detach keeps one record, so its rows stay one capture.
+     * Minting a private one here would leave recovery holding a different object for the
+     * same exec: `moveCaptureRowsAfterGap` would not recognize these rows, replay would
+     * open a second box with its own footer, and the anchor would end up on that lower
+     * fragment. Otherwise the record only has to carry what the trimmer reads.
+     */
+    function recordFor(id) {
+      let record = records.get(id);
+      if (!record) {
+        record = live.get(id) || { id, lastRow: null, footRow: null };
+        records.set(id, record);
+      }
+      return record;
+    }
+
+    function closeRun() {
+      if (!run.length) return;
+      const first = !records.has(runId);
+      const record = recordFor(runId);
+      run.forEach((row, i) => {
+        setCaptureRowEdges(row, i === 0, i === run.length - 1);
+        rowCapture.set(row, record);
+      });
+      record.lastRow = run[run.length - 1];
+      // The first materialized row wins the anchor, so a capture split by a Gap still
+      // jumps to its top rather than to the fragment below the Gap.
+      if (first) captureIndex.set(runId, run[0]);
+      run = [];
+      runId = null;
+    }
+
+    for (const entry of paneModels[slot].slice(start, end)) {
+      let row;
+      if (entry.kind === "gap") {
+        closeRun();
+        row = createGapRow(entry.count);
+        counted += 1;
+      } else if (entry.kind === "foot") {
+        closeRun();
+        row = createFootRow(entry.captureId, entry.text);
+        const record = recordFor(entry.captureId);
+        record.footRow = row;
+        rowCapture.set(row, record);
+      } else {
+        row = createLineRow(entry.direction, entry.text, entry.who, entry.tstamp);
+        counted += 1;
+        const captureId = entry.captureId;
+        if (captureId === null || captureId === undefined) {
+          closeRun();
+        } else {
+          if (captureId !== runId) closeRun();
+          row.classList.add("capture-row");
+          row.dataset.execId = String(captureId);
+          runId = captureId;
+          run.push(row);
+        }
+      }
+      el.insertBefore(row, state.bottom);
+    }
+    closeRun();
+    state.start = start;
+    state.end = end;
+    windowCounts[slot] = counted;
+    setSpacerHeight(state.top, state.index.offsetOf(start));
+    setSpacerHeight(state.bottom, state.index.total() - state.index.offsetOf(end));
+  }
+
+  /**
+   * What the pane must hold still across a re-measure. The entry is clamped into the
+   * materialized slice on purpose: an entry that is still on its estimate changes height
+   * the moment it is materialized, so anchoring on one would move the very compensation
+   * it is supposed to provide. Clamping instead pins the oldest row the Operator can
+   * currently see, and everything below it rides along unmoved.
+   */
+  function historyAnchor(slot) {
+    const state = historyStates[slot];
+    const scrollTop = terms[slot].scrollTop;
+    const last = Math.max(state.start, state.end - 1);
+    const index = Math.min(Math.max(state.index.indexAtOffset(scrollTop), state.start), last);
+    return { index, offset: scrollTop - state.index.offsetOf(index) };
+  }
+
+  function restoreHistoryAnchor(slot, anchor) {
+    const state = historyStates[slot];
+    terms[slot].scrollTop = state.index.offsetOf(anchor.index) + anchor.offset;
+  }
+
+  /**
+   * Estimated heights become measured ones here: read every materialized row, then write
+   * the index, both spacers and the scroll position together, so the anchor keeps the
+   * pixel offset it had before the correction.
+   */
+  function measureHistorySlice(slot, anchor) {
+    const state = historyStates[slot];
+    const index = state.index;
+    flushOverflowProbes();
+    const held = anchor || historyAnchor(slot);
+    const measured = historyRows(state).map(measuredHeight);
+    measured.forEach((height, i) => index.setHeight(state.start + i, height));
+    setSpacerHeight(state.top, index.offsetOf(state.start));
+    setSpacerHeight(state.bottom, index.total() - index.offsetOf(state.end));
+    restoreHistoryAnchor(slot, held);
+  }
+
+  /**
+   * The buffer has to outlast a whole viewport of scrolling, otherwise a single fast
+   * scroll event can land the viewport past the materialized slice before the frame that
+   * would have extended it ever runs.
+   */
+  function historyNeedsRewindow(state, scrollTop, viewport) {
+    const index = state.index;
+    const margin = Math.max(HISTORY_REWINDOW_MARGIN_PX, viewport);
+    if (state.start > 0 && scrollTop - index.offsetOf(state.start) < margin) return true;
+    return (
+      state.end < state.count &&
+      index.offsetOf(state.end) - (scrollTop + viewport) < margin
+    );
+  }
+
+  function updateHistoryWindow(slot) {
+    const state = historyStates[slot];
+    if (!state) return;
+    syncHistoryCount(slot);
+    const el = terms[slot];
+    const scrollTop = el.scrollTop;
+    if (!historyNeedsRewindow(state, scrollTop, el.clientHeight)) return;
+    const anchor = historyAnchor(slot);
+    const limit = followedWindowLimit();
+    const centre = state.index.indexAtOffset(scrollTop);
+    const start = Math.max(0, Math.min(centre - Math.floor(limit / 2), state.count - limit));
+    renderHistorySlice(slot, start);
+    restoreHistoryAnchor(slot, anchor);
+    measureHistorySlice(slot, anchor);
+  }
+
+  /** Tightening retention drops the oldest entries, which shifts every index down by that many. */
+  function rebuildHistoryIndex(slot) {
+    const state = historyStates[slot];
+    const el = terms[slot];
+    const count = paneModels[slot].size();
+    const dropped = Math.max(0, state.count - count);
+    el.scrollTop = Math.max(0, el.scrollTop - state.index.offsetOf(dropped));
+    state.index = TranscriptView.createHeightIndex(count, ESTIMATED_ROW_HEIGHT_PX);
+    state.count = count;
+    renderHistorySlice(
+      slot,
+      Math.max(0, Math.min(state.start - dropped, count - followedWindowLimit()))
+    );
+    measureHistorySlice(slot);
+  }
+
+  const pendingHistoryRenders = new Set();
+  let historyFramePending = false;
+
+  function scheduleHistoryRender(slot) {
+    pendingHistoryRenders.add(slot);
+    if (historyFramePending) return;
+    historyFramePending = true;
+    requestAnimationFrame(flushHistoryRenders);
+  }
+
+  function flushHistoryRenders() {
+    historyFramePending = false;
+    const slots = [...pendingHistoryRenders];
+    pendingHistoryRenders.clear();
+    for (const slot of slots) {
+      updateHistoryWindow(slot);
+      // Re-windowing can uncover the true virtual bottom without another scroll event.
+      if (historyStates[slot]) updateFollowState(slot);
+    }
+  }
+
   const pendingScrolls = new Set();
   const lastAutoScrollTarget = new WeakMap();
   let scrollPending = false;
@@ -588,8 +984,12 @@
       // still queued. Drop it so the queued flush doesn't drag the pane back
       // to the tail and fire a scroll event that reattaches it right after.
       pendingScrolls.delete(el);
+      enterHistoryMode(slot);
     }
-    if (!wasFollowing && state.following) recoverTranscriptGap(slot);
+    if (!wasFollowing && state.following) {
+      exitHistoryMode(slot);
+      recoverTranscriptGap(slot);
+    }
   }
 
   function paneIsFollowing(slot) {
@@ -859,7 +1259,13 @@
     open.sealed = true;
     open.footText = text;
     paneModels[open.slot].appendFoot({ captureId: open.id, text });
-    if (open.lastRow && open.lastRow.parentNode === terms[open.slot]) {
+    if (historyStates[open.slot]) {
+      // A detached pane draws its rows from the retained model, so the footer arrives
+      // when the window that holds its position is rendered. Splicing it in here would
+      // leave one more row between the spacers than the slice accounts for, and every
+      // row below it would then be measured as its neighbour.
+      scheduleHistoryRender(open.slot);
+    } else if (open.lastRow && open.lastRow.parentNode === terms[open.slot]) {
       setCaptureRowEdges(open.lastRow, hasClass(open.lastRow, "cap-top"), true);
       materializeCaptureFoot(open);
     }
@@ -867,14 +1273,18 @@
     setHolder(open.slot, false);
   }
 
-  /** The footer trails its own last row, which is not necessarily the pane's last row. */
+  /**
+   * The footer trails its own last row, which is not necessarily the pane's last row.
+   * Retention is sealed in the same step, and every time: trimming drops a seal once the
+   * run it closed is gone, and replay can then bring a row of that capture back, so the
+   * model has to hear about the seal again rather than be left holding an unclosed run.
+   * Sealing a capture that retention already has one for does nothing.
+   */
   function materializeCaptureFoot(record) {
     const el = terms[record.slot];
+    paneModels[record.slot].appendFoot({ captureId: record.id, text: record.footText });
     if (record.footRow && record.footRow.parentNode === el) return;
-    const foot = document.createElement("div");
-    foot.className = "cap-foot";
-    foot.dataset.execId = String(record.id);
-    foot.textContent = record.footText;
+    const foot = createFootRow(record.id, record.footText);
     rowCapture.set(foot, record);
     el.insertBefore(foot, record.lastRow.nextElementSibling);
     record.footRow = foot;
@@ -931,32 +1341,9 @@
       tstamp,
       captureId: capture ? capture.id : null,
     });
-    const row = document.createElement("div");
-    let cls = "ln dev";
-    let prefix = "";
-    if (direction === ">>>") {
-      if (who === "agent") {
-        cls = "ln agent";
-        prefix = "◆ agent  ";
-      } else {
-        cls = "ln op";
-        prefix = "▲ you  ";
-      }
-    } else if (direction === "---") {
-      cls = "ln sys";
-    }
-    row.className = cls;
-    const stamp = document.createElement("span");
-    stamp.className = "t";
-    stamp.textContent = tstamp || "";
-    const body = document.createElement("span");
-    body.className = "b";
-    if (prefix) body.appendChild(document.createTextNode(prefix));
-    AnsiRender.renderAnsi(body, text);
-    row.append(stamp, body);
+    const row = createLineRow(direction, text, who, tstamp);
     if (capture) attachCapturedRow(capture, row);
     else el.appendChild(row);
-    queueOverflowProbe(row, body);
     countWindowRow(slot);
     schedulePaneScroll(slot);
   }
@@ -1026,10 +1413,17 @@
   updateLiveDepthInstrument();
 
   for (const slot of SLOT_KEYS) {
-    terms[slot].addEventListener("scroll", () => updateFollowState(slot));
+    terms[slot].addEventListener("scroll", () => {
+      updateFollowState(slot);
+      if (historyStates[slot]) scheduleHistoryRender(slot);
+    });
     terms[slot].addEventListener("click", (event) => {
       const toggle = expandToggleFrom(event.target, terms[slot]);
-      if (toggle) toggleRowExpansion(toggle);
+      if (!toggle) return;
+      toggleRowExpansion(toggle);
+      // The row just changed height, so the history index and both spacers owe it a
+      // correction — without letting the anchor row move under the Operator.
+      if (historyStates[slot]) measureHistorySlice(slot);
     });
   }
 
@@ -1164,6 +1558,7 @@
     for (const slot of SLOT_KEYS) {
       terms[slot].innerHTML = "";
       windowCounts[slot] = 0;
+      historyStates[slot] = null;
       resetFollowState(slot);
       setHolder(slot, false);
       paneModels[slot].clear();

@@ -640,6 +640,12 @@ body::after {
   background: linear-gradient(90deg, transparent, rgba(77, 92, 120, 0.12), transparent);
 }
 
+/* A scrolled-away pane stands its unmaterialized history up as height alone, so the
+   scrollbar spans the full retained depth without a DOM node per retained entry. */
+.transcript-spacer {
+  pointer-events: none;
+}
+
 /* Capture membership lives on the rows themselves: the box is drawn from per-row rules so
    no single capture can grow into an arbitrarily tall element inside the window. */
 .capture-row,
