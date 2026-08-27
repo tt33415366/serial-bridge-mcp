@@ -225,6 +225,33 @@
       return state.counted;
     }
 
+    /**
+     * Where a capture currently sits in visual order: the position of its first retained
+     * line and of the last entry belonging to it, both as `slice` indexes. Positions
+     * rather than entries, so a caller cannot reach the retained list through the answer.
+     *
+     * A capture whose lines are all trimmed away answers null even while its seal is
+     * still retained — a footer alone is nothing to jump to. Finding the run costs the
+     * retained depth, which is why only a click asks.
+     */
+    function captureRange(captureId) {
+      const record = state.captures.get(captureId);
+      if (!record || record.lines === 0) return null;
+      let first = -1;
+      let last = -1;
+      for (let i = state.start; i < state.list.length; i++) {
+        const entry = state.list[i];
+        if (entry.captureId !== captureId) continue;
+        if (entry.kind !== "line" && entry.kind !== "foot") continue;
+        if (first < 0) {
+          if (entry.kind !== "line") continue;
+          first = i - state.start;
+        }
+        last = i - state.start;
+      }
+      return first < 0 ? null : { first, last };
+    }
+
     return {
       appendLine,
       appendGap,
@@ -236,6 +263,7 @@
       size,
       slice,
       countedSize,
+      captureRange,
     };
   }
 

@@ -71,12 +71,18 @@
   let targetToSlot = { linux: "slot0", rtos: "slot1" };
   const savedSlots = {};
   const openCaptures = {};
+  /**
+   * The Trace Jump anchor row of each capture, keyed by pane as well as exec id: the two
+   * targets number their execs independently, so a bare id would let one pane's capture
+   * answer for the other's.
+   */
   const captureIndex = new Map();
   let spineEntries = [];
   let hydrateVersion = 0;
   const windowCounts = Object.fromEntries(SLOT_KEYS.map((slot) => [slot, 0]));
   const rowCapture = new WeakMap();
   let jumpFlashTimer = null;
+  let jumpFlashRow = null;
   let jumpNodeTimer = null;
   let jumpNodeMarked = null;
   const FOLLOWED_WINDOW_ENTRY_LIMIT = 240;
@@ -319,6 +325,10 @@
     return Math.min(FOLLOWED_WINDOW_ENTRY_LIMIT, liveViewBudget);
   }
 
+  function captureAnchorKey(slot, captureId) {
+    return `${slot}:${captureId}`;
+  }
+
   function setCaptureRowEdges(row, top, bottom) {
     row.classList.remove("cap-top", "cap-mid", "cap-bot");
     if (top) row.classList.add("cap-top");
@@ -341,7 +351,7 @@
     if (!head || !hasClass(head, "capture-row") || hasClass(head, "cap-top")) return;
     setCaptureRowEdges(head, true, hasClass(head, "cap-bot"));
     const record = rowCapture.get(head);
-    if (record) captureIndex.set(record.id, head);
+    if (record) captureIndex.set(captureAnchorKey(record.slot, record.id), head);
   }
 
   function forgetTrimmedRow(row) {
@@ -349,7 +359,8 @@
     if (!record) return;
     if (record.lastRow === row) record.lastRow = null;
     if (record.footRow === row) record.footRow = null;
-    if (captureIndex.get(record.id) === row) captureIndex.delete(record.id);
+    const key = captureAnchorKey(record.slot, record.id);
+    if (captureIndex.get(key) === row) captureIndex.delete(key);
   }
 
   function trimFollowedWindow(slot) {
@@ -789,7 +800,7 @@
     function recordFor(id) {
       let record = records.get(id);
       if (!record) {
-        record = live.get(id) || { id, lastRow: null, footRow: null };
+        record = live.get(id) || { id, slot, lastRow: null, footRow: null };
         records.set(id, record);
       }
       return record;
@@ -806,7 +817,7 @@
       record.lastRow = run[run.length - 1];
       // The first materialized row wins the anchor, so a capture split by a Gap still
       // jumps to its top rather than to the fragment below the Gap.
-      if (first) captureIndex.set(runId, run[0]);
+      if (first) captureIndex.set(captureAnchorKey(slot, runId), run[0]);
       run = [];
       runId = null;
     }
@@ -954,6 +965,8 @@
 
   const pendingScrolls = new Set();
   const lastAutoScrollTarget = new WeakMap();
+  /** Where a Trace Jump into history parked a pane, for as long as it stays parked there. */
+  const historyJumpRest = new WeakMap();
   let scrollPending = false;
 
   /**
@@ -976,6 +989,15 @@
     ) {
       return;
     }
+    // A Trace Jump into history is a deliberate detached inspection, and a capture near
+    // the end of retention lands inside the tail tolerance without the Operator ever
+    // asking for the tail. While the pane still rests exactly where the jump parked it,
+    // every scroll event it sees is that positioning echoing back — however many the
+    // browser chooses to deliver — so none of them may reattach. The rest is given up
+    // the moment scrollTop moves at all, which is the Operator taking the pane back:
+    // their scroll to the true bottom is then read like any other.
+    if (historyJumpRest.get(el) === el.scrollTop) return;
+    historyJumpRest.delete(el);
     const state = followState[slot];
     const wasFollowing = state.following;
     state.following = isNearLiveTail(el);
@@ -1068,17 +1090,10 @@
     parent.appendChild(child);
   }
 
-  function captureStillInTerm(el) {
-    let node = el;
-    while (node) {
-      if (node === terms.slot0 || node === terms.slot1) return true;
-      node = node.parentNode;
-    }
-    return false;
-  }
-
   function clearCaptureIndex() {
     captureIndex.clear();
+    // Clear takes every row with it, including whichever one a jump just highlighted.
+    clearCaptureFlash();
   }
 
   function markJumpNode(node, marker) {
@@ -1095,24 +1110,112 @@
     }, 1200);
   }
 
-  function traceJump(execId, node) {
-    const el = captureIndex.get(Number(execId));
-    if (!el || !captureStillInTerm(el)) {
+  function clearCaptureFlash() {
+    if (jumpFlashTimer) clearTimeout(jumpFlashTimer);
+    if (jumpFlashRow) jumpFlashRow.classList.remove("jump-flash");
+    jumpFlashRow = null;
+    jumpFlashTimer = null;
+  }
+
+  function flashCaptureRow(row) {
+    jumpFlashRow = row;
+    row.classList.add("jump-flash");
+    jumpFlashTimer = setTimeout(() => {
+      row.classList.remove("jump-flash");
+      jumpFlashRow = null;
+      jumpFlashTimer = null;
+    }, 1200);
+  }
+
+  /**
+   * The capture's anchor row, but only when that row really is the capture's first
+   * retained line. A pane materializes one contiguous stretch of the model, so the anchor
+   * is the first retained line exactly when the stretch reaches back far enough to cover
+   * it; otherwise the window cut the capture and the anchor is a fragment head, which is
+   * not what the Operator clicked for. A followed pane is always showing the model's tail,
+   * so its stretch starts as far back as it has rows — the same reading `enterHistoryMode`
+   * takes when it hands those rows to the history renderer.
+   */
+  function materializedFirstLine(slot, captureId, range) {
+    const el = terms[slot];
+    const state = historyStates[slot];
+    const count = paneModels[slot].size();
+    const start = state ? state.start : Math.max(0, count - el.childElementCount);
+    const end = state ? state.end : count;
+    if (range.first < start || range.first >= end) return null;
+    const row = captureIndex.get(captureAnchorKey(slot, captureId));
+    return row && row.parentNode === el ? row : null;
+  }
+
+  /**
+   * Materialize a capture the pane is retaining but not showing. The operator asked to be
+   * somewhere else in the transcript, so this is a deliberate detach: Follow is released
+   * and any auto-scroll already queued for the pane is dropped, or the queued flush would
+   * drag the pane straight back to the live tail.
+   *
+   * The window is centred on the capture's first retained line so there is context above
+   * it as well as below, and it is drawn by the same history renderer a scroll uses, so
+   * the two spacers, the 240-row cap and the model's visual order all still hold.
+   */
+  function anchorRetainedCapture(slot, captureId, range) {
+    const el = terms[slot];
+    const wasFollowing = followState[slot].following;
+    followState[slot].following = false;
+    pendingScrolls.delete(el);
+    if (!historyStates[slot]) enterHistoryMode(slot);
+    const state = historyStates[slot];
+    if (!state) {
+      followState[slot].following = wasFollowing;
+      return null;
+    }
+    syncHistoryCount(slot);
+    const limit = followedWindowLimit();
+    const start = Math.max(
+      0,
+      Math.min(range.first - Math.floor(limit / 2), state.count - limit)
+    );
+    renderHistorySlice(slot, start);
+    // The target line goes to the top of the viewport, and measuring keeps it there once
+    // the estimated heights become real ones.
+    measureHistorySlice(slot, { index: range.first, offset: 0 });
+    // This slice is the one the jump wants; a queued re-window would only redraw it.
+    pendingHistoryRenders.delete(slot);
+    // Read back rather than recompute: the pane clamps, and the rest only holds while the
+    // recorded pixel is the one the pane is actually sitting on.
+    historyJumpRest.set(el, el.scrollTop);
+    const row = captureIndex.get(captureAnchorKey(slot, captureId));
+    return row && row.parentNode === el ? row : null;
+  }
+
+  /**
+   * The highlight is retired here, before anything else runs, rather than only on its
+   * timer: a jump into history re-renders the slice, so waiting would leave the mark on a
+   * row that is no longer in the pane and hold that removed row alive through the timer.
+   *
+   * Where the capture sits comes from the model every time. It is the only thing that
+   * knows which line is the capture's first retained one, and it costs the retained depth
+   * — which is why nothing but a click ever asks.
+   */
+  function traceJump(execId, node, target) {
+    clearCaptureFlash();
+    const slot = targetToSlot[target];
+    const captureId = Number(execId);
+    const range = terms[slot] ? paneModels[slot].captureRange(captureId) : null;
+    const row =
+      range &&
+      (materializedFirstLine(slot, captureId, range) ||
+        anchorRetainedCapture(slot, captureId, range));
+    if (!row) {
       markJumpNode(node, "jump-miss");
       return;
     }
     // Positioned without a smooth animation so arrival and the capture highlight coincide;
     // a long animated scroll outlasts the highlight timer below.
-    if (typeof el.scrollIntoView === "function") {
-      el.scrollIntoView({ block: "nearest" });
+    if (typeof row.scrollIntoView === "function") {
+      row.scrollIntoView({ block: "nearest" });
     }
     markJumpNode(node, "jump-hit");
-    el.classList.add("jump-flash");
-    if (jumpFlashTimer) clearTimeout(jumpFlashTimer);
-    jumpFlashTimer = setTimeout(() => {
-      el.classList.remove("jump-flash");
-      jumpFlashTimer = null;
-    }, 1200);
+    flashCaptureRow(row);
   }
 
   function renderSpine() {
@@ -1137,7 +1240,7 @@
         node.className = flags.join(" ");
         node.dataset.execId = String(entry.id);
         node.title = "Jump to capture";
-        node.addEventListener("click", () => traceJump(entry.id, node));
+        node.addEventListener("click", () => traceJump(entry.id, node, entry.target));
         appendSpineText(node, "spine-kicker", `EXEC · ${entry.target} · #${entry.id}`);
         appendSpineText(node, "spine-command", entry.cmd || "—");
         appendSpineText(
@@ -1312,7 +1415,7 @@
       el.appendChild(row);
     }
     record.lastRow = row;
-    if (!previous) captureIndex.set(record.id, row);
+    if (!previous) captureIndex.set(captureAnchorKey(record.slot, record.id), row);
     if (record.sealed) materializeCaptureFoot(record);
   }
 
@@ -1559,6 +1662,7 @@
       terms[slot].innerHTML = "";
       windowCounts[slot] = 0;
       historyStates[slot] = null;
+      historyJumpRest.delete(terms[slot]);
       resetFollowState(slot);
       setHolder(slot, false);
       paneModels[slot].clear();

@@ -278,8 +278,9 @@ eval(fs.readFileSync({json.dumps(str(TRANSCRIPT_VIEW_JS))}, "utf8"));
 const createRealPane = globalThis.TranscriptView.createPane;
 globalThis.paneModelSpies = [];
 // Reading the whole retained list is the thing detached scrolling must never do, so the
-// spy counts both the full-copy and the windowed read.
-globalThis.paneReads = {{ entries: 0, slice: 0 }};
+// spy counts both the full-copy and the windowed read, plus the retained-depth capture
+// scan that only a Trace Jump click is allowed to pay for.
+globalThis.paneReads = {{ entries: 0, slice: 0, captureRange: 0 }};
 globalThis.TranscriptView.createPane = (budget) => {{
   const pane = createRealPane(budget);
   const spy = {{ ...pane }};
@@ -290,6 +291,10 @@ globalThis.TranscriptView.createPane = (budget) => {{
   spy.slice = (...args) => {{
     paneReads.slice += 1;
     return pane.slice(...args);
+  }};
+  spy.captureRange = (...args) => {{
+    paneReads.captureRange += 1;
+    return pane.captureRange(...args);
   }};
   paneModelSpies.push(spy);
   return spy;
@@ -1893,7 +1898,7 @@ class FollowedWindowTest(unittest.TestCase):
         self.assertEqual(["5"], result["execIds"])
         self.assertIn("closed on idle", result["footText"])
 
-    def test_trace_jump_lands_on_the_promoted_anchor_of_a_windowed_capture(self):
+    def test_trace_jump_lands_on_the_first_retained_line_of_a_windowed_capture(self):
         result = run_ui_scenario(
             """
   await nextTurn();
@@ -1909,11 +1914,16 @@ class FollowedWindowTest(unittest.TestCase):
     send({ type: "line", target: "linux", direction: "---", text: `filler-${index}` });
   }
   flushFrames();
+  const promoted = term("slot0").children[0];
+  const head = { className: promoted.className, text: promoted.textContent };
   const execNode = document.getElementById("spine-body").children[0];
   execNode.dispatch("click");
-  const anchor = term("slot0").children[0];
+  const rows = term("slot0").children;
+  const anchor = rows[1];
   return {
-    rows: term("slot0").children.length,
+    head,
+    rows: rows.length,
+    spacers: rows.filter((c) => c.className === "transcript-spacer").length,
     anchorClass: anchor.className,
     anchorText: anchor.textContent,
     scrolled: !!anchor.scrolledIntoView,
@@ -1922,10 +1932,17 @@ class FollowedWindowTest(unittest.TestCase):
 """
         )
 
-        self.assertEqual(241, result["rows"])
+        # The window trimmed cap-0 through cap-9 away and handed the capture's chrome to
+        # cap-10, which is the fragment head a DOM-only jump would settle for.
+        self.assertIn("cap-top", result["head"]["className"].split(" "))
+        self.assertIn("cap-10", result["head"]["text"])
+
+        # Retention still holds cap-0, so that is where the jump has to land.
+        self.assertEqual(242, result["rows"])
+        self.assertEqual(2, result["spacers"])
         self.assertIn("cap-top", result["anchorClass"].split(" "))
         self.assertIn("jump-flash", result["anchorClass"].split(" "))
-        self.assertIn("cap-10", result["anchorText"])
+        self.assertIn("cap-0", result["anchorText"])
         self.assertTrue(result["scrolled"])
         self.assertIn("jump-hit", result["nodeClass"])
 
@@ -3186,6 +3203,10 @@ class DetachedHistoryWindowTest(unittest.TestCase):
   linux.scrollTop = 7718;
   linux.dispatch("scroll");
   flushFrames();
+  const headState = () => ({
+    text: linux.children[0].textContent,
+    className: linux.children[0].className,
+  });
   const jump = () => {
     const node = document.getElementById("spine-body").children[0];
     node.dispatch("click");
@@ -3194,8 +3215,13 @@ class DetachedHistoryWindowTest(unittest.TestCase):
       node: node.className,
       row: hit ? hit.textContent : null,
       rowClass: hit ? hit.className : null,
-      head: linux.children[0].textContent,
+      spacers: linux.children.filter((c) => c.className === "transcript-spacer").length,
     };
+  };
+  const reattach = () => {
+    linux.scrollTop = linux.scrollHeight;
+    linux.dispatch("scroll");
+    flushFrames();
   };
   const feed = (count, tag) => {
     for (let index = 0; index < count; index += 1) {
@@ -3203,19 +3229,20 @@ class DetachedHistoryWindowTest(unittest.TestCase):
     }
     flushFrames();
   };
+  const followed = headState();
   const afterReattach = jump();
+  reattach();
   feed(2, "tail");
-  const afterTrim = jump();
+  const afterTrim = headState();
   feed(188, "more");
-  const afterEviction = jump();
-  return {
-    detached,
-    afterReattach,
-    afterTrim,
-    afterEviction,
+  const evicted = {
     capRows: linux.children.filter((c) => c.classList.contains("capture-row")).length,
     feet: linux.children.filter((c) => c.className === "cap-foot").length,
+    spacers: linux.children.filter((c) => c.className === "transcript-spacer").length,
   };
+  linux.scrollHeight = 11538;
+  const afterEviction = jump();
+  return { detached, followed, afterReattach, afterTrim, evicted, afterEviction };
 """
         )
 
@@ -3223,22 +3250,744 @@ class DetachedHistoryWindowTest(unittest.TestCase):
         # capture's Trace Jump anchor is one of its rows rather than a followed one.
         self.assertIn("pre-95", result["detached"]["firstText"])
 
+        # Reattaching adopts a slice that starts inside the capture, so the anchor the
+        # followed window holds is a fragment head.
+        self.assertIn("cap-111", result["followed"]["text"])
+        self.assertIn("cap-top", result["followed"]["className"].split(" "))
+        # The jump is answerable from that fragment, and must refuse it: cap-0 is still
+        # retained, so that is the line the operator asked for.
         self.assertIn("jump-hit", result["afterReattach"]["node"])
-        self.assertIn("cap-111", result["afterReattach"]["row"])
+        self.assertIn("cap-0", result["afterReattach"]["row"])
+        self.assertIn("cap-top", result["afterReattach"]["rowClass"].split(" "))
+        self.assertEqual(2, result["afterReattach"]["spacers"])
 
         # Trimming the anchor away must hand the anchor to the capture's next surviving
         # row. A historical row the followed window cannot account for leaves the index
-        # pointing at a removed node, and the jump misses a capture that is on screen.
-        self.assertIn("jump-hit", result["afterTrim"]["node"])
-        self.assertIn("cap-112", result["afterTrim"]["row"])
-        self.assertIn("cap-top", result["afterTrim"]["rowClass"].split(" "))
-        self.assertIn("cap-112", result["afterTrim"]["head"])
+        # pointing at a removed node, and the capture loses its chrome on screen.
+        self.assertIn("cap-112", result["afterTrim"]["text"])
+        self.assertIn("cap-top", result["afterTrim"]["className"].split(" "))
 
         # Once no row of the capture is materialized the anchor must be gone, not stale.
-        self.assertIn("jump-miss", result["afterEviction"]["node"])
-        self.assertIsNone(result["afterEviction"]["row"])
-        self.assertEqual(0, result["capRows"])
-        self.assertEqual(0, result["feet"])
+        self.assertEqual(0, result["evicted"]["capRows"])
+        self.assertEqual(0, result["evicted"]["feet"])
+        self.assertEqual(0, result["evicted"]["spacers"])
+        # Retention still holds the whole capture, so the jump re-materializes it in a
+        # detached history window rather than reporting a miss.
+        self.assertIn("jump-hit", result["afterEviction"]["node"])
+        self.assertIn("cap-0", result["afterEviction"]["row"])
+        self.assertIn("cap-top", result["afterEviction"]["rowClass"].split(" "))
+        self.assertEqual(2, result["afterEviction"]["spacers"])
+
+
+# A sealed 100-line capture at the very top, then 600 lines that push it out of the
+# followed window while retention keeps every entry. 701 retained entries, 12618px.
+JUMP_CAPTURE_ABOVE = """
+  const linux = term("slot0");
+  send({ type: "exec", phase: "start", id: 7, target: "linux", cmd: "dmesg" });
+  for (let index = 0; index < 100; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `cap-${index}` });
+  }
+  send({
+    type: "exec", phase: "end", id: 7, target: "linux",
+    ended_by: "idle", ms: 12, bytes: 100, truncated: false, ok: true,
+  });
+  for (let index = 0; index < 600; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `post-${index}` });
+  }
+  flushFrames();
+  linux.clientHeight = 400;
+  linux.scrollHeight = 12618;
+"""
+
+# 600 leading lines, the same sealed 100-line capture, then 600 trailing lines, with the
+# pane already detached. 1301 retained entries, 23418px.
+JUMP_CAPTURE_BELOW = """
+  const linux = term("slot0");
+  for (let index = 0; index < 600; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `pre-${index}` });
+  }
+  send({ type: "exec", phase: "start", id: 7, target: "linux", cmd: "dmesg" });
+  for (let index = 0; index < 100; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `cap-${index}` });
+  }
+  send({
+    type: "exec", phase: "end", id: 7, target: "linux",
+    ended_by: "idle", ms: 12, bytes: 100, truncated: false, ok: true,
+  });
+  for (let index = 0; index < 600; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `post-${index}` });
+  }
+  flushFrames();
+  linux.clientHeight = 400;
+  linux.scrollHeight = 23418;
+  linux.scrollTop = 100;
+  linux.dispatch("scroll");
+  flushFrames();
+"""
+
+# 993 leading lines, then a sealed 20-line capture and two trailing lines, with the pane
+# already detached near the middle of retention. 1016 retained entries, 18288px, and the
+# capture's first line sits at 17874px — 14px inside the last 400px viewport, so landing
+# on it puts the pane within the tail tolerance without the operator going there.
+JUMP_CAPTURE_NEAR_TAIL = """
+  const linux = term("slot0");
+  for (let index = 0; index < 993; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `pre-${index}` });
+  }
+  send({ type: "exec", phase: "start", id: 7, target: "linux", cmd: "dmesg" });
+  for (let index = 0; index < 20; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `cap-${index}` });
+  }
+  send({
+    type: "exec", phase: "end", id: 7, target: "linux",
+    ended_by: "idle", ms: 12, bytes: 20, truncated: false, ok: true,
+  });
+  for (let index = 0; index < 2; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `post-${index}` });
+  }
+  flushFrames();
+  linux.clientHeight = 400;
+  linux.scrollHeight = 18288;
+  linux.scrollTop = 100;
+  linux.dispatch("scroll");
+  flushFrames();
+"""
+
+# A jump reports both panes, because the thing a target-blind jump gets wrong is which
+# pane it lands in rather than whether it lands at all.
+JUMP_BY_SPINE_INDEX = """
+  const flashesIn = (slot) =>
+    term(slot).children.filter((c) => c.classList.contains("jump-flash"));
+  const jumpTo = (index) => {
+    const node = document.getElementById("spine-body").children[index];
+    node.dispatch("click");
+    const slot0 = flashesIn("slot0");
+    const slot1 = flashesIn("slot1");
+    return {
+      node: node.className,
+      slot0Flashes: slot0.length,
+      slot1Flashes: slot1.length,
+      slot0Row: slot0.length ? slot0[0].textContent : null,
+      slot1Row: slot1.length ? slot1[0].textContent : null,
+      rowClass: slot0.length ? slot0[0].className : slot1.length ? slot1[0].className : null,
+    };
+  };
+  const paneState = (slot) => {
+    const el = term(slot);
+    const rows = el.children;
+    return {
+      children: rows.length,
+      counted: rows.filter((c) => c.classList.contains("ln")).length,
+      spacers: rows.filter((c) => c.className === "transcript-spacer").length,
+      gaps: rows.filter((c) => c.className === "ln gap").length,
+      top: rows.length ? rows[0].style.height : null,
+      scrollTop: el.scrollTop,
+    };
+  };
+"""
+
+
+class TraceJumpIntoRetainedHistoryTest(unittest.TestCase):
+    """A capture the operator can still reach is one retention still holds, not one the
+    240-row window happens to be showing."""
+
+    def test_jump_materializes_a_capture_above_the_followed_window(self):
+        result = run_ui_scenario(
+            JUMP_CAPTURE_ABOVE
+            + JUMP_BY_SPINE_INDEX
+            + """
+  const before = paneState("slot0");
+  const jump = jumpTo(0);
+  const after = paneState("slot0");
+  const flashed = flashesIn("slot0")[0];
+  // A browser answers the jump's own scroll assignment with a scroll event and a frame;
+  // neither may re-render the slice out from under the highlighted row.
+  linux.dispatch("scroll");
+  flushFrames();
+  const rows = term("slot0").children;
+  return {
+    before,
+    jump,
+    after,
+    settled: { ...paneState("slot0"), sameRow: flashesIn("slot0")[0] === flashed },
+    firstText: rows[1].textContent,
+    lastText: rows[rows.length - 2].textContent,
+    retained: paneModelSpies[0].countedSize(),
+  };
+"""
+        )
+
+        # The capture is 700 entries above the tail, so the followed window cannot be
+        # showing any of it.
+        self.assertEqual(0, result["before"]["spacers"])
+        self.assertEqual(240, result["before"]["counted"])
+        self.assertEqual(700, result["retained"])
+
+        self.assertIn("jump-hit", result["jump"]["node"])
+        self.assertIn("cap-0", result["jump"]["slot0Row"])
+        self.assertIn("cap-top", result["jump"]["rowClass"].split(" "))
+
+        # Every virtualization invariant still holds around the materialized target.
+        self.assertEqual(2, result["after"]["spacers"])
+        self.assertEqual(242, result["after"]["children"])
+        self.assertEqual(239, result["after"]["counted"])
+        # Entry 0 is the target, so the slice starts at the very top of retention and the
+        # pane sits exactly on it.
+        self.assertEqual("0px", result["after"]["top"])
+        self.assertEqual(0, result["after"]["scrollTop"])
+        self.assertIn("cap-0", result["firstText"])
+        self.assertIn("post-138", result["lastText"])
+
+        # The frame after the jump leaves the pane exactly where the jump put it.
+        self.assertTrue(result["settled"]["sameRow"])
+        self.assertEqual(0, result["settled"]["scrollTop"])
+        self.assertEqual(2, result["settled"]["spacers"])
+        self.assertEqual(239, result["settled"]["counted"])
+
+    def test_jump_rewindows_to_a_capture_below_the_detached_slice(self):
+        result = run_ui_scenario(
+            JUMP_CAPTURE_BELOW
+            + SCROLL_TO
+            + JUMP_BY_SPINE_INDEX
+            + """
+  scrollTo(0);
+  const before = { ...paneState("slot0"), firstText: linux.children[1].textContent };
+  const jump = jumpTo(0);
+  const rows = linux.children;
+  return {
+    before,
+    jump,
+    after: paneState("slot0"),
+    firstText: rows[1].textContent,
+    lastText: rows[rows.length - 2].textContent,
+  };
+"""
+        )
+
+        # The operator is parked at the top of retention; the capture is 600 entries below.
+        self.assertEqual(2, result["before"]["spacers"])
+        self.assertEqual(0, result["before"]["scrollTop"])
+        self.assertIn("pre-0", result["before"]["firstText"])
+
+        self.assertIn("jump-hit", result["jump"]["node"])
+        self.assertIn("cap-0", result["jump"]["slot0Row"])
+        self.assertIn("cap-top", result["jump"]["rowClass"].split(" "))
+
+        self.assertEqual(2, result["after"]["spacers"])
+        self.assertEqual(242, result["after"]["children"])
+        self.assertEqual(239, result["after"]["counted"])
+        # 120 entries of buffer above the target and 119 below it.
+        self.assertIn("pre-480", result["firstText"])
+        self.assertIn("post-18", result["lastText"])
+        self.assertEqual(10800, result["after"]["scrollTop"])
+
+    def test_jump_lands_on_the_first_line_budget_trimming_left(self):
+        result = run_ui_scenario(
+            """
+  document.getElementById("live-depth-500").dispatch("click");
+  const linux = term("slot0");
+  send({ type: "exec", phase: "start", id: 9, target: "linux", cmd: "dmesg" });
+  for (let index = 0; index < 300; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `cap-${index}` });
+  }
+  send({
+    type: "exec", phase: "end", id: 9, target: "linux",
+    ended_by: "idle", ms: 12, bytes: 300, truncated: false, ok: true,
+  });
+  for (let index = 0; index < 400; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `filler-${index}` });
+  }
+  flushFrames();
+  linux.clientHeight = 400;
+  linux.scrollHeight = 9018;
+"""
+            + JUMP_BY_SPINE_INDEX
+            + """
+  const jump = jumpTo(0);
+  return {
+    jump,
+    after: paneState("slot0"),
+    firstText: linux.children[1].textContent,
+    retained: paneModelSpies[0].countedSize(),
+    text: linux.textContent,
+  };
+"""
+        )
+
+        # Budget 500 took cap-0 through cap-199, so cap-200 is the capture's top now.
+        self.assertEqual(500, result["retained"])
+        self.assertIn("jump-hit", result["jump"]["node"])
+        self.assertIn("cap-200", result["jump"]["slot0Row"])
+        self.assertIn("cap-top", result["jump"]["rowClass"].split(" "))
+        self.assertIn("cap-200", result["firstText"])
+        self.assertNotIn("cap-199", result["text"])
+        self.assertEqual(2, result["after"]["spacers"])
+        self.assertEqual(239, result["after"]["counted"])
+        self.assertEqual(0, result["after"]["scrollTop"])
+
+    def test_jump_misses_without_changing_the_pill_when_no_line_is_retained(self):
+        result = run_ui_scenario(
+            """
+  document.getElementById("live-depth-500").dispatch("click");
+  const linux = term("slot0");
+  send({ type: "exec", phase: "start", id: 9, target: "linux", cmd: "one-liner" });
+  send({ type: "line", target: "linux", direction: "<<<", text: "capture-line-0" });
+  for (let index = 0; index < 500; index += 1) {
+    send({ type: "line", target: "linux", direction: "---", text: `filler-${index}` });
+  }
+  send({
+    type: "exec", phase: "end", id: 9, target: "linux",
+    ended_by: "idle", ms: 5, bytes: 14, truncated: false, ok: true,
+  });
+  send({ type: "exec", phase: "start", id: 3, target: "linux", cmd: "pending" });
+  flushFrames();
+  linux.clientHeight = 400;
+  linux.scrollHeight = 9018;
+"""
+            + JUMP_BY_SPINE_INDEX
+            + """
+  const pillBefore = document.getElementById("status-pill").textContent;
+  const running = jumpTo(0);
+  const footOnly = jumpTo(1);
+  const stillFollowing = paneState("slot0");
+  const retainedFeet = paneModelSpies[0]
+    .slice(0, paneModelSpies[0].size())
+    .filter((entry) => entry.kind === "foot").length;
+  for (let index = 0; index < 600; index += 1) {
+    send({ type: "line", target: "linux", direction: "---", text: `later-${index}` });
+  }
+  flushFrames();
+  const gone = jumpTo(1);
+  return {
+    running,
+    footOnly,
+    stillFollowing,
+    gone,
+    retainedFeet,
+    pillBefore,
+    pill: document.getElementById("status-pill").textContent,
+  };
+"""
+        )
+
+        # Running with nothing captured yet.
+        self.assertIn("jump-miss", result["running"]["node"])
+        # Sealed, but the one line it captured was trimmed before the seal arrived, so
+        # retention holds a footer with nothing under it.
+        self.assertIn("jump-miss", result["footOnly"]["node"])
+        self.assertEqual(1, result["retainedFeet"])
+        # A miss must not detach Follow or open a history window.
+        self.assertEqual(0, result["stillFollowing"]["spacers"])
+        self.assertEqual(0, result["running"]["slot0Flashes"])
+        self.assertEqual(0, result["footOnly"]["slot0Flashes"])
+        # Trimming later takes the orphaned seal too.
+        self.assertIn("jump-miss", result["gone"]["node"])
+        self.assertEqual(result["pillBefore"], result["pill"])
+
+    def test_overlapping_exec_ids_flash_only_the_clicked_target(self):
+        result = run_ui_scenario(
+            """
+  await nextTurn();
+  send({ type: "exec", phase: "start", id: 5, target: "linux", cmd: "a" });
+  for (let index = 0; index < 40; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `cap-linux-${index}` });
+  }
+  send({
+    type: "exec", phase: "end", id: 5, target: "linux",
+    ended_by: "idle", ms: 5, bytes: 40, truncated: false, ok: true,
+  });
+  send({ type: "exec", phase: "start", id: 5, target: "rtos", cmd: "b" });
+  for (let index = 0; index < 40; index += 1) {
+    send({ type: "line", target: "rtos", direction: "<<<", text: `cap-rtos-${index}` });
+  }
+  send({
+    type: "exec", phase: "end", id: 5, target: "rtos",
+    ended_by: "idle", ms: 5, bytes: 40, truncated: false, ok: true,
+  });
+  flushFrames();
+  await socket.onopen();
+"""
+            + JUMP_BY_SPINE_INDEX
+            + """
+  const rtosJump = jumpTo(0);
+  const linuxJump = jumpTo(1);
+  return {
+    rtosJump,
+    linuxJump,
+    slot0: paneState("slot0"),
+    slot1: paneState("slot1"),
+  };
+""",
+            agent_log_entries=[
+                {
+                    "id": 5,
+                    "phase": "end",
+                    "target": "rtos",
+                    "cmd": "b",
+                    "ts": "10:00:01.000",
+                    "ended_by": "idle",
+                    "ms": 5,
+                    "bytes": 40,
+                    "truncated": False,
+                    "ok": True,
+                },
+                {
+                    "id": 5,
+                    "phase": "end",
+                    "target": "linux",
+                    "cmd": "a",
+                    "ts": "10:00:00.000",
+                    "ended_by": "idle",
+                    "ms": 5,
+                    "bytes": 40,
+                    "truncated": False,
+                    "ok": True,
+                },
+            ],
+        )
+
+        # Both captures are small enough to stay materialized, so both jumps are the
+        # immediate path and neither pane may detach.
+        self.assertIn("jump-hit", result["rtosJump"]["node"])
+        self.assertEqual(0, result["rtosJump"]["slot0Flashes"])
+        self.assertIn("cap-rtos-0", result["rtosJump"]["slot1Row"])
+        self.assertIn("jump-hit", result["linuxJump"]["node"])
+        self.assertEqual(0, result["linuxJump"]["slot1Flashes"])
+        self.assertIn("cap-linux-0", result["linuxJump"]["slot0Row"])
+        self.assertEqual(0, result["slot0"]["spacers"])
+        self.assertEqual(0, result["slot1"]["spacers"])
+
+    def test_overlapping_exec_id_jumps_into_its_own_targets_history(self):
+        result = run_ui_scenario(
+            """
+  await nextTurn();
+  const linux = term("slot0");
+  send({ type: "exec", phase: "start", id: 5, target: "linux", cmd: "a" });
+  for (let index = 0; index < 100; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `cap-linux-${index}` });
+  }
+  send({
+    type: "exec", phase: "end", id: 5, target: "linux",
+    ended_by: "idle", ms: 5, bytes: 100, truncated: false, ok: true,
+  });
+  for (let index = 0; index < 600; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `post-${index}` });
+  }
+  send({ type: "exec", phase: "start", id: 5, target: "rtos", cmd: "b" });
+  for (let index = 0; index < 40; index += 1) {
+    send({ type: "line", target: "rtos", direction: "<<<", text: `cap-rtos-${index}` });
+  }
+  send({
+    type: "exec", phase: "end", id: 5, target: "rtos",
+    ended_by: "idle", ms: 5, bytes: 40, truncated: false, ok: true,
+  });
+  flushFrames();
+  linux.clientHeight = 400;
+  linux.scrollHeight = 12618;
+  await socket.onopen();
+"""
+            + JUMP_BY_SPINE_INDEX
+            + """
+  const linuxJump = jumpTo(1);
+  return { linuxJump, slot0: paneState("slot0"), slot1: paneState("slot1") };
+""",
+            agent_log_entries=[
+                {
+                    "id": 5,
+                    "phase": "end",
+                    "target": "rtos",
+                    "cmd": "b",
+                    "ts": "10:00:01.000",
+                    "ended_by": "idle",
+                    "ms": 5,
+                    "bytes": 40,
+                    "truncated": False,
+                    "ok": True,
+                },
+                {
+                    "id": 5,
+                    "phase": "end",
+                    "target": "linux",
+                    "cmd": "a",
+                    "ts": "10:00:00.000",
+                    "ended_by": "idle",
+                    "ms": 5,
+                    "bytes": 100,
+                    "truncated": False,
+                    "ok": True,
+                },
+            ],
+        )
+
+        # The other pane is showing a materialized capture under the same number, which
+        # is exactly what a target-blind lookup would jump to.
+        self.assertIn("jump-hit", result["linuxJump"]["node"])
+        self.assertEqual(0, result["linuxJump"]["slot1Flashes"])
+        self.assertIn("cap-linux-0", result["linuxJump"]["slot0Row"])
+        self.assertEqual(2, result["slot0"]["spacers"])
+        self.assertEqual(0, result["slot1"]["spacers"])
+
+    def test_jump_follows_a_capture_reordered_by_recovery(self):
+        result = run_ui_scenario(
+            MEASURED_ROWS
+            + DETACH_SPANNING_CAPTURE
+            + SCROLL_TO
+            + CAPTURE_SHAPE
+            + JUMP_BY_SPINE_INDEX
+            + """
+  scrollTo(3600);
+  scrollTo(15500);
+  bufferAndSeal(40);
+  reattach();
+  for (let index = 0; index < 300; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `later-${index}` });
+  }
+  flushFrames();
+  linux.scrollHeight = 22212;
+  const evicted = {
+    capRows: linux.children.filter((c) => c.classList.contains("capture-row")).length,
+    spacers: linux.children.filter((c) => c.className === "transcript-spacer").length,
+  };
+  const jumped = jumpTo(0);
+  return { evicted, jump: jumped, shape: shape(), after: paneState("slot0") };
+"""
+        )
+
+        # The followed window has moved past the whole recovered run.
+        self.assertEqual(0, result["evicted"]["capRows"])
+        self.assertEqual(0, result["evicted"]["spacers"])
+
+        self.assertIn("jump-hit", result["jump"]["node"])
+        self.assertIn("cap-0", result["jump"]["slot0Row"])
+        self.assertIn("cap-top", result["jump"]["rowClass"].split(" "))
+        # Recovery moved the capture below its Gap, and the jump uses that position
+        # rather than where the capture originally arrived.
+        self.assertEqual(1, result["shape"]["gaps"])
+        self.assertLess(result["shape"]["gapAt"], result["shape"]["topAt"])
+        self.assertEqual(2, result["after"]["spacers"])
+        self.assertEqual(240, result["after"]["counted"])
+        self.assertEqual(14418, result["after"]["scrollTop"])
+
+    def test_a_line_arriving_after_a_history_jump_leaves_the_viewport_alone(self):
+        result = run_ui_scenario(
+            JUMP_CAPTURE_ABOVE
+            + JUMP_BY_SPINE_INDEX
+            + """
+  jumpTo(0);
+  const jumped = paneState("slot0");
+  send({ type: "line", target: "linux", direction: "<<<", text: "after-jump" });
+  flushFrames();
+  const held = { ...paneState("slot0"), text: linux.textContent };
+  linux.scrollTop = linux.scrollHeight;
+  linux.dispatch("scroll");
+  flushFrames();
+  const rows = linux.children;
+  return {
+    jumped,
+    held,
+    reattached: paneState("slot0"),
+    lastText: rows[rows.length - 1].textContent,
+    firstText: rows[0].textContent,
+  };
+"""
+        )
+
+        self.assertEqual(2, result["jumped"]["spacers"])
+        self.assertEqual(0, result["jumped"]["scrollTop"])
+
+        # Detached means detached: the line is omitted and the pane does not move.
+        self.assertEqual(0, result["held"]["scrollTop"])
+        self.assertEqual(2, result["held"]["spacers"])
+        self.assertNotIn("after-jump", result["held"]["text"])
+
+        # Reaching the true virtual bottom hands the pane back to Follow exactly once,
+        # with nothing evicted, so no Gap.
+        self.assertEqual(0, result["reattached"]["spacers"])
+        self.assertEqual(0, result["reattached"]["gaps"])
+        self.assertEqual(240, result["reattached"]["counted"])
+        self.assertIn("after-jump", result["lastText"])
+        self.assertIn("post-361", result["firstText"])
+
+    def test_a_near_tail_jump_stays_detached_until_the_operator_returns_to_bottom(self):
+        result = run_ui_scenario(
+            JUMP_CAPTURE_NEAR_TAIL
+            + JUMP_BY_SPINE_INDEX
+            + """
+  const before = paneState("slot0");
+  const jump = jumpTo(0);
+  const flashed = flashesIn("slot0")[0];
+  // The browser answers the jump's own scroll assignment with a scroll event. The target
+  // sits inside the last viewport, so this is exactly where a plain tail check reattaches
+  // a pane the operator deliberately sent into history.
+  linux.dispatch("scroll");
+  flushFrames();
+  const rows = linux.children;
+  const settled = {
+    ...paneState("slot0"),
+    sameRow: flashesIn("slot0")[0] === flashed,
+    firstText: rows[1].textContent,
+    lastText: rows[rows.length - 2].textContent,
+  };
+  send({ type: "line", target: "linux", direction: "<<<", text: "after-jump" });
+  flushFrames();
+  const held = { ...paneState("slot0"), text: linux.textContent };
+  linux.scrollTop = 9000;
+  linux.dispatch("scroll");
+  flushFrames();
+  const away = paneState("slot0");
+  linux.scrollTop = linux.scrollHeight;
+  linux.dispatch("scroll");
+  flushFrames();
+  // A second event at the same place must not recover a second time.
+  linux.dispatch("scroll");
+  flushFrames();
+  const settledRows = linux.children;
+  return {
+    before,
+    jump,
+    settled,
+    held,
+    away,
+    reattached: paneState("slot0"),
+    lastText: settledRows[settledRows.length - 1].textContent,
+    replays: (linux.textContent.match(/after-jump/g) || []).length,
+  };
+"""
+        )
+
+        # Detached, and parked far enough from the bottom that nothing here is a tail read.
+        self.assertEqual(2, result["before"]["spacers"])
+        self.assertEqual(14050, result["before"]["scrollTop"])
+
+        self.assertIn("jump-hit", result["jump"]["node"])
+        self.assertIn("cap-0", result["jump"]["slot0Row"])
+        self.assertIn("cap-top", result["jump"]["rowClass"].split(" "))
+
+        # The jump's own scroll event leaves the pane detached on the row it flashed.
+        self.assertEqual(2, result["settled"]["spacers"])
+        self.assertEqual(17874, result["settled"]["scrollTop"])
+        self.assertTrue(result["settled"]["sameRow"])
+        self.assertEqual(0, result["settled"]["gaps"])
+        self.assertEqual(242, result["settled"]["children"])
+        self.assertIn("pre-776", result["settled"]["firstText"])
+        self.assertIn("post-1", result["settled"]["lastText"])
+
+        # The slice already reaches the model tail, and a detached pane still omits.
+        self.assertEqual(17874, result["held"]["scrollTop"])
+        self.assertEqual(2, result["held"]["spacers"])
+        self.assertNotIn("after-jump", result["held"]["text"])
+
+        # A genuine operator scroll is never swallowed, in either direction.
+        self.assertEqual(2, result["away"]["spacers"])
+        self.assertEqual(9000, result["away"]["scrollTop"])
+        self.assertEqual(0, result["reattached"]["spacers"])
+        self.assertEqual(0, result["reattached"]["gaps"])
+        self.assertEqual(240, result["reattached"]["counted"])
+        self.assertIn("after-jump", result["lastText"])
+        self.assertEqual(1, result["replays"])
+
+    def test_the_retained_capture_lookup_is_paid_only_on_a_click(self):
+        result = run_ui_scenario(
+            JUMP_CAPTURE_ABOVE
+            + SCROLL_TO
+            + JUMP_BY_SPINE_INDEX
+            + """
+  const appends = paneReads.captureRange;
+  scrollTo(6000);
+  scrollTo(3000);
+  scrollTo(0);
+  const scrolls = paneReads.captureRange;
+  const first = jumpTo(0);
+  const oneClick = paneReads.captureRange;
+  const second = jumpTo(0);
+  return {
+    appends,
+    scrolls,
+    oneClick,
+    twoClicks: paneReads.captureRange,
+    first,
+    second,
+    after: paneState("slot0"),
+  };
+"""
+        )
+
+        # Streaming 701 entries and dragging the detached window across them never asks
+        # the model where a capture is; only the click does, once per click.
+        self.assertEqual(0, result["appends"])
+        self.assertEqual(0, result["scrolls"])
+        self.assertEqual(1, result["oneClick"])
+        self.assertEqual(2, result["twoClicks"])
+
+        # The operator is parked on the top of retention, so the capture's first line is
+        # already materialized and the jump stays on the immediate path.
+        self.assertIn("cap-0", result["first"]["slot0Row"])
+        self.assertIn("cap-0", result["second"]["slot0Row"])
+        self.assertEqual(2, result["after"]["spacers"])
+        self.assertEqual(0, result["after"]["scrollTop"])
+        self.assertEqual("0px", result["after"]["top"])
+
+    def test_a_second_jump_clears_the_first_flash_and_its_row(self):
+        result = run_ui_scenario(
+            """
+  const linux = term("slot0");
+  send({ type: "exec", phase: "start", id: 7, target: "linux", cmd: "first" });
+  for (let index = 0; index < 100; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `cap-a-${index}` });
+  }
+  send({
+    type: "exec", phase: "end", id: 7, target: "linux",
+    ended_by: "idle", ms: 12, bytes: 100, truncated: false, ok: true,
+  });
+  for (let index = 0; index < 400; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `mid-${index}` });
+  }
+  send({ type: "exec", phase: "start", id: 8, target: "linux", cmd: "second" });
+  for (let index = 0; index < 100; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `cap-b-${index}` });
+  }
+  send({
+    type: "exec", phase: "end", id: 8, target: "linux",
+    ended_by: "idle", ms: 12, bytes: 100, truncated: false, ok: true,
+  });
+  for (let index = 0; index < 400; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `post-${index}` });
+  }
+  flushFrames();
+  linux.clientHeight = 400;
+  linux.scrollHeight = 18036;
+"""
+            + JUMP_BY_SPINE_INDEX
+            + """
+  const body = document.getElementById("spine-body");
+  const firstJump = jumpTo(1);
+  const firstRow = flashesIn("slot0")[0];
+  const secondJump = jumpTo(0);
+  return {
+    firstJump,
+    secondJump,
+    firstRowText: firstRow.textContent,
+    firstRowClass: firstRow.className,
+    firstRowAttached: firstRow.parentNode !== null,
+    nodeClasses: body.children.map((child) => child.className),
+    after: paneState("slot0"),
+  };
+"""
+        )
+
+        self.assertIn("cap-a-0", result["firstJump"]["slot0Row"])
+        self.assertIn("cap-b-0", result["secondJump"]["slot0Row"])
+        # Exactly one flash survives, and the row the first jump used is neither still
+        # marked nor still in the pane.
+        self.assertEqual(1, result["secondJump"]["slot0Flashes"])
+        self.assertIn("cap-a-0", result["firstRowText"])
+        self.assertNotIn("jump-flash", result["firstRowClass"].split(" "))
+        self.assertFalse(result["firstRowAttached"])
+        # The hit marker moves with the click, and the older node keeps neither marker.
+        self.assertIn("jump-hit", result["nodeClasses"][0])
+        self.assertNotIn("jump-hit", result["nodeClasses"][1])
+        self.assertNotIn("jump-miss", result["nodeClasses"][1])
+        self.assertEqual(2, result["after"]["spacers"])
 
 
 if __name__ == "__main__":

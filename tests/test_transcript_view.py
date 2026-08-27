@@ -916,6 +916,145 @@ class TranscriptViewCaptureContiguityTest(unittest.TestCase):
         self.assertEqual(2, result["afterInterleave"])
 
 
+class TranscriptViewCaptureRangeTest(unittest.TestCase):
+    """Trace Jump has to find a capture the renderer has not materialized, so retention
+    answers where that capture currently sits in visual order."""
+
+    def test_capture_range_reports_the_first_line_and_last_entry_positions(self):
+        result = run_transcript_view(
+            """
+            (() => {
+              const pane = TV.createPane(500);
+              pane.appendLine({ direction: "<<<", text: "before" });
+              pane.appendLine({ direction: "<<<", text: "cap-0", captureId: 7 });
+              pane.appendLine({ direction: "<<<", text: "cap-1", captureId: 7 });
+              pane.appendFoot({ captureId: 7, text: "sealed" });
+              pane.appendLine({ direction: "<<<", text: "after" });
+              return { range: pane.captureRange(7), size: pane.size() };
+            })()
+            """
+        )
+        self.assertEqual({"first": 1, "last": 3}, result["range"])
+        self.assertEqual(5, result["size"])
+
+    def test_capture_range_indexes_the_same_entries_slice_returns(self):
+        texts = run_transcript_view(
+            """
+            (() => {
+              const pane = TV.createPane(500);
+              for (let i = 0; i < 4; i += 1) {
+                pane.appendLine({ direction: "<<<", text: `pre-${i}` });
+              }
+              for (let i = 0; i < 3; i += 1) {
+                pane.appendLine({ direction: "<<<", text: `cap-${i}`, captureId: 7 });
+              }
+              pane.appendFoot({ captureId: 7, text: "sealed" });
+              const range = pane.captureRange(7);
+              return pane.slice(range.first, range.last + 1).map((e) => e.text);
+            })()
+            """
+        )
+        self.assertEqual(["cap-0", "cap-1", "cap-2", "sealed"], texts)
+
+    def test_capture_range_follows_trimming_of_the_oldest_capture_lines(self):
+        result = run_transcript_view(
+            """
+            (() => {
+              const pane = TV.createPane(3);
+              for (let i = 0; i < 3; i += 1) {
+                pane.appendLine({ direction: "<<<", text: `cap-${i}`, captureId: 7 });
+              }
+              pane.appendFoot({ captureId: 7, text: "sealed" });
+              pane.appendLine({ direction: "<<<", text: "after-0" });
+              pane.appendLine({ direction: "<<<", text: "after-1" });
+              const range = pane.captureRange(7);
+              return { range, first: pane.slice(range.first, range.first + 1)[0].text };
+            })()
+            """
+        )
+        self.assertEqual({"first": 0, "last": 1}, result["range"])
+        self.assertEqual("cap-2", result["first"])
+
+    def test_capture_range_is_null_when_only_the_seal_is_retained(self):
+        # Trimming took the capture's single line before the seal arrived, so retention
+        # holds a footer with nothing under it. There is no line to jump to.
+        result = run_transcript_view(
+            """
+            (() => {
+              const pane = TV.createPane(2);
+              pane.appendLine({ direction: "<<<", text: "cap-0", captureId: 7 });
+              pane.appendLine({ direction: "<<<", text: "after-0" });
+              pane.appendLine({ direction: "<<<", text: "after-1" });
+              pane.appendFoot({ captureId: 7, text: "sealed" });
+              return {
+                range: pane.captureRange(7),
+                shape: pane.entries().map((e) => e.kind + ":" + e.text),
+              };
+            })()
+            """
+        )
+        self.assertIsNone(result["range"])
+        self.assertEqual(
+            ["line:after-0", "line:after-1", "foot:sealed"],
+            result["shape"],
+        )
+
+    def test_capture_range_is_null_for_a_capture_the_pane_never_held(self):
+        result = run_transcript_view(
+            """
+            (() => {
+              const pane = TV.createPane(500);
+              pane.appendLine({ direction: "<<<", text: "a" });
+              pane.appendLine({ direction: "<<<", text: "cap-0", captureId: 7 });
+              return [pane.captureRange(9), pane.captureRange(null)];
+            })()
+            """
+        )
+        self.assertEqual([None, None], result)
+
+    def test_capture_range_follows_a_recovery_reorder(self):
+        result = run_transcript_view(
+            """
+            (() => {
+              const pane = TV.createPane(500);
+              pane.appendLine({ direction: "<<<", text: "cap-0", captureId: 7 });
+              pane.appendLine({ direction: "<<<", text: "cap-1", captureId: 7 });
+              pane.appendFoot({ captureId: 7, text: "sealed" });
+              const before = pane.captureRange(7);
+              pane.appendGap(8);
+              pane.moveCaptureToEnd(7);
+              const after = pane.captureRange(7);
+              return { before, after, first: pane.slice(after.first, after.first + 1)[0].text };
+            })()
+            """
+        )
+        self.assertEqual({"first": 0, "last": 2}, result["before"])
+        # The Gap took the top, so the capture's run now starts below it.
+        self.assertEqual({"first": 1, "last": 3}, result["after"])
+        self.assertEqual("cap-0", result["first"])
+
+    def test_capture_range_returns_positions_rather_than_the_retained_entries(self):
+        # A caller must not be handed anything it can mutate the model through.
+        result = run_transcript_view(
+            """
+            (() => {
+              const pane = TV.createPane(500);
+              pane.appendLine({ direction: "<<<", text: "cap-0", captureId: 7 });
+              const range = pane.captureRange(7);
+              range.first = 99;
+              return {
+                keys: Object.keys(range).sort(),
+                types: Object.values(pane.captureRange(7)).map((v) => typeof v),
+                stable: pane.captureRange(7),
+              };
+            })()
+            """
+        )
+        self.assertEqual(["first", "last"], result["keys"])
+        self.assertEqual(["number", "number"], result["types"])
+        self.assertEqual({"first": 0, "last": 0}, result["stable"])
+
+
 class TranscriptViewUiWiringTest(unittest.TestCase):
     def test_index_loads_transcript_view_before_app(self):
         html = (app_module.STATIC / "index.html").read_text(encoding="utf-8")
