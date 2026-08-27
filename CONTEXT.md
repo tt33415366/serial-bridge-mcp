@@ -65,7 +65,7 @@ The Operator-facing list, in the Bridge console, of this Hub session’s Agent E
 _Avoid_: spine (layout jargon), activity feed, agent history (sounds durable across Hub restarts)
 
 **Trace Jump**:
-The Operator action of selecting an Agent Trace Exec entry to scroll to and briefly highlight that Exec’s capture in the Target’s live transcript, only when that capture is still present in the current view.
+The Operator action of selecting an Agent Trace Exec entry to scroll to and briefly highlight that Exec’s capture in the Target’s live transcript. The pane materializes the capture if needed; the jump succeeds while at least one of its lines remains retained, and misses only after all capture lines leave retention (or none existed).
 _Avoid_: clickable trace (UI-only phrasing), jump to log (ambiguous with session log files), replay (implies re-running)
 
 **Transcript Gap**:
@@ -77,7 +77,7 @@ Whether that Target pane is pinned to the live tail; leaving the tail pauses mat
 _Avoid_: auto-scroll (implementation), stick (vague), tail mode (jargon)
 
 **Live View Budget**:
-The Operator-chosen cap, shared by both Target panes, on how many lines the current view may materialize, including Transcript Gap markers. Tightening it drops the oldest materialized rows; it does not change the session log.
+The Operator-chosen cap, shared by both Target panes, on retained transcript entries available to virtual history, including Transcript Gap markers. Tightening it drops the oldest retained entries; it does not change the complete session log. DOM materialization is a separate bounded virtual window that limits how many entries render at once.
 _Avoid_: max term lines, scrollback (alone — sounds like the session log), buffer size
 
 **Raw Payload**:
