@@ -74,10 +74,12 @@
   const captureIndex = new Map();
   let spineEntries = [];
   let hydrateVersion = 0;
-  const termLineCounts = new WeakMap();
+  const windowCounts = Object.fromEntries(SLOT_KEYS.map((slot) => [slot, 0]));
+  const rowCapture = new WeakMap();
   let jumpFlashTimer = null;
   let jumpNodeTimer = null;
   let jumpNodeMarked = null;
+  const FOLLOWED_WINDOW_ENTRY_LIMIT = 240;
   const LIVE_TAIL_TOLERANCE_PX = 32;
   const OMITTED_TAIL_LIMIT = 32;
   const OMITTED_WRITE_LIMIT = 200;
@@ -288,47 +290,134 @@
     }
   }
 
-  function trimAllTerms() {
-    for (const slot of SLOT_KEYS) trimTerm(terms[slot]);
-  }
-
   function setLiveViewBudget(value) {
     const budget = Number(value);
     if (!LIVE_VIEW_BUDGETS.includes(budget)) return;
     liveViewBudget = budget;
     localStorage.setItem(LIVE_VIEW_BUDGET_KEY, String(budget));
     updateLiveDepthInstrument();
-    trimAllTerms();
+    for (const slot of SLOT_KEYS) {
+      paneModels[slot].setBudget(budget);
+      trimFollowedWindow(slot);
+    }
   }
 
   function hasClass(el, name) {
-    return el.className.split(" ").includes(name);
+    return String(el.className || "").split(" ").includes(name);
   }
 
-  function oldestTermLine(el) {
-    for (let child = el.firstElementChild; child; child = child.nextElementSibling) {
-      if (hasClass(child, "ln")) return { parent: el, row: child };
-      const nested = child.firstElementChild;
-      if (nested && hasClass(nested, "ln")) return { parent: child, row: nested };
+  /**
+   * The Live View Budget is model retention; the followed window is what the browser has
+   * to lay out, hit-test and paint on every keystroke, so it stays far smaller. A budget
+   * below the window would make the window the tighter of the two.
+   */
+  function followedWindowLimit() {
+    return Math.min(FOLLOWED_WINDOW_ENTRY_LIMIT, liveViewBudget);
+  }
+
+  function setCaptureRowEdges(row, top, bottom) {
+    row.classList.remove("cap-top", "cap-mid", "cap-bot");
+    if (top) row.classList.add("cap-top");
+    if (bottom) row.classList.add("cap-bot");
+    if (!top && !bottom) row.classList.add("cap-mid");
+  }
+
+  /**
+   * The head of the window must still read as a self-contained capture: a footer whose
+   * rows have all been trimmed away is an orphan, and the surviving first row of a
+   * still-visible capture takes over both the top rule and the Trace Jump anchor.
+   */
+  function normalizeWindowHead(el) {
+    let head = el.firstElementChild;
+    while (head && hasClass(head, "cap-foot")) {
+      forgetTrimmedRow(head);
+      el.removeChild(head);
+      head = el.firstElementChild;
+    }
+    if (!head || !hasClass(head, "capture-row") || hasClass(head, "cap-top")) return;
+    setCaptureRowEdges(head, true, hasClass(head, "cap-bot"));
+    const record = rowCapture.get(head);
+    if (record) captureIndex.set(record.id, head);
+  }
+
+  function forgetTrimmedRow(row) {
+    const record = rowCapture.get(row);
+    if (!record) return;
+    if (record.lastRow === row) record.lastRow = null;
+    if (record.footRow === row) record.footRow = null;
+    if (captureIndex.get(record.id) === row) captureIndex.delete(record.id);
+  }
+
+  function trimFollowedWindow(slot) {
+    const el = terms[slot];
+    const limit = followedWindowLimit();
+    while (windowCounts[slot] > limit) {
+      const row = el.firstElementChild;
+      if (!row) break;
+      forgetTrimmedRow(row);
+      el.removeChild(row);
+      if (hasClass(row, "ln")) windowCounts[slot] -= 1;
+      normalizeWindowHead(el);
+    }
+  }
+
+  function countWindowRow(slot) {
+    windowCounts[slot] += 1;
+    trimFollowedWindow(slot);
+  }
+
+  const overflowProbes = [];
+
+  /**
+   * Whether a row's text actually overflows its three-line cap is only knowable from
+   * layout, so rows are probed together in the frame after they are appended: all reads
+   * first, then the affordance writes. Rows already trimmed out of the window are
+   * skipped, which keeps the probe bounded by the window instead of by the burst.
+   */
+  function queueOverflowProbe(row, body) {
+    overflowProbes.push({ row, body });
+    if (overflowProbes.length > FOLLOWED_WINDOW_ENTRY_LIMIT * 4) {
+      overflowProbes.splice(0, overflowProbes.length - FOLLOWED_WINDOW_ENTRY_LIMIT);
+    }
+  }
+
+  function flushOverflowProbes() {
+    const overflowed = [];
+    for (const probe of overflowProbes) {
+      if (!probe.row.parentNode) continue;
+      if (probe.body.scrollHeight > probe.body.clientHeight) overflowed.push(probe.row);
+    }
+    overflowProbes.length = 0;
+    for (const row of overflowed) addExpandAffordance(row);
+  }
+
+  function addExpandAffordance(row) {
+    if (hasClass(row, "clamped")) return;
+    row.classList.add("clamped");
+    const toggle = document.createElement("button");
+    toggle.className = "ln-expand";
+    toggle.setAttribute("type", "button");
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.setAttribute("aria-label", "Show the full line");
+    toggle.textContent = "⋯";
+    row.appendChild(toggle);
+  }
+
+  function toggleRowExpansion(toggle) {
+    const row = toggle.parentNode;
+    if (!row) return;
+    const expanded = !hasClass(row, "expanded");
+    row.classList.toggle("expanded", expanded);
+    toggle.setAttribute("aria-expanded", String(expanded));
+    toggle.setAttribute("aria-label", expanded ? "Collapse this line" : "Show the full line");
+  }
+
+  /** One listener per pane, so 240 rows cost 2 listeners rather than 240. */
+  function expandToggleFrom(node, pane) {
+    for (let el = node; el && el !== pane; el = el.parentNode) {
+      if (typeof el.className === "string" && hasClass(el, "ln-expand")) return el;
     }
     return null;
-  }
-
-  function trimTerm(el) {
-    let lineCount = termLineCounts.get(el) || 0;
-    while (lineCount > liveViewBudget) {
-      const oldest = oldestTermLine(el);
-      if (!oldest) break;
-      oldest.parent.removeChild(oldest.row);
-      const parent = oldest.parent;
-      if (parent !== el && hasClass(parent, "sealed")) {
-        const remaining = parent.firstElementChild;
-        if (!remaining || !hasClass(remaining, "ln")) el.removeChild(parent);
-      }
-      lineCount -= 1;
-    }
-    termLineCounts.set(el, lineCount);
-    for (const slot of SLOT_KEYS) paneModels[slot].setBudget(liveViewBudget);
   }
 
   function isNearLiveTail(el) {
@@ -347,10 +436,6 @@
     return row && hasClass(row, "ln") && hasClass(row, "gap");
   }
 
-  function slotForTerm(el) {
-    return SLOT_KEYS.find((slot) => terms[slot] === el) || null;
-  }
-
   function lastChild(el) {
     const children = el.children;
     return children[children.length - 1] || null;
@@ -362,15 +447,17 @@
   }
 
   /**
-   * A Gap always keeps its own trailing replay content attached right after it (the
-   * combined retained tail + writes ring can hold at most 232 rows, comfortably under
-   * the smallest Live View Budget of 500), so budget trimming can never split a Gap
-   * from what follows it and two separately-created Gaps can never end up adjacent
+   * A Gap always keeps its own trailing replay content attached right after it: a Gap is
+   * only counted once the retained tail is full, so at least 32 replayed rows follow it,
+   * and one recovery appends at most 233 entries (232 retained rows plus the Gap) which
+   * still fits the 240-entry window. Window trimming therefore can never split a Gap
+   * from what follows it, and two separately-created Gaps can never end up adjacent
    * through normal flow. This merge branch is a defensive guard, not currently
    * reachable — kept in case that invariant ever changes.
    */
-  function appendOrMergeTranscriptGap(el, count) {
-    paneModels[slotForTerm(el)].appendGap(count);
+  function appendOrMergeTranscriptGap(slot, count) {
+    const el = terms[slot];
+    paneModels[slot].appendGap(count);
     const prior = lastChild(el);
     if (isTranscriptGap(prior)) {
       setGapCount(prior, (Number(prior.dataset.evictedCount) || 0) + count);
@@ -380,8 +467,7 @@
     row.className = "ln gap";
     setGapCount(row, count);
     el.appendChild(row);
-    termLineCounts.set(el, (termLineCounts.get(el) || 0) + 1);
-    trimTerm(el);
+    countWindowRow(slot);
   }
 
   function rememberOmittedLine(slot, target, direction, text, who, tstamp, options = {}) {
@@ -427,16 +513,23 @@
   }
 
   /**
-   * A capture already attached to the DOM must move after the new Gap so replay stays
-   * in visual order. Budget trimming can also evict a sealed, single-line capture's
-   * only row while its container is still marked attached, leaving it an orphan with
-   * no parent — in that case it must be reattached outright, or replayed rows appended
-   * into it would render invisibly.
+   * Row-level capture chrome leaves no wrapper to move, so a capture that is already
+   * materialized has its own rows (and footer) relocated after the new Gap. Replay then
+   * continues that one run instead of opening a visually separate second box below the
+   * Gap.
    */
-  function reattachCaptureAfterGap(el, capture) {
-    if (!capture || !capture.attached) return;
-    if (capture.el.parentNode === el) el.removeChild(capture.el);
-    el.appendChild(capture.el);
+  function moveCaptureRowsAfterGap(slot, record) {
+    const el = terms[slot];
+    const rows = [];
+    for (let child = el.firstElementChild; child; child = child.nextElementSibling) {
+      if (rowCapture.get(child) === record) rows.push(child);
+    }
+    if (!rows.length) return;
+    for (const row of rows) {
+      el.removeChild(row);
+      el.appendChild(row);
+    }
+    normalizeWindowHead(el);
   }
 
   function recoverTranscriptGap(slot) {
@@ -444,15 +537,14 @@
     const evicted = state.evicted;
     if (!evicted && !state.tail.length && !state.writes.length) return;
     const retained = state.tail.concat(state.writes).sort(compareRetainedLines);
-    const el = terms[slot];
     state.evicted = 0;
     state.tail = [];
     state.writes = [];
-    if (evicted > 0) appendOrMergeTranscriptGap(el, evicted);
+    if (evicted > 0) appendOrMergeTranscriptGap(slot, evicted);
     const movedCaptures = new Set();
     retained.forEach((item) => {
       if (item.capture && !movedCaptures.has(item.capture)) {
-        reattachCaptureAfterGap(el, item.capture);
+        moveCaptureRowsAfterGap(slot, item.capture);
         movedCaptures.add(item.capture);
       }
     });
@@ -517,6 +609,7 @@
       lastAutoScrollTarget.set(el, el.scrollTop);
     }
     pendingScrolls.clear();
+    flushOverflowProbes();
   }
 
   function scheduleScroll(el) {
@@ -582,10 +675,6 @@
       node = node.parentNode;
     }
     return false;
-  }
-
-  function registerCapture(id, el) {
-    captureIndex.set(Number(id), el);
   }
 
   function clearCaptureIndex() {
@@ -745,12 +834,15 @@
   function onExecStart(msg) {
     recordExecStart(msg);
     const slot = targetToSlot[msg.target];
-    const term = terms[slot];
-    if (!term) return;
-    const capture = document.createElement("div");
-    capture.className = "capture running";
-    capture.dataset.execId = String(msg.id);
-    openCaptures[msg.target] = { id: msg.id, slot, el: capture, attached: false };
+    if (!terms[slot]) return;
+    openCaptures[msg.target] = {
+      id: Number(msg.id),
+      slot,
+      sealed: false,
+      footText: "",
+      lastRow: null,
+      footRow: null,
+    };
     setHolder(slot, true);
     schedulePaneScroll(slot);
   }
@@ -758,35 +850,60 @@
   function onExecEnd(msg) {
     const recorded = recordExecEnd(msg);
     const open = openCaptures[msg.target];
-    if (!open || open.id !== msg.id) {
+    if (!open || open.id !== Number(msg.id)) {
       const slot = targetToSlot[msg.target];
       if (recorded && slot) setHolder(slot, false);
       return;
     }
     const text = sealCopy(msg);
-    const foot = document.createElement("div");
-    foot.className = "cap-foot";
-    foot.textContent = text;
-    open.el.appendChild(foot);
-    open.el.className = "capture sealed";
+    open.sealed = true;
+    open.footText = text;
     paneModels[open.slot].appendFoot({ captureId: open.id, text });
+    if (open.lastRow && open.lastRow.parentNode === terms[open.slot]) {
+      setCaptureRowEdges(open.lastRow, hasClass(open.lastRow, "cap-top"), true);
+      materializeCaptureFoot(open);
+    }
     delete openCaptures[msg.target];
     setHolder(open.slot, false);
   }
 
-  function appendCapturedRow(capture, row) {
-    if (!hasClass(capture.el, "sealed")) {
-      capture.el.appendChild(row);
-      return;
+  /** The footer trails its own last row, which is not necessarily the pane's last row. */
+  function materializeCaptureFoot(record) {
+    const el = terms[record.slot];
+    if (record.footRow && record.footRow.parentNode === el) return;
+    const foot = document.createElement("div");
+    foot.className = "cap-foot";
+    foot.dataset.execId = String(record.id);
+    foot.textContent = record.footText;
+    rowCapture.set(foot, record);
+    el.insertBefore(foot, record.lastRow.nextElementSibling);
+    record.footRow = foot;
+  }
+
+  /**
+   * Captured rows join their capture's run rather than the pane's tail, so an Operator
+   * write that barged in mid-capture stays below the capture instead of splitting it.
+   */
+  function attachCapturedRow(record, row) {
+    const el = terms[record.slot];
+    const previous = record.lastRow && record.lastRow.parentNode === el ? record.lastRow : null;
+    row.classList.add("capture-row");
+    row.dataset.execId = String(record.id);
+    rowCapture.set(row, record);
+    setCaptureRowEdges(row, !previous, record.sealed);
+    if (previous && hasClass(previous, "cap-bot")) {
+      setCaptureRowEdges(previous, hasClass(previous, "cap-top"), false);
     }
-    const foot = lastChild(capture.el);
-    if (foot && hasClass(foot, "cap-foot")) {
-      capture.el.removeChild(foot);
-      capture.el.appendChild(row);
-      capture.el.appendChild(foot);
-      return;
+    if (record.footRow && record.footRow.parentNode === el) {
+      el.insertBefore(row, record.footRow);
+    } else if (previous) {
+      el.insertBefore(row, previous.nextElementSibling);
+    } else {
+      el.appendChild(row);
     }
-    capture.el.appendChild(row);
+    record.lastRow = row;
+    if (!previous) captureIndex.set(record.id, row);
+    if (record.sealed) materializeCaptureFoot(record);
   }
 
   function appendLine(target, direction, text, who, tstamp, options = {}) {
@@ -837,15 +954,10 @@
     if (prefix) body.appendChild(document.createTextNode(prefix));
     AnsiRender.renderAnsi(body, text);
     row.append(stamp, body);
-    if (capture && !capture.attached) {
-      el.appendChild(capture.el);
-      capture.attached = true;
-      registerCapture(capture.id, capture.el);
-    }
-    if (capture) appendCapturedRow(capture, row);
+    if (capture) attachCapturedRow(capture, row);
     else el.appendChild(row);
-    termLineCounts.set(el, (termLineCounts.get(el) || 0) + 1);
-    trimTerm(el);
+    queueOverflowProbe(row, body);
+    countWindowRow(slot);
     schedulePaneScroll(slot);
   }
 
@@ -915,6 +1027,10 @@
 
   for (const slot of SLOT_KEYS) {
     terms[slot].addEventListener("scroll", () => updateFollowState(slot));
+    terms[slot].addEventListener("click", (event) => {
+      const toggle = expandToggleFrom(event.target, terms[slot]);
+      if (toggle) toggleRowExpansion(toggle);
+    });
   }
 
   bindingLiveDir.addEventListener("input", () => {
@@ -1047,11 +1163,12 @@
   document.getElementById("btn-clear").addEventListener("click", () => {
     for (const slot of SLOT_KEYS) {
       terms[slot].innerHTML = "";
-      termLineCounts.set(terms[slot], 0);
+      windowCounts[slot] = 0;
       resetFollowState(slot);
       setHolder(slot, false);
       paneModels[slot].clear();
     }
+    overflowProbes.length = 0;
     for (const target of Object.keys(openCaptures)) {
       delete openCaptures[target];
     }

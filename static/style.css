@@ -546,6 +546,10 @@ body::after {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* Trimming the followed window removes rows above the viewport every frame. Scroll
+     anchoring would "helpfully" pull scrollTop back by the removed height, which reads as
+     a scroll away from the live tail and detaches Follow. The pane manages its own tail. */
+  overflow-anchor: none;
   overscroll-behavior: contain;
   padding: 9px 12px 14px;
   font-size: 11px;
@@ -556,6 +560,7 @@ body::after {
 }
 
 .ln {
+  position: relative;
   display: grid;
   grid-template-columns: 58px minmax(0, 1fr);
   gap: 9px;
@@ -563,6 +568,44 @@ body::after {
   border-left: 2px solid transparent;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* A single pathological line must not be able to make one window row arbitrarily tall. */
+.ln .b {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+
+.ln.expanded .b {
+  display: block;
+  overflow: visible;
+}
+
+.ln-expand {
+  position: absolute;
+  top: 0;
+  right: 2px;
+  padding: 0 4px;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  background: rgba(4, 6, 13, 0.82);
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 9px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.ln-expand:hover {
+  border-color: var(--rule-hot);
+  color: var(--text);
+}
+
+.ln-expand:focus-visible {
+  outline: 1px solid var(--agent);
+  outline-offset: 1px;
 }
 
 .ln .t {
@@ -597,56 +640,41 @@ body::after {
   background: linear-gradient(90deg, transparent, rgba(77, 92, 120, 0.12), transparent);
 }
 
-.capture {
+/* Capture membership lives on the rows themselves: the box is drawn from per-row rules so
+   no single capture can grow into an arbitrarily tall element inside the window. */
+.capture-row,
+.cap-foot {
   --capture-color: var(--device);
-  position: relative;
-  margin: 5px 0;
-  padding: 5px 8px;
   border-right: 1px solid var(--capture-color);
-  border-left: 1px solid var(--capture-color);
   background: rgba(159, 176, 204, 0.035);
 }
 
-.tube.slot0 .capture { --capture-color: var(--linux); }
-.tube.slot1 .capture { --capture-color: var(--rtos); }
+.tube.slot0 .capture-row,
+.tube.slot0 .cap-foot { --capture-color: var(--linux); }
+.tube.slot1 .capture-row,
+.tube.slot1 .cap-foot { --capture-color: var(--rtos); }
 
-.capture::before,
-.capture::after {
-  content: "";
-  position: absolute;
-  right: 0;
-  left: 0;
-  height: 4px;
-  pointer-events: none;
+.capture-row {
+  padding-right: 8px;
+  border-left-color: var(--capture-color);
 }
 
-.capture::before {
-  top: 0;
+.capture-row.cap-top {
+  margin-top: 5px;
+  padding-top: 4px;
   border-top: 1px solid var(--capture-color);
 }
 
-.capture::after {
-  bottom: 0;
+.capture-row.cap-bot {
+  padding-bottom: 4px;
   border-bottom: 1px solid var(--capture-color);
 }
 
-.capture.running {
-  background:
-    linear-gradient(100deg, transparent 35%, color-mix(in srgb, var(--capture-color) 13%, transparent), transparent 65%),
-    rgba(159, 176, 204, 0.035);
-  background-position: 150% 0;
-  background-size: 240% 100%;
-  animation: capture-scan 1.4s linear infinite;
-}
-
-@keyframes capture-scan {
-  to { background-position: -150% 0; }
-}
-
 .cap-foot {
-  margin-top: 5px;
-  padding: 5px 8px 1px;
-  border-top: 1px solid color-mix(in srgb, var(--capture-color) 32%, transparent);
+  margin-bottom: 5px;
+  padding: 5px 8px 3px 9px;
+  border-bottom: 1px solid var(--capture-color);
+  border-left: 2px solid var(--capture-color);
   color: var(--dim);
   font-size: 9px;
   letter-spacing: 0.04em;
@@ -761,7 +789,7 @@ body::after {
 
 /* Loud on purpose: a landed jump often needs no scrolling at all, so the highlight is the
    only signal that the click did anything. */
-.capture.jump-flash {
+.capture-row.jump-flash {
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--agent) 70%, transparent),
     0 0 22px color-mix(in srgb, var(--agent) 28%, transparent);
@@ -1084,8 +1112,7 @@ body::after {
 @media (prefers-reduced-motion: reduce) {
   .shell { animation: none; }
   .mode .knob { transition: none; }
-  .capture.running,
-  .capture.jump-flash,
+  .capture-row.jump-flash,
   .holder.agent,
   .spine-node.exec.jump-hit,
   .spine-node.exec.jump-miss,

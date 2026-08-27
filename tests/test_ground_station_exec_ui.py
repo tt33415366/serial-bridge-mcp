@@ -55,11 +55,17 @@ class FakeClassList {{
 }}
 
 globalThis.layoutReads = 0;
+globalThis.rowLayoutReads = 0;
 globalThis.childrenReads = 0;
 
 class FakeElement {{
   constructor(id = "") {{
     this.id = id;
+    this.tagName = "DIV";
+    // Only the panes and other looked-up elements model the scroll geometry the app
+    // reads once per frame; rows created by the app are measured separately and must
+    // not inflate layoutReads-based assertions.
+    this.tracksLayoutReads = Boolean(id);
     this._children = [];
     this._scrollHeight = null;
     this.dataset = {{}};
@@ -115,7 +121,8 @@ class FakeElement {{
     this._scrollTop = Math.min(Math.max(0, Number(value) || 0), max);
   }}
   get scrollHeight() {{
-    globalThis.layoutReads += 1;
+    if (this.tracksLayoutReads) globalThis.layoutReads += 1;
+    else globalThis.rowLayoutReads += 1;
     return this._scrollHeight === null ? this._children.length : this._scrollHeight;
   }}
   set scrollHeight(value) {{
@@ -124,6 +131,13 @@ class FakeElement {{
   appendChild(child) {{
     if (child && typeof child === "object") child.parentNode = this;
     this._children.push(child);
+    return child;
+  }}
+  insertBefore(child, reference) {{
+    if (child && typeof child === "object") child.parentNode = this;
+    const index = reference ? this._children.indexOf(reference) : -1;
+    if (index < 0) this._children.push(child);
+    else this._children.splice(index, 0, child);
     return child;
   }}
   append(...children) {{
@@ -171,8 +185,12 @@ globalThis.document = {{
     if (!ids.has(id)) ids.set(id, new FakeElement(id));
     return ids.get(id);
   }},
-  createElement() {{
-    return new FakeElement();
+  createElement(tag) {{
+    const element = new FakeElement();
+    element.tagName = String(tag || "div").toUpperCase();
+    // A freshly created row is not overflowed until a scenario says so.
+    element.scrollHeight = 0;
+    return element;
   }},
   createTextNode(text) {{
     return {{ textContent: String(text) }};
@@ -234,6 +252,15 @@ globalThis.WebSocket = class {{
 }};
 
 eval(fs.readFileSync({json.dumps(str(TRANSCRIPT_VIEW_JS))}, "utf8"));
+// Hand the app instrumented panes so a scenario can read retained model depth, which the
+// app deliberately does not expose to the page.
+const createRealPane = globalThis.TranscriptView.createPane;
+globalThis.paneModelSpies = [];
+globalThis.TranscriptView.createPane = (budget) => {{
+  const pane = createRealPane(budget);
+  paneModelSpies.push(pane);
+  return pane;
+}};
 eval(fs.readFileSync({json.dumps(str(APP_JS))}, "utf8"));
 const send = (message) => socket.onmessage({{ data: JSON.stringify(message) }});
 const term = (slot) => document.getElementById(`term-${{slot}}`);
@@ -281,19 +308,25 @@ class GroundStationExecUiTest(unittest.TestCase):
     ended_by: "prompt", ms: 25, bytes: 12, truncated: false, ok: true,
   });
   const body = document.getElementById("spine-body");
+  const rows = term("slot0").children;
   return {
     spineClasses: body.children.map((child) => child.className),
     tally: document.getElementById("spine-tally").textContent,
-    termClasses: term("slot0").children.map((child) => child.className),
-    captureClasses: term("slot0").children[1].children.map((child) => child.className),
+    termClasses: rows.map((child) => child.className),
+    execIds: rows.map((child) => child.dataset.execId || ""),
+    capturedText: rows[1].textContent,
   };
 """
         )
 
         self.assertEqual(["spine-node exec sealed"], result["spineClasses"])
         self.assertIn("send 0", result["tally"])
-        self.assertEqual(["ln agent", "capture sealed"], result["termClasses"])
-        self.assertEqual(["ln dev", "cap-foot"], result["captureClasses"])
+        self.assertEqual(
+            ["ln agent", "ln dev capture-row cap-top cap-bot", "cap-foot"],
+            result["termClasses"],
+        )
+        self.assertEqual(["", "41", "41"], result["execIds"])
+        self.assertIn("Linux target", result["capturedText"])
 
     def test_spine_tracks_exec_and_agent_send_newest_first_with_tally(self):
         result = run_ui_scenario(
@@ -416,26 +449,28 @@ class GroundStationExecUiTest(unittest.TestCase):
     type: "exec", phase: "end", id: 17, target: "linux",
     ended_by: "idle", ms: 1240, bytes: 3174, truncated: true, ok: true,
   });
-  const capture = term("slot0").children[1];
+  const rows = term("slot0").children;
   return {
     holderText: holder("slot0").textContent,
     holderClass: holder("slot0").className,
-    termClasses: term("slot0").children.map((child) => child.className),
-    captureClasses: capture ? capture.children.map((child) => child.className) : [],
-    captureText: capture ? capture.textContent : "",
+    termClasses: rows.map((child) => child.className),
+    capturedText: rows[1].textContent,
+    footText: rows[2].textContent,
   };
 """
         )
 
         self.assertEqual("IDLE", result["holderText"])
         self.assertEqual("holder idle", result["holderClass"])
-        self.assertEqual(["ln agent", "capture sealed", "ln op"], result["termClasses"])
-        self.assertEqual(["ln dev", "cap-foot"], result["captureClasses"])
-        self.assertIn("device output", result["captureText"])
-        self.assertIn("1.24 s", result["captureText"])
-        self.assertIn("3.1 KiB", result["captureText"])
-        self.assertIn("closed on idle", result["captureText"])
-        self.assertIn("capped", result["captureText"])
+        self.assertEqual(
+            ["ln agent", "ln dev capture-row cap-top cap-bot", "cap-foot", "ln op"],
+            result["termClasses"],
+        )
+        self.assertIn("device output", result["capturedText"])
+        self.assertIn("1.24 s", result["footText"])
+        self.assertIn("3.1 KiB", result["footText"])
+        self.assertIn("closed on idle", result["footText"])
+        self.assertIn("capped", result["footText"])
 
     def test_exec_start_lights_holder_and_abort_uses_abort_wording(self):
         result = run_ui_scenario(
@@ -521,6 +556,8 @@ class GroundStationExecUiTest(unittest.TestCase):
     pressed75: document.getElementById("live-depth-75000").getAttribute("aria-pressed"),
     rows0: term("slot0").children.length,
     rows1: term("slot1").children.length,
+    retained0: paneModelSpies[0].countedSize(),
+    retained1: paneModelSpies[1].countedSize(),
     text0: term("slot0").textContent,
     text1: term("slot1").textContent,
   };
@@ -531,8 +568,10 @@ class GroundStationExecUiTest(unittest.TestCase):
         self.assertEqual("true", result["pressed500"])
         self.assertIn("active", result["class500"])
         self.assertEqual("false", result["pressed75"])
-        self.assertEqual(500, result["rows0"])
-        self.assertEqual(500, result["rows1"])
+        self.assertEqual(240, result["rows0"])
+        self.assertEqual(240, result["rows1"])
+        self.assertEqual(500, result["retained0"])
+        self.assertEqual(500, result["retained1"])
         self.assertNotIn("linux-0", result["text0"])
         self.assertNotIn("rtos-0", result["text1"])
         self.assertIn("linux-504", result["text0"])
@@ -573,7 +612,6 @@ class GroundStationExecUiTest(unittest.TestCase):
       text: `line-${index}`,
     });
   }
-  const capture = term("slot0").children[0];
   const before = childrenReads;
   for (let index = 0; index < 12; index += 1) {
     send({
@@ -581,17 +619,21 @@ class GroundStationExecUiTest(unittest.TestCase):
       text: `trim-${index}`,
     });
   }
+  const trimmed = { scans: childrenReads - before };
+  const rows = term("slot0").children;
   return {
-    scans: childrenReads - before,
-    termChildren: term("slot0").children.length,
-    captureRows: capture.children.length,
-    text: capture.textContent,
+    ...trimmed,
+    termChildren: rows.length,
+    captureRows: rows.filter((row) => row.classList.contains("capture-row")).length,
+    tops: rows.filter((row) => row.classList.contains("cap-top")).length,
+    text: term("slot0").textContent,
   };
 """
         )
 
-        self.assertEqual(1, result["termChildren"])
-        self.assertEqual(500, result["captureRows"])
+        self.assertEqual(240, result["termChildren"])
+        self.assertEqual(240, result["captureRows"])
+        self.assertEqual(1, result["tops"])
         self.assertEqual(0, result["scans"])
         self.assertNotIn("line-0", result["text"])
         self.assertIn("trim-11", result["text"])
@@ -919,15 +961,15 @@ class GroundStationExecUiTest(unittest.TestCase):
   };
   linux.scrollTop = 100;
   linux.dispatch("scroll");
-  const capture = linux.children[0];
+  const anchor = linux.children[0];
   execNode.dispatch("click");
   return {
     before,
     rows: linux.children.length,
     classes: linux.children.map((child) => child.className),
-    captureText: capture ? capture.textContent : "",
-    scrolled: !!(capture && capture.scrolledIntoView),
-    captureClass: capture ? capture.className : "",
+    anchorText: anchor.textContent,
+    footText: linux.children[1].textContent,
+    scrolled: !!anchor.scrolledIntoView,
     nodeClass: execNode.className,
   };
 """
@@ -935,11 +977,15 @@ class GroundStationExecUiTest(unittest.TestCase):
 
         self.assertEqual(0, result["before"]["rows"])
         self.assertIn("jump-miss", result["before"]["nodeClass"])
-        self.assertEqual(1, result["rows"])
-        self.assertIn("capture sealed", result["classes"][0])
-        self.assertIn("delayed output", result["captureText"])
+        self.assertEqual(2, result["rows"])
+        self.assertEqual(
+            ["ln", "dev", "capture-row", "cap-top", "cap-bot", "jump-flash"],
+            result["classes"][0].split(" "),
+        )
+        self.assertEqual("cap-foot", result["classes"][1])
+        self.assertIn("delayed output", result["anchorText"])
+        self.assertIn("closed on idle", result["footText"])
         self.assertTrue(result["scrolled"])
-        self.assertIn("jump-flash", result["captureClass"])
         self.assertIn("jump-hit", result["nodeClass"])
         self.assertNotIn("jump-miss", result["nodeClass"])
 
@@ -1005,25 +1051,31 @@ class GroundStationExecUiTest(unittest.TestCase):
   linux.dispatch("scroll");
   const execNode = document.getElementById("spine-body").children[0];
   execNode.dispatch("click");
-  const capture = linux.children[1];
+  const rows = linux.children;
+  const anchor = rows[1];
   return {
-    rows: linux.children.length,
-    classes: linux.children.map((child) => child.className),
-    gapText: linux.children[0].textContent,
-    captureTexts: capture.children.map((child) => child.textContent),
-    lastRowText: linux.children[2] ? linux.children[2].textContent : "",
-    scrolled: !!capture.scrolledIntoView,
+    rows: rows.length,
+    classes: rows.map((child) => child.className),
+    gapText: rows[0].textContent,
+    captureTexts: rows.slice(1, 34).map((child) => child.textContent),
+    footText: rows[34].textContent,
+    lastRowText: rows[35].textContent,
+    scrolled: !!anchor.scrolledIntoView,
     pill: document.getElementById("status-pill").textContent,
   };
 """
         )
 
-        self.assertEqual(3, result["rows"])
+        self.assertEqual(36, result["rows"])
         self.assertEqual("ln gap", result["classes"][0])
-        self.assertIn("capture", result["classes"][1])
-        self.assertIn("sealed", result["classes"][1])
-        self.assertIn("jump-flash", result["classes"][1])
-        self.assertEqual("ln sys", result["classes"][2])
+        self.assertEqual(
+            ["ln", "dev", "capture-row", "cap-top", "jump-flash"],
+            result["classes"][1].split(" "),
+        )
+        self.assertEqual("ln dev capture-row cap-mid", result["classes"][2])
+        self.assertEqual("ln dev capture-row cap-bot", result["classes"][33])
+        self.assertEqual("cap-foot", result["classes"][34])
+        self.assertEqual("ln sys", result["classes"][35])
         self.assertEqual(
             "— 8 lines in session log, not in this view —",
             result["gapText"],
@@ -1032,8 +1084,8 @@ class GroundStationExecUiTest(unittest.TestCase):
         self.assertNotIn("flood-7", result["captureTexts"])
         self.assertIn("pre-detach-0", result["captureTexts"][0])
         self.assertIn("flood-8", result["captureTexts"][1])
-        self.assertIn("flood-39", result["captureTexts"][-2])
-        self.assertIn("closed on idle", result["captureTexts"][-1])
+        self.assertIn("flood-39", result["captureTexts"][-1])
+        self.assertIn("closed on idle", result["footText"])
         self.assertIn("after-capture-system", result["lastRowText"])
         self.assertTrue(result["scrolled"])
         self.assertNotEqual("not in view", result["pill"])
@@ -1068,28 +1120,28 @@ class GroundStationExecUiTest(unittest.TestCase):
   }
   linux.scrollTop = 100;
   linux.dispatch("scroll");
-  function countLines(node) {
-    let total = 0;
-    for (const child of node.children || []) {
-      if (String(child.className || "").split(" ").includes("ln")) total += 1;
-      total += countLines(child);
-    }
-    return total;
-  }
-  const captureNode = linux.children.find((child) => child.className.includes("capture"));
+  const rows = linux.children;
+  const captureAt = rows.findIndex((child) => child.classList.contains("capture-row"));
   return {
-    lineCount: countLines(linux),
+    rows: rows.length,
+    counted: rows.filter((child) => child.classList.contains("ln")).length,
+    retained: paneModelSpies[0].countedSize(),
+    captureAt,
+    captureClass: captureAt < 0 ? "" : rows[captureAt].className,
+    captureText: captureAt < 0 ? "" : rows[captureAt].textContent,
+    footClass: captureAt < 0 ? "" : rows[captureAt + 1].className,
     text: linux.textContent,
-    captureAttached: !!captureNode,
-    captureText: captureNode ? captureNode.textContent : "",
   };
 """
         )
 
-        self.assertEqual(500, result["lineCount"])
-        self.assertTrue(result["captureAttached"])
+        self.assertEqual(241, result["rows"])
+        self.assertEqual(240, result["counted"])
+        self.assertEqual(500, result["retained"])
+        self.assertEqual(39, result["captureAt"])
+        self.assertEqual("ln dev capture-row cap-top cap-bot", result["captureClass"])
+        self.assertEqual("cap-foot", result["footClass"])
         self.assertIn("buffered-into-capture", result["captureText"])
-        self.assertIn("buffered-into-capture", result["text"])
         self.assertNotIn("capture-line-0", result["text"])
         self.assertNotIn("filler-0", result["text"])
         self.assertIn("filler-498", result["text"])
@@ -1121,19 +1173,19 @@ class GroundStationExecUiTest(unittest.TestCase):
 """
         )
 
-        self.assertEqual(500, result["rows"])
+        self.assertEqual(240, result["rows"])
         self.assertNotIn("visible-0", result["texts"])
-        self.assertNotIn("visible-22", result["texts"])
-        self.assertIn("visible-23", result["texts"][0])
-        self.assertEqual("ln gap", result["classes"][467])
+        self.assertNotIn("visible-282", result["texts"])
+        self.assertIn("visible-283", result["texts"][0])
+        self.assertEqual("ln gap", result["classes"][207])
         self.assertEqual(
             "— 8 lines in session log, not in this view —",
-            result["texts"][467],
+            result["texts"][207],
         )
         self.assertNotIn("omitted-0", result["texts"])
         self.assertNotIn("omitted-7", result["texts"])
-        self.assertIn("omitted-8", result["texts"][468])
-        self.assertIn("omitted-39", result["texts"][499])
+        self.assertIn("omitted-8", result["texts"][208])
+        self.assertIn("omitted-39", result["texts"][239])
 
     def test_consecutive_detach_cycles_produce_separate_uncounted_gaps(self):
         result = run_ui_scenario(
@@ -1192,17 +1244,19 @@ class GroundStationExecUiTest(unittest.TestCase):
       text: `line-${index}`,
     });
   }
-  const capture = term("slot0").children[0];
+  const rows = term("slot0").children;
   return {
-    termChildren: term("slot0").children.length,
-    captureRows: capture.children.length,
-    text: capture.textContent,
+    termChildren: rows.length,
+    captureRows: rows.filter((row) => row.classList.contains("capture-row")).length,
+    retained: paneModelSpies[0].countedSize(),
+    text: term("slot0").textContent,
   };
 """
         )
 
-        self.assertEqual(1, result["termChildren"])
-        self.assertEqual(75000, result["captureRows"])
+        self.assertEqual(240, result["termChildren"])
+        self.assertEqual(240, result["captureRows"])
+        self.assertEqual(75000, result["retained"])
         self.assertNotIn("line-0", result["text"])
         self.assertIn("line-75009", result["text"])
 
@@ -1233,24 +1287,32 @@ class GroundStationExecUiTest(unittest.TestCase):
             """
   await nextTurn();
   const before = layoutReads;
+  const beforeRows = rowLayoutReads;
   for (let index = 0; index < 500; index += 1) {
     send({ type: "line", target: "linux", direction: "<<<", text: `line-${index}` });
   }
   const duringBurst = layoutReads - before;
+  const rowsDuringBurst = rowLayoutReads - beforeRows;
   flushFrames();
   return {
     duringBurst,
+    rowsDuringBurst,
     afterFlush: layoutReads - before,
+    rowsAfterFlush: rowLayoutReads - beforeRows,
     rows: term("slot0").children.length,
     scrollTop: term("slot0").scrollTop,
   };
 """
         )
 
-        self.assertEqual(500, result["rows"])
+        self.assertEqual(240, result["rows"])
         self.assertEqual(0, result["duringBurst"])
         self.assertEqual(1, result["afterFlush"])
-        self.assertEqual(500, result["scrollTop"])
+        self.assertEqual(240, result["scrollTop"])
+        # Row overflow probing is deferred to the frame too, and only the rows that
+        # survived trimming are measured, so a burst costs the window, not the burst.
+        self.assertEqual(0, result["rowsDuringBurst"])
+        self.assertEqual(240, result["rowsAfterFlush"])
 
     def test_stale_automatic_scroll_event_does_not_falsely_detach_a_following_pane(self):
         result = run_ui_scenario(
@@ -1329,11 +1391,16 @@ class GroundStationExecUiTest(unittest.TestCase):
     send({ type: "line", target: "linux", direction: "<<<", text: `trim-${index}` });
   }
   flushFrames();
-  return { scans: childrenReads - before, rows: term("slot0").children.length };
+  return {
+    scans: childrenReads - before,
+    rows: term("slot0").children.length,
+    retained: paneModelSpies[0].countedSize(),
+  };
 """
         )
 
-        self.assertEqual(75000, result["rows"])
+        self.assertEqual(240, result["rows"])
+        self.assertEqual(75000, result["retained"])
         self.assertEqual(0, result["scans"])
 
     def test_spine_client_buffer_is_capped_at_server_ring_size(self):
@@ -1615,6 +1682,300 @@ class GroundStationExecUiTest(unittest.TestCase):
         self.assertEqual("", result["title"])
         self.assertEqual("spine-node send", result["className"])
         self.assertNotEqual("not in view", result["pill"])
+
+
+class FollowedWindowTest(unittest.TestCase):
+    def test_followed_window_materializes_240_while_the_model_retains_the_budget(self):
+        result = run_ui_scenario(
+            """
+  document.getElementById("live-depth-500").dispatch("click");
+  for (let index = 0; index < 620; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `line-${index}` });
+  }
+  flushFrames();
+  const rows = term("slot0").children;
+  return {
+    domRows: rows.length,
+    modelCounted: paneModelSpies[0].countedSize(),
+    classes: [...new Set(rows.map((child) => child.className))],
+    firstText: rows[0].textContent,
+    lastText: rows[rows.length - 1].textContent,
+    text: term("slot0").textContent,
+  };
+"""
+        )
+
+        self.assertEqual(240, result["domRows"])
+        self.assertEqual(500, result["modelCounted"])
+        self.assertEqual(["ln dev"], result["classes"])
+        self.assertIn("line-380", result["firstText"])
+        self.assertIn("line-619", result["lastText"])
+        self.assertNotIn("line-379", result["text"])
+
+    def test_each_pane_enforces_its_own_240_entry_window(self):
+        result = run_ui_scenario(
+            """
+  for (let index = 0; index < 300; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `linux-${index}` });
+  }
+  const afterLinuxFlood = term("slot1").children.length;
+  for (let index = 0; index < 300; index += 1) {
+    send({ type: "line", target: "rtos", direction: "<<<", text: `rtos-${index}` });
+  }
+  flushFrames();
+  return {
+    afterLinuxFlood,
+    rows0: term("slot0").children.length,
+    rows1: term("slot1").children.length,
+    first0: term("slot0").children[0].textContent,
+    first1: term("slot1").children[0].textContent,
+  };
+"""
+        )
+
+        self.assertEqual(0, result["afterLinuxFlood"])
+        self.assertEqual(240, result["rows0"])
+        self.assertEqual(240, result["rows1"])
+        self.assertIn("linux-60", result["first0"])
+        self.assertIn("rtos-60", result["first1"])
+
+    def test_transcript_gap_occupies_exactly_one_followed_window_entry(self):
+        result = run_ui_scenario(
+            """
+  const linux = term("slot0");
+  for (let index = 0; index < 240; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `visible-${index}` });
+  }
+  flushFrames();
+  linux.clientHeight = 100;
+  linux.scrollHeight = 200;
+  linux.scrollTop = 40;
+  linux.dispatch("scroll");
+  for (let index = 0; index < 40; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `omitted-${index}` });
+  }
+  linux.scrollTop = 100;
+  linux.dispatch("scroll");
+  const rows = linux.children;
+  return {
+    rows: rows.length,
+    gaps: rows.filter((child) => child.className === "ln gap").length,
+    gapIndex: rows.findIndex((child) => child.className === "ln gap"),
+    gapText: rows[207].textContent,
+    beforeGap: rows[206].textContent,
+    afterGap: rows[208].textContent,
+    lastText: rows[239].textContent,
+  };
+"""
+        )
+
+        self.assertEqual(240, result["rows"])
+        self.assertEqual(1, result["gaps"])
+        self.assertEqual(207, result["gapIndex"])
+        self.assertEqual(
+            "— 8 lines in session log, not in this view —",
+            result["gapText"],
+        )
+        self.assertIn("visible-239", result["beforeGap"])
+        self.assertIn("omitted-8", result["afterGap"])
+        self.assertIn("omitted-39", result["lastText"])
+
+    def test_tightening_the_budget_retrims_the_window_without_a_gap(self):
+        # Every selectable budget (500 / 5000 / 75000) is above the 240-entry window, so
+        # tightening can only shrink retention; the window limit is min(240, budget).
+        result = run_ui_scenario(
+            """
+  for (let index = 0; index < 620; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `line-${index}` });
+  }
+  flushFrames();
+  const before = {
+    domRows: term("slot0").children.length,
+    modelCounted: paneModelSpies[0].countedSize(),
+  };
+  document.getElementById("live-depth-500").dispatch("click");
+  const rows = term("slot0").children;
+  return {
+    before,
+    domRows: rows.length,
+    modelCounted: paneModelSpies[0].countedSize(),
+    gaps: rows.filter((child) => child.className === "ln gap").length,
+    firstText: rows[0].textContent,
+  };
+"""
+        )
+
+        self.assertEqual(240, result["before"]["domRows"])
+        self.assertEqual(620, result["before"]["modelCounted"])
+        self.assertEqual(240, result["domRows"])
+        self.assertEqual(500, result["modelCounted"])
+        self.assertEqual(0, result["gaps"])
+        self.assertIn("line-380", result["firstText"])
+
+    def test_capture_row_chrome_survives_trimming_the_oldest_captured_rows(self):
+        result = run_ui_scenario(
+            """
+  send({ type: "exec", phase: "start", id: 5, target: "linux", cmd: "stream" });
+  for (let index = 0; index < 300; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `cap-${index}` });
+  }
+  flushFrames();
+  const running = {
+    rows: term("slot0").children.length,
+    tops: term("slot0").children.filter((r) => r.classList.contains("cap-top")).length,
+    bots: term("slot0").children.filter((r) => r.classList.contains("cap-bot")).length,
+  };
+  send({
+    type: "exec", phase: "end", id: 5, target: "linux",
+    ended_by: "idle", ms: 30, bytes: 300, truncated: false, ok: true,
+  });
+  const rows = term("slot0").children;
+  return {
+    running,
+    rows: rows.length,
+    tops: rows.filter((r) => r.classList.contains("cap-top")).length,
+    bots: rows.filter((r) => r.classList.contains("cap-bot")).length,
+    firstClass: rows[0].className,
+    firstText: rows[0].textContent,
+    midClass: rows[1].className,
+    lastRowClass: rows[rows.length - 2].className,
+    footClass: rows[rows.length - 1].className,
+    execIds: [...new Set(rows.map((r) => r.dataset.execId))],
+    footText: rows[rows.length - 1].textContent,
+  };
+"""
+        )
+
+        self.assertEqual(240, result["running"]["rows"])
+        self.assertEqual(1, result["running"]["tops"])
+        self.assertEqual(0, result["running"]["bots"])
+        self.assertEqual(241, result["rows"])
+        self.assertEqual(1, result["tops"])
+        self.assertEqual(1, result["bots"])
+        self.assertEqual("ln dev capture-row cap-top", result["firstClass"])
+        self.assertIn("cap-60", result["firstText"])
+        self.assertEqual("ln dev capture-row cap-mid", result["midClass"])
+        self.assertEqual("ln dev capture-row cap-bot", result["lastRowClass"])
+        self.assertEqual("cap-foot", result["footClass"])
+        self.assertEqual(["5"], result["execIds"])
+        self.assertIn("closed on idle", result["footText"])
+
+    def test_trace_jump_lands_on_the_promoted_anchor_of_a_windowed_capture(self):
+        result = run_ui_scenario(
+            """
+  await nextTurn();
+  send({ type: "exec", phase: "start", id: 7, target: "linux", cmd: "dmesg" });
+  for (let index = 0; index < 50; index += 1) {
+    send({ type: "line", target: "linux", direction: "<<<", text: `cap-${index}` });
+  }
+  send({
+    type: "exec", phase: "end", id: 7, target: "linux",
+    ended_by: "idle", ms: 12, bytes: 50, truncated: false, ok: true,
+  });
+  for (let index = 0; index < 200; index += 1) {
+    send({ type: "line", target: "linux", direction: "---", text: `filler-${index}` });
+  }
+  flushFrames();
+  const execNode = document.getElementById("spine-body").children[0];
+  execNode.dispatch("click");
+  const anchor = term("slot0").children[0];
+  return {
+    rows: term("slot0").children.length,
+    anchorClass: anchor.className,
+    anchorText: anchor.textContent,
+    scrolled: !!anchor.scrolledIntoView,
+    nodeClass: execNode.className,
+  };
+"""
+        )
+
+        self.assertEqual(241, result["rows"])
+        self.assertIn("cap-top", result["anchorClass"].split(" "))
+        self.assertIn("jump-flash", result["anchorClass"].split(" "))
+        self.assertIn("cap-10", result["anchorText"])
+        self.assertTrue(result["scrolled"])
+        self.assertIn("jump-hit", result["nodeClass"])
+
+    def test_programmatic_tail_scrolling_under_a_flood_keeps_follow_attached(self):
+        result = run_ui_scenario(
+            """
+  const linux = term("slot0");
+  linux.clientHeight = 50;
+  for (let batch = 0; batch < 30; batch += 1) {
+    for (let index = 0; index < 10; index += 1) {
+      send({ type: "line", target: "linux", direction: "<<<", text: `flood-${batch}-${index}` });
+    }
+    flushFrames();
+    linux.dispatch("scroll");
+  }
+  send({ type: "line", target: "linux", direction: "<<<", text: "after-flood" });
+  flushFrames();
+  const rows = linux.children;
+  return {
+    rows: rows.length,
+    gaps: rows.filter((child) => child.className === "ln gap").length,
+    lastText: rows[rows.length - 1].textContent,
+    scrollTop: linux.scrollTop,
+  };
+"""
+        )
+
+        self.assertEqual(240, result["rows"])
+        self.assertEqual(0, result["gaps"])
+        self.assertIn("after-flood", result["lastText"])
+        self.assertEqual(190, result["scrollTop"])
+
+    def test_followed_panes_opt_out_of_browser_scroll_anchoring(self):
+        # Trimming removes rows above the viewport on every frame, and scroll anchoring
+        # answers by pulling scrollTop back by the removed height, which the pane reads as
+        # a scroll away from the live tail and detaches Follow. The fake DOM cannot model
+        # anchoring, so this guards the declaration the headed gate depends on.
+        css = (ROOT / "static" / "style.css").read_text(encoding="utf-8")
+        block = css[css.index(".screen {") :]
+        self.assertIn("overflow-anchor: none", block[: block.index("}")])
+
+    def test_overflowed_rows_get_a_keyboard_expand_toggle_and_plain_rows_do_not(self):
+        result = run_ui_scenario(
+            """
+  send({ type: "line", target: "linux", direction: "<<<", text: "short" });
+  send({ type: "line", target: "linux", direction: "<<<", text: "a very long device line" });
+  const rows = term("slot0").children;
+  const longBody = rows[1].children[1];
+  longBody.scrollHeight = 72;
+  longBody.clientHeight = 24;
+  flushFrames();
+  const plainChildren = rows[0].children.length;
+  const toggle = rows[1].children[2];
+  const clamped = { rowClass: rows[1].className, aria: toggle.attributes["aria-expanded"] };
+  term("slot0").dispatch("click", { target: toggle });
+  const expanded = { rowClass: rows[1].className, aria: toggle.attributes["aria-expanded"] };
+  term("slot0").dispatch("click", { target: toggle });
+  return {
+    plainChildren,
+    plainClass: rows[0].className,
+    longChildren: rows[1].children.length,
+    clamped,
+    expanded,
+    collapsed: { rowClass: rows[1].className, aria: toggle.attributes["aria-expanded"] },
+    tag: toggle.tagName,
+    type: toggle.attributes["type"],
+    label: toggle.attributes["aria-label"],
+  };
+"""
+        )
+
+        self.assertEqual(2, result["plainChildren"])
+        self.assertEqual("ln dev", result["plainClass"])
+        self.assertEqual(3, result["longChildren"])
+        self.assertIn("clamped", result["clamped"]["rowClass"].split(" "))
+        self.assertEqual("false", result["clamped"]["aria"])
+        self.assertIn("expanded", result["expanded"]["rowClass"].split(" "))
+        self.assertEqual("true", result["expanded"]["aria"])
+        self.assertNotIn("expanded", result["collapsed"]["rowClass"].split(" "))
+        self.assertEqual("false", result["collapsed"]["aria"])
+        self.assertEqual("BUTTON", result["tag"])
+        self.assertEqual("button", result["type"])
+        self.assertTrue(result["label"])
 
 
 if __name__ == "__main__":
