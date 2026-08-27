@@ -58,6 +58,7 @@ globalThis.layoutReads = 0;
 globalThis.rowLayoutReads = 0;
 globalThis.childrenReads = 0;
 globalThis.measureRowHeight = null;
+globalThis.measureElementRect = null;
 globalThis.onCreateElement = null;
 
 class FakeElement {{
@@ -142,6 +143,7 @@ class FakeElement {{
   // The app measures rows sub-pixel; the fake layout has only whole-pixel heights, so the
   // rect simply reports the same height a real browser would round into offsetHeight.
   getBoundingClientRect() {{
+    if (globalThis.measureElementRect) return globalThis.measureElementRect(this);
     const height = this.offsetHeight;
     return {{ top: 0, left: 0, right: 0, bottom: height, width: 0, height }};
   }}
@@ -2461,6 +2463,59 @@ class DetachedHistoryWindowTest(unittest.TestCase):
         self.assertEqual(13780, result["windowed"]["scrollTop"])
         self.assertEqual("9540px", result["shifted"]["top"])
         self.assertEqual(11700, result["shifted"]["scrollTop"])
+
+    def test_zero_output_feet_do_not_move_the_anchor_on_detach_and_rewindow(self):
+        for foot_count in (1, 3):
+            with self.subTest(foot_count=foot_count):
+                result = run_ui_scenario(
+                    MEASURED_ROWS
+                    + f"""
+  globalThis.measureElementRect = (row) => {{
+    const parent = row.parentNode;
+    const height = row.offsetHeight;
+    if (!parent) return {{ top: 0, left: 0, right: 0, bottom: height, width: 0, height }};
+    let top = -parent.scrollTop;
+    for (const sibling of parent.children) {{
+      if (sibling === row) break;
+      top += sibling.className === "transcript-spacer"
+        ? Number.parseFloat(sibling.style.height || "0")
+        : sibling.offsetHeight;
+    }}
+    return {{ top, left: 0, right: 0, bottom: top + height, width: 0, height }};
+  }};
+  const linux = term("slot0");
+  for (let index = 0; index < 850; index += 1) {{
+    send({{ type: "line", target: "linux", direction: "<<<", text: `line-${{index}}` }});
+  }}
+  for (let index = 0; index < {foot_count}; index += 1) {{
+    send({{ type: "exec", phase: "start", id: index + 1, target: "linux", cmd: "silent" }});
+    send({{
+      type: "exec", phase: "end", id: index + 1, target: "linux",
+      ended_by: "idle", ms: 1, bytes: 0, truncated: false, ok: true,
+    }});
+  }}
+  for (let index = 850; index < 1000; index += 1) {{
+    send({{ type: "line", target: "linux", direction: "<<<", text: `line-${{index}}` }});
+  }}
+  flushFrames();
+  linux.clientHeight = 400;
+  linux.scrollHeight = 18000;
+  linux.scrollTop = 100;
+  const rowFor = (text) => linux.children.find((row) => row.textContent.includes(text));
+  const before = rowFor("line-766").getBoundingClientRect().top;
+  linux.dispatch("scroll");
+  flushFrames();
+  const after = rowFor("line-766").getBoundingClientRect().top;
+  return {{ before, after, drift: Math.abs(after - before) }};
+"""
+                )
+
+                self.assertLessEqual(
+                    result["drift"],
+                    2,
+                    f"{foot_count} zero-output Exec(s) moved the anchor from "
+                    f"{result['before']}px to {result['after']}px",
+                )
 
     def test_expanding_a_row_corrects_the_index_without_moving_the_anchor(self):
         result = run_ui_scenario(

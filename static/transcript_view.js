@@ -41,7 +41,7 @@
   function captureRecord(state, captureId) {
     let record = state.captures.get(captureId);
     if (!record) {
-      record = { lines: 0, foot: false };
+      record = { lines: 0, foot: false, footEntry: null };
       state.captures.set(captureId, record);
     }
     return record;
@@ -66,6 +66,7 @@
       const record = state.captures.get(captureId);
       if (record) {
         record.foot = false;
+        record.footEntry = null;
         forgetEmptyCapture(state, captureId, record);
       }
       state.start += 1;
@@ -137,17 +138,21 @@
       if (captureId !== null) captureRecord(state, captureId).lines += 1;
       state.counted += 1;
       trim(state);
+      return entry;
     }
 
     function appendGap(count) {
       const last = state.list[state.list.length - 1];
       if (last && last.kind === "gap") {
         last.count += count;
+        return last;
       } else {
-        state.list.push({ kind: "gap", count });
+        const entry = { kind: "gap", count };
+        state.list.push(entry);
         state.counted += 1;
+        trim(state);
+        return entry;
       }
-      trim(state);
     }
 
     /**
@@ -159,13 +164,16 @@
     function appendFoot(fields) {
       const captureId = fields.captureId ?? null;
       const record = captureRecord(state, captureId);
-      if (record.foot) return;
-      insertAt(state, runEndIndex(state, captureId), {
+      if (record.foot) return record.footEntry;
+      const entry = {
         kind: "foot",
         captureId,
         text: fields.text,
-      });
+      };
+      insertAt(state, record.lines === 0 ? state.list.length : runEndIndex(state, captureId), entry);
       record.foot = true;
+      record.footEntry = entry;
+      return entry;
     }
 
     /**
@@ -225,6 +233,15 @@
       return state.counted;
     }
 
+    /** Position in the same oldest-first coordinate space used by `slice`. */
+    function indexOfEntry(target) {
+      if (!target) return -1;
+      for (let i = state.start; i < state.list.length; i++) {
+        if (state.list[i] === target) return i - state.start;
+      }
+      return -1;
+    }
+
     /**
      * Where a capture currently sits in visual order: the position of its first retained
      * line and of the last entry belonging to it, both as `slice` indexes. Positions
@@ -263,6 +280,7 @@
       size,
       slice,
       countedSize,
+      indexOfEntry,
       captureRange,
     };
   }

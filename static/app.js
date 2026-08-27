@@ -81,6 +81,7 @@
   let hydrateVersion = 0;
   const windowCounts = Object.fromEntries(SLOT_KEYS.map((slot) => [slot, 0]));
   const rowCapture = new WeakMap();
+  const rowEntry = new WeakMap();
   let jumpFlashTimer = null;
   let jumpFlashRow = null;
   let jumpNodeTimer = null;
@@ -521,13 +522,16 @@
    */
   function appendOrMergeTranscriptGap(slot, count) {
     const el = terms[slot];
-    paneModels[slot].appendGap(count);
+    const entry = paneModels[slot].appendGap(count);
     const prior = lastChild(el);
     if (isTranscriptGap(prior)) {
+      rowEntry.set(prior, entry);
       setGapCount(prior, (Number(prior.dataset.evictedCount) || 0) + count);
       return;
     }
-    el.appendChild(createGapRow(count));
+    const row = createGapRow(count);
+    rowEntry.set(row, entry);
+    el.appendChild(row);
     countWindowRow(slot);
   }
 
@@ -653,6 +657,20 @@
   }
 
   /**
+   * Locate the first materialized row in retained visual order. Entry identity is the
+   * association: DOM counts cannot locate a window when retention holds undrawn entries.
+   */
+  function locateMaterializedRows(slot, rows) {
+    for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+      const target = rowEntry.get(rows[rowIndex]);
+      if (!target) continue;
+      const start = paneModels[slot].indexOfEntry(target);
+      if (start >= 0) return { start, rowIndex };
+    }
+    return null;
+  }
+
+  /**
    * Sub-pixel, deliberately: offsetHeight rounds to whole pixels, and a half-pixel error
    * per row accumulates into a visible jump once a couple of hundred rows separate the
    * anchor from the top of the slice.
@@ -670,8 +688,19 @@
     if (count <= rows.length) return;
     flushOverflowProbes();
     const index = TranscriptView.createHeightIndex(count, ESTIMATED_ROW_HEIGHT_PX);
-    const start = count - rows.length;
-    rows.forEach((row, i) => index.setHeight(start + i, measuredHeight(row)));
+    const located = locateMaterializedRows(slot, rows);
+    if (!located) return;
+    const start = located.start;
+    const retained = paneModels[slot].slice(start, count);
+    let modelIndex = start;
+    for (let rowIndex = located.rowIndex; rowIndex < rows.length; rowIndex += 1) {
+      const target = rowEntry.get(rows[rowIndex]);
+      if (!target) continue;
+      while (modelIndex < count && retained[modelIndex - start] !== target) modelIndex += 1;
+      if (modelIndex >= count) break;
+      index.setHeight(modelIndex, measuredHeight(rows[rowIndex]));
+      modelIndex += 1;
+    }
     const offset = index.offsetOf(start);
     const top = createSpacer();
     const bottom = createSpacer();
@@ -848,6 +877,7 @@
           run.push(row);
         }
       }
+      rowEntry.set(row, entry);
       el.insertBefore(row, state.bottom);
     }
     closeRun();
@@ -1140,7 +1170,9 @@
     const el = terms[slot];
     const state = historyStates[slot];
     const count = paneModels[slot].size();
-    const start = state ? state.start : Math.max(0, count - el.childElementCount);
+    const rows = state ? null : childElements(el.firstElementChild, null);
+    const located = rows ? locateMaterializedRows(slot, rows) : null;
+    const start = state ? state.start : located ? located.start : count;
     const end = state ? state.end : count;
     if (range.first < start || range.first >= end) return null;
     const row = captureIndex.get(captureAnchorKey(slot, captureId));
@@ -1385,9 +1417,13 @@
    */
   function materializeCaptureFoot(record) {
     const el = terms[record.slot];
-    paneModels[record.slot].appendFoot({ captureId: record.id, text: record.footText });
+    const entry = paneModels[record.slot].appendFoot({
+      captureId: record.id,
+      text: record.footText,
+    });
     if (record.footRow && record.footRow.parentNode === el) return;
     const foot = createFootRow(record.id, record.footText);
+    rowEntry.set(foot, entry);
     rowCapture.set(foot, record);
     el.insertBefore(foot, record.lastRow.nextElementSibling);
     record.footRow = foot;
@@ -1437,7 +1473,7 @@
       rememberOmittedLine(slot, target, direction, text, who, tstamp, { capture });
       return;
     }
-    paneModels[slot].appendLine({
+    const entry = paneModels[slot].appendLine({
       direction,
       text,
       who,
@@ -1445,6 +1481,7 @@
       captureId: capture ? capture.id : null,
     });
     const row = createLineRow(direction, text, who, tstamp);
+    rowEntry.set(row, entry);
     if (capture) attachCapturedRow(capture, row);
     else el.appendChild(row);
     countWindowRow(slot);

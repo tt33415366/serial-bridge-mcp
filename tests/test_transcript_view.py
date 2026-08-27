@@ -99,6 +99,31 @@ class TranscriptViewModuleTest(unittest.TestCase):
         )
         self.assertEqual(1, counted)
 
+    def test_foot_without_retained_lines_does_not_scan_retention(self):
+        capture_id_reads = run_transcript_view(
+            """
+            (() => {
+              const pane = TV.createPane(5000);
+              for (let i = 0; i < 2000; i++) {
+                pane.appendLine({ direction: ">>>", text: String(i), who: "you", tstamp: "" });
+              }
+              let captureIdReads = 0;
+              for (const entry of pane.entries()) {
+                Object.defineProperty(entry, "captureId", {
+                  configurable: true,
+                  get() {
+                    captureIdReads += 1;
+                    return null;
+                  },
+                });
+              }
+              pane.appendFoot({ captureId: 99, text: "sealed" });
+              return captureIdReads;
+            })()
+            """
+        )
+        self.assertLessEqual(capture_id_reads, 1)
+
     def test_trim_drops_oldest_counted_entries_to_stay_within_budget(self):
         result = run_transcript_view(
             """
