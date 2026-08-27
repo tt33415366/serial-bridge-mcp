@@ -57,6 +57,11 @@
     slot0: document.getElementById("dot-slot0"),
     slot1: document.getElementById("dot-slot1"),
   };
+  const liveDepthStops = {
+    500: document.getElementById("live-depth-500"),
+    5000: document.getElementById("live-depth-5000"),
+    75000: document.getElementById("live-depth-75000"),
+  };
 
   let ws;
   let mode = "crt";
@@ -71,6 +76,15 @@
   let hydrateVersion = 0;
   const termLineCounts = new WeakMap();
   let jumpFlashTimer = null;
+  let jumpNodeTimer = null;
+  let jumpNodeMarked = null;
+  const LIVE_TAIL_TOLERANCE_PX = 32;
+  const OMITTED_TAIL_LIMIT = 32;
+  const OMITTED_WRITE_LIMIT = 200;
+  let retainedLineSequence = 0;
+  const followState = Object.fromEntries(
+    SLOT_KEYS.map((slot) => [slot, { following: true, evicted: 0, tail: [], writes: [] }])
+  );
 
   function portEntries(ports) {
     if (!ports) return [];
@@ -250,7 +264,38 @@
     if (s.config_warning) setPill(s.config_warning, "err");
   }
 
-  const MAX_TERM_LINES = 75000;
+  const LIVE_VIEW_BUDGET_KEY = "serial-bridge-live-view-budget";
+  const LIVE_VIEW_BUDGETS = [500, 5000, 75000];
+  const DEFAULT_LIVE_VIEW_BUDGET = 75000;
+
+  function normalizeLiveViewBudget(value) {
+    const budget = Number(value);
+    return LIVE_VIEW_BUDGETS.includes(budget) ? budget : DEFAULT_LIVE_VIEW_BUDGET;
+  }
+
+  let liveViewBudget = normalizeLiveViewBudget(localStorage.getItem(LIVE_VIEW_BUDGET_KEY));
+
+  function updateLiveDepthInstrument() {
+    for (const budget of LIVE_VIEW_BUDGETS) {
+      const stop = liveDepthStops[budget];
+      const active = budget === liveViewBudget;
+      stop.classList.toggle("active", active);
+      stop.setAttribute("aria-pressed", String(active));
+    }
+  }
+
+  function trimAllTerms() {
+    for (const slot of SLOT_KEYS) trimTerm(terms[slot]);
+  }
+
+  function setLiveViewBudget(value) {
+    const budget = Number(value);
+    if (!LIVE_VIEW_BUDGETS.includes(budget)) return;
+    liveViewBudget = budget;
+    localStorage.setItem(LIVE_VIEW_BUDGET_KEY, String(budget));
+    updateLiveDepthInstrument();
+    trimAllTerms();
+  }
 
   function hasClass(el, name) {
     return el.className.split(" ").includes(name);
@@ -267,7 +312,7 @@
 
   function trimTerm(el) {
     let lineCount = termLineCounts.get(el) || 0;
-    while (lineCount > MAX_TERM_LINES) {
+    while (lineCount > liveViewBudget) {
       const oldest = oldestTermLine(el);
       if (!oldest) break;
       oldest.parent.removeChild(oldest.row);
@@ -281,12 +326,186 @@
     termLineCounts.set(el, lineCount);
   }
 
+  function isNearLiveTail(el) {
+    return el.scrollHeight - el.clientHeight - el.scrollTop <= LIVE_TAIL_TOLERANCE_PX;
+  }
+
+  function formatSpaceGroupedCount(count) {
+    return String(count).replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+  }
+
+  function transcriptGapCopy(count) {
+    return `— ${formatSpaceGroupedCount(count)} lines in session log, not in this view —`;
+  }
+
+  function isTranscriptGap(row) {
+    return row && hasClass(row, "ln") && hasClass(row, "gap");
+  }
+
+  function lastChild(el) {
+    const children = el.children;
+    return children[children.length - 1] || null;
+  }
+
+  function setGapCount(row, count) {
+    row.dataset.evictedCount = String(count);
+    row.textContent = transcriptGapCopy(count);
+  }
+
+  /**
+   * A Gap always keeps its own trailing replay content attached right after it (the
+   * combined retained tail + writes ring can hold at most 232 rows, comfortably under
+   * the smallest Live View Budget of 500), so budget trimming can never split a Gap
+   * from what follows it and two separately-created Gaps can never end up adjacent
+   * through normal flow. This merge branch is a defensive guard, not currently
+   * reachable — kept in case that invariant ever changes.
+   */
+  function appendOrMergeTranscriptGap(el, count) {
+    const prior = lastChild(el);
+    if (isTranscriptGap(prior)) {
+      setGapCount(prior, (Number(prior.dataset.evictedCount) || 0) + count);
+      return;
+    }
+    const row = document.createElement("div");
+    row.className = "ln gap";
+    setGapCount(row, count);
+    el.appendChild(row);
+    termLineCounts.set(el, (termLineCounts.get(el) || 0) + 1);
+    trimTerm(el);
+  }
+
+  function rememberOmittedLine(slot, target, direction, text, who, tstamp, options = {}) {
+    const state = followState[slot];
+    const item = {
+      target,
+      direction,
+      text,
+      who,
+      tstamp,
+      order: retainedLineSequence++,
+    };
+    if (direction === "<<<") {
+      item.capture = options.capture || null;
+      state.tail.push(item);
+      if (state.tail.length > OMITTED_TAIL_LIMIT) {
+        state.tail.shift();
+        state.evicted += 1;
+      }
+      return;
+    }
+    state.writes.push(item);
+    if (state.writes.length > OMITTED_WRITE_LIMIT) {
+      state.writes.shift();
+      state.evicted += 1;
+    }
+  }
+
+  function resetFollowState(slot) {
+    followState[slot] = { following: true, evicted: 0, tail: [], writes: [] };
+  }
+
+  /** Missing timestamps sort as the empty string so every pair has a well-defined, transitive order. */
+  function timestampSortValue(value) {
+    return value ? String(value) : "";
+  }
+
+  function compareRetainedLines(a, b) {
+    const aStamp = timestampSortValue(a.tstamp);
+    const bStamp = timestampSortValue(b.tstamp);
+    if (aStamp !== bStamp) return aStamp < bStamp ? -1 : 1;
+    return a.order - b.order;
+  }
+
+  /**
+   * A capture already attached to the DOM must move after the new Gap so replay stays
+   * in visual order. Budget trimming can also evict a sealed, single-line capture's
+   * only row while its container is still marked attached, leaving it an orphan with
+   * no parent — in that case it must be reattached outright, or replayed rows appended
+   * into it would render invisibly.
+   */
+  function reattachCaptureAfterGap(el, capture) {
+    if (!capture || !capture.attached) return;
+    if (capture.el.parentNode === el) el.removeChild(capture.el);
+    el.appendChild(capture.el);
+  }
+
+  function recoverTranscriptGap(slot) {
+    const state = followState[slot];
+    const evicted = state.evicted;
+    if (!evicted && !state.tail.length && !state.writes.length) return;
+    const retained = state.tail.concat(state.writes).sort(compareRetainedLines);
+    const el = terms[slot];
+    state.evicted = 0;
+    state.tail = [];
+    state.writes = [];
+    if (evicted > 0) appendOrMergeTranscriptGap(el, evicted);
+    const movedCaptures = new Set();
+    retained.forEach((item) => {
+      if (item.capture && !movedCaptures.has(item.capture)) {
+        reattachCaptureAfterGap(el, item.capture);
+        movedCaptures.add(item.capture);
+      }
+    });
+    retained.forEach((item) => {
+      appendLine(item.target, item.direction, item.text, item.who, item.tstamp, {
+        replaying: true,
+        capture: item.capture,
+      });
+    });
+  }
+
   const pendingScrolls = new Set();
+  const lastAutoScrollTarget = new WeakMap();
   let scrollPending = false;
 
+  /**
+   * A scroll event is only a stale echo of our own tail-scrolling — safe to ignore —
+   * when BOTH: another automatic scroll for this pane is still queued (pendingScrolls),
+   * and the pane's current scrollTop is still at or after the position our last
+   * automatic scroll actually landed on. Requiring the pending scroll too (not just the
+   * target comparison) matters once a target is realistically clamped to the true tail
+   * position: a later, genuine reattachment scroll can legitimately land exactly on that
+   * same stale target long after the auto-scroll that set it was flushed, and must still
+   * be evaluated. A genuine upward user scroll below the target is never swallowed
+   * either way, and a pane with no recorded target is never suppressed.
+   */
+  function updateFollowState(slot) {
+    const el = terms[slot];
+    if (
+      pendingScrolls.has(el) &&
+      lastAutoScrollTarget.has(el) &&
+      el.scrollTop >= lastAutoScrollTarget.get(el)
+    ) {
+      return;
+    }
+    const state = followState[slot];
+    const wasFollowing = state.following;
+    state.following = isNearLiveTail(el);
+    if (wasFollowing && !state.following) {
+      // A pane can detach while an automatic scroll from before the detach is
+      // still queued. Drop it so the queued flush doesn't drag the pane back
+      // to the tail and fire a scroll event that reattaches it right after.
+      pendingScrolls.delete(el);
+    }
+    if (!wasFollowing && state.following) recoverTranscriptGap(slot);
+  }
+
+  function paneIsFollowing(slot) {
+    return followState[slot].following;
+  }
+
+  /**
+   * Real browsers clamp an assigned scrollTop to [0, scrollHeight - clientHeight], so the
+   * value that actually lands can be lower than scrollHeight. Assign first, then read the
+   * element's own (possibly clamped) scrollTop back, so the recorded target always matches
+   * what the pane truly landed on.
+   */
   function flushScrolls() {
     scrollPending = false;
-    for (const el of pendingScrolls) el.scrollTop = el.scrollHeight;
+    for (const el of pendingScrolls) {
+      el.scrollTop = el.scrollHeight;
+      lastAutoScrollTarget.set(el, el.scrollTop);
+    }
     pendingScrolls.clear();
   }
 
@@ -295,6 +514,10 @@
     if (scrollPending) return;
     scrollPending = true;
     requestAnimationFrame(flushScrolls);
+  }
+
+  function schedulePaneScroll(slot) {
+    if (paneIsFollowing(slot)) scheduleScroll(terms[slot]);
   }
 
   function setHolder(slot, active) {
@@ -359,15 +582,32 @@
     captureIndex.clear();
   }
 
-  function traceJump(execId) {
+  function markJumpNode(node, marker) {
+    if (!node) return;
+    if (jumpNodeTimer) clearTimeout(jumpNodeTimer);
+    if (jumpNodeMarked) jumpNodeMarked.classList.remove("jump-hit", "jump-miss");
+    node.classList.remove("jump-hit", "jump-miss");
+    node.classList.add(marker);
+    jumpNodeMarked = node;
+    jumpNodeTimer = setTimeout(() => {
+      node.classList.remove(marker);
+      jumpNodeMarked = null;
+      jumpNodeTimer = null;
+    }, 1200);
+  }
+
+  function traceJump(execId, node) {
     const el = captureIndex.get(Number(execId));
     if (!el || !captureStillInTerm(el)) {
-      setPill("not in view", "warn");
+      markJumpNode(node, "jump-miss");
       return;
     }
+    // Positioned without a smooth animation so arrival and the capture highlight coincide;
+    // a long animated scroll outlasts the highlight timer below.
     if (typeof el.scrollIntoView === "function") {
-      el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      el.scrollIntoView({ block: "nearest" });
     }
+    markJumpNode(node, "jump-hit");
     el.classList.add("jump-flash");
     if (jumpFlashTimer) clearTimeout(jumpFlashTimer);
     jumpFlashTimer = setTimeout(() => {
@@ -398,7 +638,7 @@
         node.className = flags.join(" ");
         node.dataset.execId = String(entry.id);
         node.title = "Jump to capture";
-        node.addEventListener("click", () => traceJump(entry.id));
+        node.addEventListener("click", () => traceJump(entry.id, node));
         appendSpineText(node, "spine-kicker", `EXEC · ${entry.target} · #${entry.id}`);
         appendSpineText(node, "spine-command", entry.cmd || "—");
         appendSpineText(
@@ -457,6 +697,12 @@
     renderSpine();
   }
 
+  function recordLineSideEffects(target, direction, text, who, tstamp) {
+    if (direction === ">>>" && who === "agent" && !openCaptures[target]) {
+      recordAgentSend(target, text, tstamp);
+    }
+  }
+
   function entriesFromAgentLog(entries) {
     return (entries || [])
       .map((entry) => ({ kind: "exec", ...entry }))
@@ -496,7 +742,7 @@
     capture.dataset.execId = String(msg.id);
     openCaptures[msg.target] = { id: msg.id, slot, el: capture, attached: false };
     setHolder(slot, true);
-    scheduleScroll(term);
+    schedulePaneScroll(slot);
   }
 
   function onExecEnd(msg) {
@@ -516,13 +762,39 @@
     setHolder(open.slot, false);
   }
 
-  function appendLine(target, direction, text, who, tstamp) {
-    if (direction === ">>>" && who === "agent" && !openCaptures[target]) {
-      recordAgentSend(target, text, tstamp);
+  function appendCapturedRow(capture, row) {
+    if (!hasClass(capture.el, "sealed")) {
+      capture.el.appendChild(row);
+      return;
+    }
+    const foot = lastChild(capture.el);
+    if (foot && hasClass(foot, "cap-foot")) {
+      capture.el.removeChild(foot);
+      capture.el.appendChild(row);
+      capture.el.appendChild(foot);
+      return;
+    }
+    capture.el.appendChild(row);
+  }
+
+  function appendLine(target, direction, text, who, tstamp, options = {}) {
+    if (!options.replaying) {
+      recordLineSideEffects(target, direction, text, who, tstamp);
     }
     const slot = targetToSlot[target] || SLOT_KEYS[0];
     const el = terms[slot];
     if (!el) return;
+    const capture =
+      direction === "<<<"
+        ? Object.prototype.hasOwnProperty.call(options, "capture")
+          ? options.capture
+          : openCaptures[target]
+        : null;
+    const detachable = direction === "<<<" || direction === ">>>" || direction === "---";
+    if (detachable && !options.replaying && !paneIsFollowing(slot)) {
+      rememberOmittedLine(slot, target, direction, text, who, tstamp, { capture });
+      return;
+    }
     const row = document.createElement("div");
     let cls = "ln dev";
     let prefix = "";
@@ -546,16 +818,16 @@
     if (prefix) body.appendChild(document.createTextNode(prefix));
     AnsiRender.renderAnsi(body, text);
     row.append(stamp, body);
-    const capture = direction === "<<<" ? openCaptures[target] : null;
     if (capture && !capture.attached) {
       el.appendChild(capture.el);
       capture.attached = true;
       registerCapture(capture.id, capture.el);
     }
-    (capture ? capture.el : el).appendChild(row);
+    if (capture) appendCapturedRow(capture, row);
+    else el.appendChild(row);
     termLineCounts.set(el, (termLineCounts.get(el) || 0) + 1);
     trimTerm(el);
-    scheduleScroll(el);
+    schedulePaneScroll(slot);
   }
 
   function connect() {
@@ -617,6 +889,14 @@
 
   btnBridge.addEventListener("click", () => setMode("bridge"));
   btnCrt.addEventListener("click", () => setMode("crt"));
+  for (const budget of LIVE_VIEW_BUDGETS) {
+    liveDepthStops[budget].addEventListener("click", () => setLiveViewBudget(budget));
+  }
+  updateLiveDepthInstrument();
+
+  for (const slot of SLOT_KEYS) {
+    terms[slot].addEventListener("scroll", () => updateFollowState(slot));
+  }
 
   bindingLiveDir.addEventListener("input", () => {
     bindingsDirty = true;
@@ -746,17 +1026,16 @@
   });
 
   document.getElementById("btn-clear").addEventListener("click", () => {
-    terms.slot0.innerHTML = "";
-    terms.slot1.innerHTML = "";
-    termLineCounts.set(terms.slot0, 0);
-    termLineCounts.set(terms.slot1, 0);
+    for (const slot of SLOT_KEYS) {
+      terms[slot].innerHTML = "";
+      termLineCounts.set(terms[slot], 0);
+      resetFollowState(slot);
+      setHolder(slot, false);
+    }
     for (const target of Object.keys(openCaptures)) {
       delete openCaptures[target];
     }
     clearCaptureIndex();
-    for (const slot of SLOT_KEYS) {
-      setHolder(slot, false);
-    }
   });
 
   connect();
