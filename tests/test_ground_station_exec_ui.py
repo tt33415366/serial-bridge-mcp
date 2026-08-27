@@ -7,6 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_JS = ROOT / "static" / "app.js"
+TRANSCRIPT_VIEW_JS = ROOT / "static" / "transcript_view.js"
 
 
 def run_ui_scenario(scenario: str, agent_log_entries=None, local_storage=None):
@@ -232,6 +233,7 @@ globalThis.WebSocket = class {{
   send() {{}}
 }};
 
+eval(fs.readFileSync({json.dumps(str(TRANSCRIPT_VIEW_JS))}, "utf8"));
 eval(fs.readFileSync({json.dumps(str(APP_JS))}, "utf8"));
 const send = (message) => socket.onmessage({{ data: JSON.stringify(message) }});
 const term = (slot) => document.getElementById(`term-${{slot}}`);

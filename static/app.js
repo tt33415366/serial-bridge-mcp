@@ -275,6 +275,10 @@
 
   let liveViewBudget = normalizeLiveViewBudget(localStorage.getItem(LIVE_VIEW_BUDGET_KEY));
 
+  const paneModels = Object.fromEntries(
+    SLOT_KEYS.map((slot) => [slot, TranscriptView.createPane(liveViewBudget)])
+  );
+
   function updateLiveDepthInstrument() {
     for (const budget of LIVE_VIEW_BUDGETS) {
       const stop = liveDepthStops[budget];
@@ -324,6 +328,7 @@
       lineCount -= 1;
     }
     termLineCounts.set(el, lineCount);
+    for (const slot of SLOT_KEYS) paneModels[slot].setBudget(liveViewBudget);
   }
 
   function isNearLiveTail(el) {
@@ -340,6 +345,10 @@
 
   function isTranscriptGap(row) {
     return row && hasClass(row, "ln") && hasClass(row, "gap");
+  }
+
+  function slotForTerm(el) {
+    return SLOT_KEYS.find((slot) => terms[slot] === el) || null;
   }
 
   function lastChild(el) {
@@ -361,6 +370,7 @@
    * reachable — kept in case that invariant ever changes.
    */
   function appendOrMergeTranscriptGap(el, count) {
+    paneModels[slotForTerm(el)].appendGap(count);
     const prior = lastChild(el);
     if (isTranscriptGap(prior)) {
       setGapCount(prior, (Number(prior.dataset.evictedCount) || 0) + count);
@@ -753,11 +763,13 @@
       if (recorded && slot) setHolder(slot, false);
       return;
     }
+    const text = sealCopy(msg);
     const foot = document.createElement("div");
     foot.className = "cap-foot";
-    foot.textContent = sealCopy(msg);
+    foot.textContent = text;
     open.el.appendChild(foot);
     open.el.className = "capture sealed";
+    paneModels[open.slot].appendFoot({ captureId: open.id, text });
     delete openCaptures[msg.target];
     setHolder(open.slot, false);
   }
@@ -795,6 +807,13 @@
       rememberOmittedLine(slot, target, direction, text, who, tstamp, { capture });
       return;
     }
+    paneModels[slot].appendLine({
+      direction,
+      text,
+      who,
+      tstamp,
+      captureId: capture ? capture.id : null,
+    });
     const row = document.createElement("div");
     let cls = "ln dev";
     let prefix = "";
@@ -1031,6 +1050,7 @@
       termLineCounts.set(terms[slot], 0);
       resetFollowState(slot);
       setHolder(slot, false);
+      paneModels[slot].clear();
     }
     for (const target of Object.keys(openCaptures)) {
       delete openCaptures[target];
