@@ -743,6 +743,37 @@ class GroundStationExecUiTest(unittest.TestCase):
         self.assertIn("omitted-969", result["texts"][1])
         self.assertIn("omitted-1000", result["texts"][-1])
 
+    def test_reattach_schedules_tail_scroll_after_gap_recovery(self):
+        result = run_ui_scenario(
+            """
+  const linux = term("slot0");
+  linux.clientHeight = 100;
+  linux.scrollHeight = 200;
+  linux.scrollTop = 40;
+  linux.dispatch("scroll");
+  send({
+    type: "line", target: "linux", direction: "<<<",
+    text: "omitted-while-detached",
+  });
+  const textBefore = linux.textContent;
+  const detachedTop = linux.scrollTop;
+  linux.scrollTop = linux.scrollHeight;
+  linux.dispatch("scroll");
+  flushFrames();
+  return {
+    textBefore,
+    detachedTop,
+    afterTop: linux.scrollTop,
+    text: linux.textContent,
+    followingNearTail: (linux.scrollHeight - linux.clientHeight - linux.scrollTop) <= 32,
+  };
+"""
+        )
+        self.assertNotIn("omitted-while-detached", result["textBefore"])
+        self.assertIn("omitted-while-detached", result["text"])
+        self.assertTrue(result["followingNearTail"])
+        self.assertGreaterEqual(result["afterTop"], result["detachedTop"])
+
     def test_detached_writes_and_system_rows_replay_when_follow_resumes(self):
         result = run_ui_scenario(
             """

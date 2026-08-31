@@ -1027,21 +1027,35 @@
     // the moment scrollTop moves at all, which is the Operator taking the pane back:
     // their scroll to the true bottom is then read like any other.
     if (historyJumpRest.get(el) === el.scrollTop) return;
-    historyJumpRest.delete(el);
     const state = followState[slot];
     const wasFollowing = state.following;
-    state.following = isNearLiveTail(el);
-    if (wasFollowing && !state.following) {
+    const nearTail = isNearLiveTail(el);
+    if (wasFollowing && !nearTail) {
       // A pane can detach while an automatic scroll from before the detach is
       // still queued. Drop it so the queued flush doesn't drag the pane back
       // to the tail and fire a scroll event that reattaches it right after.
+      historyJumpRest.delete(el);
       pendingScrolls.delete(el);
+      state.following = false;
       enterHistoryMode(slot);
+    } else if (!wasFollowing && nearTail) {
+      returnPaneToFollow(slot);
+    } else {
+      historyJumpRest.delete(el);
     }
-    if (!wasFollowing && state.following) {
+  }
+
+  function returnPaneToFollow(slot) {
+    const el = terms[slot];
+    const state = followState[slot];
+    const wasFollowing = state.following;
+    historyJumpRest.delete(el);
+    state.following = true;
+    if (!wasFollowing) {
       exitHistoryMode(slot);
       recoverTranscriptGap(slot);
     }
+    schedulePaneScroll(slot);
   }
 
   function paneIsFollowing(slot) {
