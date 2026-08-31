@@ -1691,6 +1691,7 @@
       const cmd = input.value;
       const trimmed = cmd.trim();
       if (!trimmed || !target) return;
+      returnPaneToFollow(slot);
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "send", target, cmd }));
       } else {

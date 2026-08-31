@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 APP_JS = ROOT / "static" / "app.js"
 TRANSCRIPT_VIEW_JS = ROOT / "static" / "transcript_view.js"
+COMMAND_HISTORY_JS = ROOT / "static" / "command_history.js"
 
 
 def run_ui_scenario(scenario: str, agent_log_entries=None, local_storage=None):
@@ -191,7 +192,9 @@ class FakeElement {{
     this.scrolledIntoView = true;
     this.scrollIntoViewOptions = options || null;
   }}
-  focus() {{}}
+  focus() {{
+    globalThis.activeElement = this;
+  }}
   setSelectionRange() {{}}
 }}
 
@@ -202,6 +205,17 @@ for (const id of ["holder-slot0", "holder-slot1"]) {{
   ids.get(id).className = "holder idle";
   ids.get(id).textContent = "IDLE";
 }}
+function createComposerForm(slotIndex) {{
+  const form = new FakeElement(`composer-${{slotIndex}}`);
+  form.tagName = "FORM";
+  form.setAttribute("data-slot", slotIndex);
+  const input = new FakeElement(`composer-${{slotIndex}}-input`);
+  input.tagName = "INPUT";
+  form.appendChild(input);
+  form.querySelector = (selector) => selector === "input" ? input : new FakeElement();
+  return form;
+}}
+const composerForms = [createComposerForm("0"), createComposerForm("1")];
 globalThis.document = {{
   getElementById(id) {{
     if (!ids.has(id)) ids.set(id, new FakeElement(id));
@@ -218,7 +232,8 @@ globalThis.document = {{
   createTextNode(text) {{
     return {{ textContent: String(text) }};
   }},
-  querySelectorAll() {{
+  querySelectorAll(selector) {{
+    if (selector === ".composer") return composerForms;
     return [];
   }},
 }};
@@ -244,7 +259,6 @@ globalThis.localStorage = {{
     return Object.fromEntries(storage.entries());
   }},
 }};
-globalThis.CommandHistory = {{}};
 globalThis.AnsiRender = {{
   renderAnsi(element, text) {{
     element.appendChild(document.createTextNode(text));
@@ -252,8 +266,10 @@ globalThis.AnsiRender = {{
 }};
 globalThis.agentLogEntries = {json.dumps(agent_log_entries)};
 globalThis.fetchCalls = [];
-globalThis.fetch = async (url) => {{
+globalThis.fetchRequests = [];
+globalThis.fetch = async (url, options) => {{
   fetchCalls.push(url);
+  fetchRequests.push({{ url, options: options || {{}} }});
   if (url === "/api/agent_log") {{
     return {{
       ok: true,
@@ -271,10 +287,14 @@ globalThis.WebSocket = class {{
     this.readyState = WebSocket.OPEN;
     globalThis.socket = this;
   }}
-  send() {{}}
+  send(payload) {{
+    globalThis.wsSent.push(payload);
+  }}
 }};
+globalThis.wsSent = [];
 
 eval(fs.readFileSync({json.dumps(str(TRANSCRIPT_VIEW_JS))}, "utf8"));
+eval(fs.readFileSync({json.dumps(str(COMMAND_HISTORY_JS))}, "utf8"));
 // Hand the app instrumented panes so a scenario can read retained model depth, which the
 // app deliberately does not expose to the page.
 const createRealPane = globalThis.TranscriptView.createPane;
@@ -706,6 +726,225 @@ class GroundStationExecUiTest(unittest.TestCase):
         self.assertNotIn("linux-paused", result["linuxText"])
         self.assertEqual(1, result["rtosRows"])
         self.assertIn("rtos-live", result["rtosText"])
+
+    def test_composer_submit_reattaches_follow_before_send(self):
+        result = run_ui_scenario(
+            """
+  await nextTurn();
+  const composer = (slotIndex) => document.querySelectorAll(".composer")[slotIndex];
+  const submitCmd = (slotIndex, text) => {
+    const form = composer(slotIndex);
+    const input = form.querySelector("input");
+    input.value = text;
+    form.dispatch("submit", { preventDefault() {} });
+  };
+  const linux = term("slot0");
+  linux.clientHeight = 100;
+  linux.scrollHeight = 200;
+  linux.scrollTop = 40;
+  linux.dispatch("scroll");
+  send({ type: "line", target: "linux", direction: "<<<", text: "hidden-while-detached" });
+  submitCmd(0, "uname -a");
+  flushFrames();
+  const afterSubmit = {
+    text: linux.textContent,
+    wsSent: wsSent.slice(),
+  };
+  send({
+    type: "line", target: "linux", direction: ">>>", who: "user",
+    text: "uname -a",
+  });
+  return {
+    afterSubmit,
+    finalText: linux.textContent,
+    sent: wsSent.map((payload) => JSON.parse(payload)),
+  };
+"""
+        )
+
+        self.assertIn("hidden-while-detached", result["afterSubmit"]["text"])
+        self.assertEqual(1, len(result["afterSubmit"]["wsSent"]))
+        self.assertIn("hidden-while-detached", result["finalText"])
+        self.assertIn("uname -a", result["finalText"])
+        self.assertEqual(
+            {"type": "send", "target": "linux", "cmd": "uname -a"},
+            result["sent"][0],
+        )
+
+    def test_empty_composer_submit_does_not_reattach_follow(self):
+        result = run_ui_scenario(
+            """
+  await nextTurn();
+  const composer = (slotIndex) => document.querySelectorAll(".composer")[slotIndex];
+  const submitCmd = (slotIndex, text) => {
+    const form = composer(slotIndex);
+    const input = form.querySelector("input");
+    input.value = text;
+    form.dispatch("submit", { preventDefault() {} });
+  };
+  const linux = term("slot0");
+  linux.clientHeight = 100;
+  linux.scrollHeight = 200;
+  linux.scrollTop = 40;
+  linux.dispatch("scroll");
+  submitCmd(0, "   ");
+  send({ type: "line", target: "linux", direction: "<<<", text: "still-hidden" });
+  return {
+    text: linux.textContent,
+    wsCount: wsSent.length,
+  };
+"""
+        )
+
+        self.assertNotIn("still-hidden", result["text"])
+        self.assertEqual(0, result["wsCount"])
+
+    def test_composer_submit_does_not_reattach_the_other_pane(self):
+        result = run_ui_scenario(
+            """
+  await nextTurn();
+  const composer = (slotIndex) => document.querySelectorAll(".composer")[slotIndex];
+  const submitCmd = (slotIndex, text) => {
+    const form = composer(slotIndex);
+    const input = form.querySelector("input");
+    input.value = text;
+    form.dispatch("submit", { preventDefault() {} });
+  };
+  const linux = term("slot0");
+  const rtos = term("slot1");
+  linux.clientHeight = 100;
+  linux.scrollHeight = 200;
+  linux.scrollTop = 40;
+  linux.dispatch("scroll");
+  rtos.clientHeight = 100;
+  rtos.scrollHeight = 200;
+  rtos.scrollTop = 40;
+  rtos.dispatch("scroll");
+  submitCmd(0, "only-linux");
+  flushFrames();
+  send({ type: "line", target: "rtos", direction: "<<<", text: "rtos-still-paused" });
+  return {
+    linuxText: linux.textContent,
+    rtosText: rtos.textContent,
+  };
+"""
+        )
+
+        self.assertNotIn("rtos-still-paused", result["rtosText"])
+        self.assertIsInstance(result["linuxText"], str)
+
+    def test_typing_in_composer_does_not_reattach_follow(self):
+        result = run_ui_scenario(
+            """
+  await nextTurn();
+  const input = document.querySelectorAll(".composer")[0].querySelector("input");
+  const linux = term("slot0");
+  linux.clientHeight = 100;
+  linux.scrollHeight = 200;
+  linux.scrollTop = 40;
+  linux.dispatch("scroll");
+  input.value = "not yet";
+  input.dispatch("input");
+  send({ type: "line", target: "linux", direction: "<<<", text: "typed-but-detached" });
+  return {
+    text: linux.textContent,
+    wsCount: wsSent.length,
+  };
+"""
+        )
+
+        self.assertNotIn("typed-but-detached", result["text"])
+        self.assertEqual(0, result["wsCount"])
+
+    def test_composer_submit_reattaches_follow_when_send_fails(self):
+        result = run_ui_scenario(
+            """
+  await nextTurn();
+  const composer = (slotIndex) => document.querySelectorAll(".composer")[slotIndex];
+  const submitCmd = (slotIndex, text) => {
+    const form = composer(slotIndex);
+    const input = form.querySelector("input");
+    input.value = text;
+    form.dispatch("submit", { preventDefault() {} });
+  };
+  const linux = term("slot0");
+  linux.clientHeight = 100;
+  linux.scrollHeight = 200;
+  linux.scrollTop = 40;
+  linux.dispatch("scroll");
+  socket.readyState = 0;
+  globalThis.fetch = async (url, options) => {
+    fetchCalls.push(url);
+    fetchRequests.push({ url, options: options || {} });
+    return { ok: false, json: async () => ({ ok: false }) };
+  };
+  submitCmd(0, "reboot");
+  flushFrames();
+  send({ type: "line", target: "linux", direction: "<<<", text: "after-failed-send" });
+  return {
+    text: linux.textContent,
+    sendRequests: fetchRequests.filter((request) => request.url === "/api/send"),
+  };
+"""
+        )
+
+        self.assertIn("after-failed-send", result["text"])
+        self.assertEqual(1, len(result["sendRequests"]))
+
+    def test_composer_submit_keeps_focus_on_the_input(self):
+        result = run_ui_scenario(
+            """
+  await nextTurn();
+  const form = document.querySelectorAll(".composer")[0];
+  const input = form.querySelector("input");
+  input.value = "pwd";
+  form.dispatch("submit", { preventDefault() {} });
+  return {
+    focused: globalThis.activeElement === input,
+  };
+"""
+        )
+
+        self.assertTrue(result["focused"])
+
+    def test_composer_submit_after_trace_jump_returns_to_follow(self):
+        result = run_ui_scenario(
+            """
+  await nextTurn();
+  const composer = (slotIndex) => document.querySelectorAll(".composer")[slotIndex];
+  const submitCmd = (slotIndex, text) => {
+    const form = composer(slotIndex);
+    const input = form.querySelector("input");
+    input.value = text;
+    form.dispatch("submit", { preventDefault() {} });
+  };
+  const linux = term("slot0");
+  send({ type: "exec", phase: "start", id: 11, target: "linux", cmd: "capture" });
+  send({ type: "line", target: "linux", direction: "<<<", text: "captured-device" });
+  send({
+    type: "exec", phase: "end", id: 11, target: "linux",
+    ended_by: "idle", ms: 8, bytes: 15, truncated: false, ok: true,
+  });
+  for (let index = 0; index < 300; index += 1) {
+    send({ type: "line", target: "linux", direction: "---", text: `tail-${index}` });
+  }
+  flushFrames();
+  const execNode = document.getElementById("spine-body").children[0];
+  execNode.dispatch("click");
+  send({ type: "line", target: "linux", direction: "<<<", text: "paused-after-jump" });
+  const afterJumpText = linux.textContent;
+  submitCmd(0, "barge");
+  flushFrames();
+  send({ type: "line", target: "linux", direction: "<<<", text: "live-after-submit" });
+  return {
+    afterJumpText,
+    finalText: linux.textContent,
+  };
+"""
+        )
+
+        self.assertNotIn("paused-after-jump", result["afterJumpText"])
+        self.assertIn("live-after-submit", result["finalText"])
 
     def test_follow_recovery_appends_gap_and_retained_tail_in_original_order(self):
         result = run_ui_scenario(
