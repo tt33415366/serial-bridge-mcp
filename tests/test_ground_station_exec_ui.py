@@ -323,6 +323,13 @@ globalThis.TranscriptView.createPane = (budget) => {{
 }};
 eval(fs.readFileSync({json.dumps(str(APP_JS))}, "utf8"));
 const send = (message) => socket.onmessage({{ data: JSON.stringify(message) }});
+const composer = (slotIndex) => document.querySelectorAll(".composer")[slotIndex];
+const submitCmd = (slotIndex, text) => {{
+  const form = composer(slotIndex);
+  const input = form.querySelector("input");
+  input.value = text;
+  form.dispatch("submit", {{ preventDefault() {{}} }});
+}};
 const term = (slot) => document.getElementById(`term-${{slot}}`);
 const holder = (slot) => document.getElementById(`holder-${{slot}}`);
 const nextTurn = () => new Promise((resolve) => setImmediate(resolve));
@@ -731,13 +738,6 @@ class GroundStationExecUiTest(unittest.TestCase):
         result = run_ui_scenario(
             """
   await nextTurn();
-  const composer = (slotIndex) => document.querySelectorAll(".composer")[slotIndex];
-  const submitCmd = (slotIndex, text) => {
-    const form = composer(slotIndex);
-    const input = form.querySelector("input");
-    input.value = text;
-    form.dispatch("submit", { preventDefault() {} });
-  };
   const linux = term("slot0");
   linux.clientHeight = 100;
   linux.scrollHeight = 200;
@@ -775,13 +775,6 @@ class GroundStationExecUiTest(unittest.TestCase):
         result = run_ui_scenario(
             """
   await nextTurn();
-  const composer = (slotIndex) => document.querySelectorAll(".composer")[slotIndex];
-  const submitCmd = (slotIndex, text) => {
-    const form = composer(slotIndex);
-    const input = form.querySelector("input");
-    input.value = text;
-    form.dispatch("submit", { preventDefault() {} });
-  };
   const linux = term("slot0");
   linux.clientHeight = 100;
   linux.scrollHeight = 200;
@@ -803,13 +796,6 @@ class GroundStationExecUiTest(unittest.TestCase):
         result = run_ui_scenario(
             """
   await nextTurn();
-  const composer = (slotIndex) => document.querySelectorAll(".composer")[slotIndex];
-  const submitCmd = (slotIndex, text) => {
-    const form = composer(slotIndex);
-    const input = form.querySelector("input");
-    input.value = text;
-    form.dispatch("submit", { preventDefault() {} });
-  };
   const linux = term("slot0");
   const rtos = term("slot1");
   linux.clientHeight = 100;
@@ -860,13 +846,6 @@ class GroundStationExecUiTest(unittest.TestCase):
         result = run_ui_scenario(
             """
   await nextTurn();
-  const composer = (slotIndex) => document.querySelectorAll(".composer")[slotIndex];
-  const submitCmd = (slotIndex, text) => {
-    const form = composer(slotIndex);
-    const input = form.querySelector("input");
-    input.value = text;
-    form.dispatch("submit", { preventDefault() {} });
-  };
   const linux = term("slot0");
   linux.clientHeight = 100;
   linux.scrollHeight = 200;
@@ -911,13 +890,6 @@ class GroundStationExecUiTest(unittest.TestCase):
         result = run_ui_scenario(
             """
   await nextTurn();
-  const composer = (slotIndex) => document.querySelectorAll(".composer")[slotIndex];
-  const submitCmd = (slotIndex, text) => {
-    const form = composer(slotIndex);
-    const input = form.querySelector("input");
-    input.value = text;
-    form.dispatch("submit", { preventDefault() {} });
-  };
   const linux = term("slot0");
   send({ type: "exec", phase: "start", id: 11, target: "linux", cmd: "capture" });
   send({ type: "line", target: "linux", direction: "<<<", text: "captured-device" });
@@ -944,6 +916,7 @@ class GroundStationExecUiTest(unittest.TestCase):
         )
 
         self.assertNotIn("paused-after-jump", result["afterJumpText"])
+        self.assertIn("paused-after-jump", result["finalText"])
         self.assertIn("live-after-submit", result["finalText"])
 
     def test_follow_recovery_appends_gap_and_retained_tail_in_original_order(self):
