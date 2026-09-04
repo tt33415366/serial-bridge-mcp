@@ -57,7 +57,7 @@ One Agent request that sends a command to a Target and returns the captured devi
 _Avoid_: run, shell (implies a local OS shell), send (see Send)
 
 **Grep**:
-An optional filter on one Exec: after that Exec's capture completes, keep the captured lines that match a pattern (literal substring by default, or a regular expression when opted in), plus any requested neighboring lines around each match. The Agent receives that subset as output, not the full capture.
+An optional post-capture narrowing on one Exec: after capture completes, retain only lines matching a pattern (literal substring by default, or a regular expression when opted in), plus any requested neighboring lines around each match. The Agent receives that subset as output, not the full capture.
 _Avoid_: filter (vague), search / tail (those mean the session log), keyword (the contract is one pattern, like prompt)
 
 **Send**:
