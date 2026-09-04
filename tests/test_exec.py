@@ -369,6 +369,13 @@ class ExecEngineTest(unittest.TestCase):
         self.assertEqual([], serial.writes)
         self.assertEqual(["abort"], calls)
 
+    def test_prompt_and_idle_present_the_same_stripped_capture(self):
+        chunks = [(0.0, b"show\r\nanswer\r\n")]
+        idle, _, _ = execute(chunks)
+        prompted, _, _ = execute(chunks, prompt="answer")
+        self.assertEqual(idle["output"], prompted["output"])
+        self.assertEqual(idle["truncated"], prompted["truncated"])
+
     def test_idle_completion_uses_one_second_gap(self):
         result, serial, clock = execute(
             [(0.0, b"show\r\n"), (0.2, b"answer\r\n")]

@@ -42,8 +42,29 @@ class ExecEngine:
         return trailing.decode("utf-8", errors="replace"), True
 
     @classmethod
-    def _clean_output(cls, captured: bytearray) -> tuple[str, bool]:
-        return cls._cap_output(cls._strip_output(captured))
+    def _present_output(cls, text: str) -> tuple[str, bool]:
+        return cls._cap_output(text)
+
+    def _result_from_capture(
+        self,
+        request: ExecRequest,
+        captured: bytearray,
+        *,
+        ok: bool,
+        timed_out: bool = False,
+        aborted: bool = False,
+        error: str | None = None,
+    ) -> dict[str, Any]:
+        output, truncated = self._present_output(self._strip_output(captured))
+        return exec_result(
+            request.target,
+            ok=ok,
+            output=output,
+            truncated=truncated,
+            timed_out=timed_out,
+            aborted=aborted,
+            error=error,
+        )
 
     @staticmethod
     def _finish(
@@ -100,15 +121,13 @@ class ExecEngine:
 
         while True:
             if request.aborted.is_set():
-                output, truncated = self._clean_output(captured)
                 return self._finish(
                     on_done,
                     "abort",
-                    exec_result(
-                        request.target,
+                    self._result_from_capture(
+                        request,
+                        captured,
                         ok=False,
-                        output=output,
-                        truncated=truncated,
                         aborted=True,
                     ),
                 )
@@ -125,22 +144,19 @@ class ExecEngine:
 
             now = self._clock()
             if now - started >= self.TOTAL_SECONDS:
-                output, truncated = self._clean_output(captured)
                 return self._finish(
                     on_done,
                     "timeout",
-                    exec_result(
-                        request.target,
+                    self._result_from_capture(
+                        request,
+                        captured,
                         ok=False,
-                        output=output,
-                        truncated=truncated,
                         timed_out=True,
                     ),
                 )
 
             if chunk:
                 full_output = self._strip_output(captured)
-                output, truncated = self._cap_output(full_output)
                 if request.prompt is not None:
                     matched = (
                         prompt_regex.search(full_output) is not None
@@ -151,24 +167,21 @@ class ExecEngine:
                         return self._finish(
                             on_done,
                             "prompt",
-                            exec_result(
-                                request.target,
+                            self._result_from_capture(
+                                request,
+                                captured,
                                 ok=True,
-                                output=output,
-                                truncated=truncated,
                             ),
                         )
 
             if now - last_rx >= self.IDLE_SECONDS:
-                output, truncated = self._clean_output(captured)
                 return self._finish(
                     on_done,
                     "idle",
-                    exec_result(
-                        request.target,
+                    self._result_from_capture(
+                        request,
+                        captured,
                         ok=True,
-                        output=output,
-                        truncated=truncated,
                     ),
                 )
             if not chunk:
