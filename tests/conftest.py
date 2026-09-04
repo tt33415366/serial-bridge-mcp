@@ -63,8 +63,19 @@ class FakeHub:
             result["raw_hex"] = raw_hex
         return result
 
-    def exec(self, target, cmd, prompt=None, prompt_is_regex=False):
-        self.calls.append((target, cmd, prompt, prompt_is_regex))
+    def exec(
+        self,
+        target,
+        cmd,
+        prompt=None,
+        prompt_is_regex=False,
+        grep=None,
+        grep_is_regex=False,
+        grep_context=0,
+    ):
+        self.calls.append(
+            (target, cmd, prompt, prompt_is_regex, grep, grep_is_regex, grep_context)
+        )
         return {
             "ok": True,
             "target": target,
@@ -105,7 +116,24 @@ class BlockingExecHub(FakeHub):
         self.exec_started = threading.Event()
         self.release_exec = threading.Event()
 
-    def exec(self, target, cmd, prompt=None, prompt_is_regex=False):
+    def exec(
+        self,
+        target,
+        cmd,
+        prompt=None,
+        prompt_is_regex=False,
+        grep=None,
+        grep_is_regex=False,
+        grep_context=0,
+    ):
         self.exec_started.set()
         self.release_exec.wait(10)
-        return super().exec(target, cmd, prompt, prompt_is_regex)
+        return super().exec(
+            target,
+            cmd,
+            prompt,
+            prompt_is_regex,
+            grep,
+            grep_is_regex,
+            grep_context,
+        )

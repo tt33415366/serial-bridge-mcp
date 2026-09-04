@@ -279,6 +279,9 @@ class Hub:
         cmd: str,
         prompt: str | None = None,
         prompt_is_regex: bool = False,
+        grep: str | None = None,
+        grep_is_regex: bool = False,
+        grep_context: int = 0,
     ) -> dict[str, Any]:
         target_name, error = self.resolve_target(target)
         if error is not None:
@@ -305,5 +308,8 @@ class Hub:
                 cmd,
                 prompt=prompt,
                 prompt_is_regex=prompt_is_regex,
+                grep=grep,
+                grep_is_regex=grep_is_regex,
+                grep_context=grep_context,
             )
         return worker.wait_exec(request)

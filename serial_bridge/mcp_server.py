@@ -33,6 +33,9 @@ async def serial_exec(
     cmd: str,
     prompt: str | None = None,
     prompt_is_regex: bool = False,
+    grep: str | None = None,
+    grep_is_regex: bool = False,
+    grep_context: int = 0,
 ) -> dict[str, Any]:
     """Run one text command through the Hub and capture its serial output."""
     target_name, error = _resolve_target(target)
@@ -50,6 +53,9 @@ async def serial_exec(
         cmd,
         prompt=prompt,
         prompt_is_regex=prompt_is_regex,
+        grep=grep,
+        grep_is_regex=grep_is_regex,
+        grep_context=grep_context,
     )
 
 

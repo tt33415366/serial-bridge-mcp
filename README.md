@@ -69,7 +69,9 @@ Use `/mcp` exactly; the Web UI is at `/`. The MCP Server exposes:
 - `serial_status`: read the current mode and each Target's Port Binding,
   open state, and busy hint.
 - `serial_exec`: send one text command and capture output until an idle gap,
-  an optional prompt match, or the 60-second timeout.
+  an optional prompt match, or the 60-second timeout. Optionally pass `grep` to
+  return only captured lines containing that literal substring; the result then
+  includes `grepped: true` and `match_count` (hits before the output cap).
 - `serial_send`: send a text line or Raw Payload without waiting for output.
 
 To exercise status and Exec:
@@ -86,6 +88,7 @@ To exercise status and Exec:
 
 Exec accepts the Target names `linux` and `rtos`, not serial device names. It
 returns captured `output` plus `timed_out`, `truncated`, and `aborted` flags.
+When `grep` is used, the result also includes `grepped` and `match_count`.
 
 Exec output and the `live/*.log` transcripts are plain text with ANSI escapes
 removed. The Web UI instead interprets the escapes and shows device colors.

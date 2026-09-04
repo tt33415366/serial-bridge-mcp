@@ -20,6 +20,9 @@ class ExecRequest(WriteRequest):
     target: str = ""
     prompt: str | None = None
     prompt_is_regex: bool = False
+    grep: str | None = None
+    grep_is_regex: bool = False
+    grep_context: int = 0
     done: threading.Event = field(default_factory=threading.Event)
     started: threading.Event = field(default_factory=threading.Event)
     result: dict[str, Any] | None = None
@@ -38,6 +41,8 @@ def exec_result(
     timed_out: bool = False,
     aborted: bool = False,
     error: str | None = None,
+    grepped: bool | None = None,
+    match_count: int | None = None,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "ok": ok,
@@ -49,6 +54,10 @@ def exec_result(
     }
     if error is not None:
         result["error"] = error
+    if grepped is not None:
+        result["grepped"] = grepped
+    if match_count is not None:
+        result["match_count"] = match_count
     return result
 
 
@@ -72,6 +81,9 @@ class TargetQueue:
         cmd: str,
         prompt: str | None = None,
         prompt_is_regex: bool = False,
+        grep: str | None = None,
+        grep_is_regex: bool = False,
+        grep_context: int = 0,
     ) -> ExecRequest:
         request = ExecRequest(
             cmd=cmd,
@@ -79,6 +91,9 @@ class TargetQueue:
             target=target,
             prompt=prompt,
             prompt_is_regex=prompt_is_regex,
+            grep=grep,
+            grep_is_regex=grep_is_regex,
+            grep_context=grep_context,
         )
         with self._lock:
             self._agent.append(request)

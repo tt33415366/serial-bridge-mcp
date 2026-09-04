@@ -42,8 +42,18 @@ class ExecEngine:
         return trailing.decode("utf-8", errors="replace"), True
 
     @classmethod
-    def _present_output(cls, text: str) -> tuple[str, bool]:
-        return cls._cap_output(text)
+    def _present_output(
+        cls, text: str, request: ExecRequest
+    ) -> tuple[str, bool, dict[str, Any]]:
+        extras: dict[str, Any] = {}
+        if request.grep is not None:
+            lines = text.splitlines(keepends=True)
+            matching = [line for line in lines if request.grep in line]
+            text = "".join(matching)
+            extras["grepped"] = True
+            extras["match_count"] = len(matching)
+        output, truncated = cls._cap_output(text)
+        return output, truncated, extras
 
     def _result_from_capture(
         self,
@@ -55,7 +65,9 @@ class ExecEngine:
         aborted: bool = False,
         error: str | None = None,
     ) -> dict[str, Any]:
-        output, truncated = self._present_output(self._strip_output(captured))
+        output, truncated, extras = self._present_output(
+            self._strip_output(captured), request
+        )
         return exec_result(
             request.target,
             ok=ok,
@@ -64,6 +76,8 @@ class ExecEngine:
             timed_out=timed_out,
             aborted=aborted,
             error=error,
+            grepped=extras.get("grepped"),
+            match_count=extras.get("match_count"),
         )
 
     @staticmethod
@@ -103,6 +117,17 @@ class ExecEngine:
                         error=f"prompt is not a valid regex: {exc}",
                     ),
                 )
+
+        if request.grep is not None and request.grep == "":
+            return self._finish(
+                on_done,
+                "error",
+                exec_result(
+                    request.target,
+                    ok=False,
+                    error="grep must not be empty",
+                ),
+            )
 
         raw_command = request.cmd.encode("utf-8", errors="replace") + line_ending
         wrote = queue.write_if_allowed(request, lambda: serial_port.write(raw_command))

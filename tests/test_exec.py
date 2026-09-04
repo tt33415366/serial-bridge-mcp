@@ -47,6 +47,9 @@ def execute(
     *,
     prompt=None,
     prompt_is_regex=False,
+    grep=None,
+    grep_is_regex=False,
+    grep_context=0,
     serial_factory=None,
     on_done=None,
     abort_before_execute=False,
@@ -63,6 +66,9 @@ def execute(
         cmd="show",
         prompt=prompt,
         prompt_is_regex=prompt_is_regex,
+        grep=grep,
+        grep_is_regex=grep_is_regex,
+        grep_context=grep_context,
     )
     assert queue.next_write() is request
     if abort_before_execute:
@@ -514,6 +520,113 @@ class ExecEngineTest(unittest.TestCase):
         self.assertEqual("partial", result["output"])
         self.assertEqual(["abort"], calls)
 
+    def test_literal_grep_keeps_matching_lines_only(self):
+        result, serial, _ = execute(
+            [(0.0, b"show\r\nerror 1\r\nok\r\nerror 2\r\n")],
+            grep="error",
+        )
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["grepped"])
+        self.assertEqual(2, result["match_count"])
+        self.assertEqual("error 1\r\nerror 2\r\n", result["output"])
+        self.assertFalse(result["truncated"])
+        self.assertTrue(serial.writes)
+
+    def test_literal_grep_is_case_sensitive(self):
+        result, _, _ = execute([(0.0, b"Error\r\nerror\r\n")], grep="error")
+        self.assertEqual("error\r\n", result["output"])
+        self.assertEqual(1, result["match_count"])
+
+    def test_empty_grep_is_rejected_before_tx(self):
+        result, serial, _ = execute([(0.0, b"x\r\n")], grep="")
+        self.assertFalse(result["ok"])
+        self.assertIn("grep", result["error"].lower())
+        self.assertEqual([], serial.writes)
+        self.assertNotIn("grepped", result)
+
+    def test_zero_hits_returns_empty_output(self):
+        result, _, _ = execute([(0.0, b"show\r\nanswer\r\n")], grep="error")
+        self.assertTrue(result["ok"])
+        self.assertEqual("", result["output"])
+        self.assertEqual(0, result["match_count"])
+        self.assertTrue(result["grepped"])
+
+    def test_omitting_grep_keeps_today_result_keys(self):
+        result, _, _ = execute([(0.0, b"show\r\n")])
+        self.assertEqual(
+            {"ok", "target", "output", "truncated", "timed_out", "aborted"},
+            set(result),
+        )
+
+    def test_grep_runs_on_timeout_capture(self):
+        def serial_factory(clock):
+            sent_keep = False
+
+            def read():
+                nonlocal sent_keep
+                clock.sleep(0.5)
+                if not sent_keep:
+                    sent_keep = True
+                    return b"keep\r\ndrop\r\n"
+                return b"x"
+
+            return ScriptedSerial(clock, on_read=read)
+
+        result, _, _ = execute(serial_factory=serial_factory, grep="keep")
+        self.assertTrue(result["timed_out"])
+        self.assertTrue(result["grepped"])
+        self.assertEqual("keep\r\n", result["output"])
+
+    def test_grep_then_trailing_32kib_cap(self):
+        line = "hit " + ("x" * 100) + "\r\n"
+        payload = (line * 400).encode("utf-8")
+        result, _, _ = execute([(0.0, payload)], grep="hit")
+        self.assertTrue(result["grepped"])
+        self.assertEqual(400, result["match_count"])
+        self.assertTrue(result["truncated"])
+        self.assertEqual(32 * 1024, len(result["output"].encode("utf-8")))
+
+    def test_grep_matches_trailing_line_without_newline(self):
+        result, _, _ = execute([(0.0, b"drop\r\nkeep-error")], grep="error")
+        self.assertEqual("keep-error", result["output"])
+        self.assertEqual(1, result["match_count"])
+
+    def test_grep_treats_command_echo_as_normal_line(self):
+        result, _, _ = execute([(0.0, b"show\r\nanswer\r\n")], grep="show")
+        self.assertEqual("show\r\n", result["output"])
+        self.assertEqual(1, result["match_count"])
+
+    def test_grep_runs_on_abort_partial_capture(self):
+        clock = FakeClock()
+        queue = TargetQueue()
+        request = queue.enqueue_exec("linux", "show", grep="partial")
+        self.assertIs(request, queue.next_write())
+        sent_partial = False
+
+        def read():
+            nonlocal sent_partial
+            if not sent_partial:
+                sent_partial = True
+                return b"partial noise"
+            clock.sleep(0.1)
+            if clock.now >= 0.2:
+                queue.abort_agents()
+            return b""
+
+        serial = ScriptedSerial(clock, on_read=read)
+        result = ExecEngine(clock=clock.monotonic, sleep=clock.sleep).execute(
+            serial,
+            queue,
+            request,
+            b"\n",
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["aborted"])
+        self.assertTrue(result["grepped"])
+        self.assertEqual("partial noise", result["output"])
+        self.assertEqual(1, result["match_count"])
+
 
 class SilentHub:
     def append_log(self, *args, **kwargs):
@@ -598,8 +711,18 @@ class FakeExecWorker:
         self._stop = threading.Event()
         self.calls = []
 
-    def enqueue_exec(self, cmd, prompt=None, prompt_is_regex=False):
-        self.calls.append((cmd, prompt, prompt_is_regex))
+    def enqueue_exec(
+        self,
+        cmd,
+        prompt=None,
+        prompt_is_regex=False,
+        grep=None,
+        grep_is_regex=False,
+        grep_context=0,
+    ):
+        self.calls.append(
+            (cmd, prompt, prompt_is_regex, grep, grep_is_regex, grep_context)
+        )
         return object()
 
     def wait_exec(self, _request):
@@ -633,7 +756,7 @@ class HubExecTest(unittest.TestCase):
         result = hub.exec("linux", "show", prompt="device> ")
 
         self.assertTrue(result["ok"])
-        self.assertEqual([("show", "device> ", False)], worker.calls)
+        self.assertEqual([("show", "device> ", False, None, False, 0)], worker.calls)
 
     def test_exec_in_crt_mode_fails_with_result_fields(self):
         result = self.make_hub().exec("linux", "show")

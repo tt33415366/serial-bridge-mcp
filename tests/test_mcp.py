@@ -175,7 +175,27 @@ class McpHttpTest(unittest.TestCase):
             result,
         )
         self.assertEqual(
-            [("linux", "uname -a", r"\$ $", True)],
+            [("linux", "uname -a", r"\$ $", True, None, False, 0)],
+            fake_hub.calls,
+        )
+
+    def test_serial_exec_passes_grep_to_hub(self):
+        fake_hub = FakeHub()
+        with patch.object(app_module, "hub", fake_hub):
+            response = call_tool(
+                self.client,
+                "serial_exec",
+                {
+                    "target": "linux",
+                    "cmd": "dmesg",
+                    "grep": "error",
+                },
+            )
+
+        self.assertEqual(200, response.status_code)
+        self.assertTrue(response.json()["result"]["structuredContent"]["ok"])
+        self.assertEqual(
+            [("linux", "dmesg", None, False, "error", False, 0)],
             fake_hub.calls,
         )
 
@@ -274,7 +294,7 @@ class McpHttpTest(unittest.TestCase):
         result = response.json()["result"]["structuredContent"]
         self.assertTrue(result["ok"])
         self.assertEqual("linux", result["target"])
-        self.assertEqual([("linux", "uname -a", None, False)], fake_hub.calls)
+        self.assertEqual([("linux", "uname -a", None, False, None, False, 0)], fake_hub.calls)
 
     def test_mcp_serial_send_normalizes_mixed_case_target_name(self):
         fake_hub = FakeHub()
