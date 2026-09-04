@@ -624,6 +624,40 @@ class ExecEngineTest(unittest.TestCase):
         self.assertEqual("show\r\n", result["output"])
         self.assertEqual(1, result["match_count"])
 
+    def test_grep_context_includes_symmetric_neighbors(self):
+        result, _, _ = execute(
+            [(0.0, b"a\r\nb\r\nhit\r\nc\r\nd\r\n")],
+            grep="hit",
+            grep_context=1,
+        )
+        self.assertEqual("b\r\nhit\r\nc\r\n", result["output"])
+        self.assertEqual(1, result["match_count"])
+
+    def test_grep_context_merges_overlapping_windows(self):
+        result, _, _ = execute(
+            [(0.0, b"a\r\nhit1\r\nb\r\nhit2\r\nc\r\n")],
+            grep="hit",
+            grep_context=1,
+        )
+        self.assertEqual("a\r\nhit1\r\nb\r\nhit2\r\nc\r\n", result["output"])
+        self.assertEqual(2, result["match_count"])
+
+    def test_grep_context_without_grep_is_rejected_when_positive(self):
+        result, serial, _ = execute([(0.0, b"x\r\n")], grep_context=1)
+        self.assertFalse(result["ok"])
+        self.assertEqual([], serial.writes)
+
+    def test_negative_grep_context_is_rejected_before_tx(self):
+        result, serial, _ = execute([(0.0, b"x\r\n")], grep="x", grep_context=-1)
+        self.assertFalse(result["ok"])
+        self.assertEqual([], serial.writes)
+
+    def test_grep_context_zero_without_grep_is_today(self):
+        result, _, _ = execute([(0.0, b"x\r\n")], grep_context=0)
+        self.assertTrue(result["ok"])
+        self.assertNotIn("grepped", result)
+        self.assertEqual("x\r\n", result["output"])
+
     def test_grep_runs_on_abort_partial_capture(self):
         clock = FakeClock()
         queue = TargetQueue()

@@ -42,6 +42,35 @@ class ExecEngine:
         return trailing.decode("utf-8", errors="replace"), True
 
     @classmethod
+    def _select_grep_lines(
+        cls,
+        lines: list[str],
+        request: ExecRequest,
+        *,
+        grep_regex: re.Pattern[str] | None = None,
+    ) -> tuple[list[str], int]:
+        if grep_regex is not None:
+            hit_indices = [
+                index for index, line in enumerate(lines) if grep_regex.search(line)
+            ]
+        else:
+            hit_indices = [
+                index for index, line in enumerate(lines) if request.grep in line
+            ]
+        match_count = len(hit_indices)
+        if request.grep_context > 0:
+            last = len(lines) - 1
+            included: set[int] = set()
+            for index in hit_indices:
+                start = max(0, index - request.grep_context)
+                end = min(last, index + request.grep_context)
+                included.update(range(start, end + 1))
+            selected = [lines[index] for index in sorted(included)]
+        else:
+            selected = [lines[index] for index in hit_indices]
+        return selected, match_count
+
+    @classmethod
     def _present_output(
         cls,
         text: str,
@@ -52,13 +81,12 @@ class ExecEngine:
         extras: dict[str, Any] = {}
         if request.grep is not None:
             lines = text.splitlines(keepends=True)
-            if grep_regex is not None:
-                matching = [line for line in lines if grep_regex.search(line)]
-            else:
-                matching = [line for line in lines if request.grep in line]
-            text = "".join(matching)
+            selected, match_count = cls._select_grep_lines(
+                lines, request, grep_regex=grep_regex
+            )
+            text = "".join(selected)
             extras["grepped"] = True
-            extras["match_count"] = len(matching)
+            extras["match_count"] = match_count
         output, truncated = cls._cap_output(text)
         return output, truncated, extras
 
@@ -149,6 +177,28 @@ class ExecEngine:
                     request.target,
                     ok=False,
                     error="grep must not be empty",
+                ),
+            )
+
+        if request.grep_context < 0:
+            return self._finish(
+                on_done,
+                "error",
+                exec_result(
+                    request.target,
+                    ok=False,
+                    error="grep_context must not be negative",
+                ),
+            )
+
+        if request.grep_context > 0 and request.grep is None:
+            return self._finish(
+                on_done,
+                "error",
+                exec_result(
+                    request.target,
+                    ok=False,
+                    error="grep_context requires grep",
                 ),
             )
 
