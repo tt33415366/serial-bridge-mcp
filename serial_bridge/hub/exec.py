@@ -43,12 +43,19 @@ class ExecEngine:
 
     @classmethod
     def _present_output(
-        cls, text: str, request: ExecRequest
+        cls,
+        text: str,
+        request: ExecRequest,
+        *,
+        grep_regex: re.Pattern[str] | None = None,
     ) -> tuple[str, bool, dict[str, Any]]:
         extras: dict[str, Any] = {}
         if request.grep is not None:
             lines = text.splitlines(keepends=True)
-            matching = [line for line in lines if request.grep in line]
+            if grep_regex is not None:
+                matching = [line for line in lines if grep_regex.search(line)]
+            else:
+                matching = [line for line in lines if request.grep in line]
             text = "".join(matching)
             extras["grepped"] = True
             extras["match_count"] = len(matching)
@@ -64,9 +71,10 @@ class ExecEngine:
         timed_out: bool = False,
         aborted: bool = False,
         error: str | None = None,
+        grep_regex: re.Pattern[str] | None = None,
     ) -> dict[str, Any]:
         output, truncated, extras = self._present_output(
-            self._strip_output(captured), request
+            self._strip_output(captured), request, grep_regex=grep_regex
         )
         return exec_result(
             request.target,
@@ -118,6 +126,21 @@ class ExecEngine:
                     ),
                 )
 
+        grep_regex = None
+        if request.grep is not None and request.grep_is_regex:
+            try:
+                grep_regex = re.compile(request.grep)
+            except re.error as exc:
+                return self._finish(
+                    on_done,
+                    "error",
+                    exec_result(
+                        request.target,
+                        ok=False,
+                        error=f"grep is not a valid regex: {exc}",
+                    ),
+                )
+
         if request.grep is not None and request.grep == "":
             return self._finish(
                 on_done,
@@ -154,6 +177,7 @@ class ExecEngine:
                         captured,
                         ok=False,
                         aborted=True,
+                        grep_regex=grep_regex,
                     ),
                 )
 
@@ -177,6 +201,7 @@ class ExecEngine:
                         captured,
                         ok=False,
                         timed_out=True,
+                        grep_regex=grep_regex,
                     ),
                 )
 
@@ -196,6 +221,7 @@ class ExecEngine:
                                 request,
                                 captured,
                                 ok=True,
+                                grep_regex=grep_regex,
                             ),
                         )
 
@@ -207,6 +233,7 @@ class ExecEngine:
                         request,
                         captured,
                         ok=True,
+                        grep_regex=grep_regex,
                     ),
                 )
             if not chunk:

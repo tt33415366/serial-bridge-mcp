@@ -72,6 +72,8 @@ Use `/mcp` exactly; the Web UI is at `/`. The MCP Server exposes:
   an optional prompt match, or the 60-second timeout. Optionally pass `grep` to
   return only captured lines containing that literal substring; the result then
   includes `grepped: true` and `match_count` (hits before the output cap).
+  `grep_is_regex` defaults to false; set it to true only when `grep` is a
+  regular expression.
 - `serial_send`: send a text line or Raw Payload without waiting for output.
 
 To exercise status and Exec:

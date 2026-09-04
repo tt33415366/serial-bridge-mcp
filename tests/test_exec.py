@@ -544,6 +544,34 @@ class ExecEngineTest(unittest.TestCase):
         self.assertEqual([], serial.writes)
         self.assertNotIn("grepped", result)
 
+    def test_regex_grep_is_opt_in(self):
+        result, _, _ = execute(
+            [(0.0, b"error 1\r\nfail\r\nerror 2\r\n")],
+            grep=r"err.*\d",
+            grep_is_regex=True,
+        )
+        self.assertEqual("error 1\r\nerror 2\r\n", result["output"])
+        self.assertEqual(2, result["match_count"])
+
+    def test_regex_grep_without_flag_is_literal(self):
+        result, _, _ = execute(
+            [(0.0, b"foo.*bar\r\nfoobar\r\n")],
+            grep="foo.*bar",
+        )
+        self.assertEqual("foo.*bar\r\n", result["output"])
+        self.assertEqual(1, result["match_count"])
+
+    def test_invalid_regex_grep_is_rejected_before_tx(self):
+        result, serial, _ = execute(
+            [(0.0, b"x\r\n")],
+            grep="err[",
+            grep_is_regex=True,
+        )
+        self.assertFalse(result["ok"])
+        self.assertIn("regex", result["error"])
+        self.assertEqual([], serial.writes)
+        self.assertNotIn("grepped", result)
+
     def test_zero_hits_returns_empty_output(self):
         result, _, _ = execute([(0.0, b"show\r\nanswer\r\n")], grep="error")
         self.assertTrue(result["ok"])
