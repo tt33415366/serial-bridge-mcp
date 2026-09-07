@@ -34,11 +34,16 @@ def _who_for(authorization: str | None) -> str:
 
 
 class McpBearerAuth:
-    def __init__(self, asgi_app: ASGIApp) -> None:
+    def __init__(self, asgi_app: ASGIApp, path: str | None = None) -> None:
         self.app = asgi_app
+        self.path = path
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http":
+            if self.path is not None and scope.get("path") != self.path:
+                response = JSONResponse({"detail": "Not Found"}, status_code=404)
+                await response(scope, receive, send)
+                return
             headers = {
                 key.decode("latin-1").lower(): value.decode("latin-1")
                 for key, value in scope["headers"]

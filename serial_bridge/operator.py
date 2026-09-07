@@ -199,8 +199,4 @@ def register_operator_routes(app: FastAPI, static_dir: Path) -> None:
         reveal_session_log(path)
         return {"ok": True}
 
-    @app.get("/api/tail")
-    async def api_tail(target: str = "both", n: int = 80) -> dict[str, Any]:
-        return {"ok": True, "lines": _get_hub().get_tail(target, n)}
-
     app.websocket("/ws")(ws_endpoint)

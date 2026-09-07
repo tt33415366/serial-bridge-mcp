@@ -805,36 +805,10 @@ class AppHttpAuthorizationTest(unittest.TestCase):
         self.assertEqual(403, response.status_code)
         scan.assert_not_called()
 
-    def test_api_tail_delegates_to_hub_get_tail(self):
-        fake_hub = FakeHub()
-        fake_hub.get_tail = Mock(
-            return_value={"linux": "tail line", "rtos": ""}
-        )
+    def test_api_tail_route_is_removed(self):
         client = TestClient(app_module.app, client=("127.0.0.1", 50000))
-        with patch.object(app_module, "hub", fake_hub):
-            response = client.get("/api/tail?target=linux&n=10")
-
-        self.assertEqual(200, response.status_code)
-        fake_hub.get_tail.assert_called_once_with("linux", 10)
-        self.assertEqual(
-            {"ok": True, "lines": {"linux": "tail line", "rtos": ""}},
-            response.json(),
-        )
-
-    def test_tail_returns_empty_lines_when_log_is_none(self):
-        fake_hub = FakeHub()
-        fake_hub.ports = {
-            "linux": {"log": None},
-            "rtos": {"log": None},
-        }
-        client = TestClient(app_module.app, client=("127.0.0.1", 50000))
-        with patch.object(app_module, "hub", fake_hub):
-            response = client.get("/api/tail")
-
-        self.assertEqual(200, response.status_code)
-        payload = response.json()
-        self.assertTrue(payload["ok"])
-        self.assertEqual({"linux": "", "rtos": ""}, payload["lines"])
+        response = client.get("/api/tail?target=linux&n=10")
+        self.assertEqual(404, response.status_code)
 
 
 if __name__ == "__main__":
