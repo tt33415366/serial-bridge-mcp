@@ -103,4 +103,4 @@ def create_mcp() -> FastMCP:
 
 def mount_mcp(app: FastAPI, mcp: FastMCP) -> None:
     """Mount the MCP Streamable HTTP app behind Bearer auth."""
-    app.mount("/", McpBearerAuth(mcp.streamable_http_app(), path="/mcp"), name="mcp")
+    app.mount("/", McpBearerAuth(mcp.streamable_http_app()), name="mcp")

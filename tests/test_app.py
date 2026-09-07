@@ -808,7 +808,8 @@ class AppHttpAuthorizationTest(unittest.TestCase):
     def test_api_tail_route_is_removed(self):
         client = TestClient(app_module.app, client=("127.0.0.1", 50000))
         response = client.get("/api/tail?target=linux&n=10")
-        self.assertEqual(404, response.status_code)
+        self.assertEqual(401, response.status_code)
+        self.assertEqual("Bearer", response.headers["www-authenticate"])
 
 
 if __name__ == "__main__":
