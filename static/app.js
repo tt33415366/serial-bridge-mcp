@@ -212,18 +212,30 @@
     return parts[parts.length - 1] || path;
   }
 
+  function revealSessionLog(target) {
+    fetch(`/api/session-log/reveal?target=${encodeURIComponent(target)}`, {
+      method: "POST",
+    }).catch(() => {});
+  }
+
   function updateFooterLogs(s) {
     if (s.live_dir) footLiveDir.textContent = s.live_dir;
-    const logs = Object.values(s.ports || {})
-      .map((binding) => binding.log)
-      .filter(Boolean);
-    if (logs.length) {
-      footLogsLabel.hidden = false;
-      footSessionLogs.textContent = logs.map(basename).join(" · ");
-    } else {
+    footSessionLogs.textContent = "";
+    const assigned = portEntries(s.ports).filter(([, binding]) => binding && binding.log);
+    if (!assigned.length) {
       footLogsLabel.hidden = true;
-      footSessionLogs.textContent = "";
+      return;
     }
+    footLogsLabel.hidden = false;
+    assigned.forEach(([name, binding]) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "foot-session-log";
+      button.dataset.target = name;
+      button.textContent = basename(binding.log);
+      button.addEventListener("click", () => revealSessionLog(name));
+      footSessionLogs.appendChild(button);
+    });
   }
 
   function applyStatus(s) {

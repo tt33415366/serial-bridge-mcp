@@ -67,7 +67,10 @@ Authorization: Bearer <SERIAL_BRIDGE_TOKEN>
 Use `/mcp` exactly; the Web UI is at `/`. The MCP Server exposes:
 
 - `serial_status`: read the current mode and each Target's Port Binding,
-  open state, and busy hint.
+  open state, busy hint, and current Session Log (`log` is the filesystem
+  path on the Hub host; `log_url` is a relative Bearer GET of that file from
+  the same origin as `/mcp`). Empty `log` / `log_url` means none assigned.
+  Do not pull the Session Log into `serial_exec` output.
 - `serial_exec`: send one text command and capture output until an idle gap,
   an optional prompt match, or the 60-second timeout. Optionally pass `grep` to
   return only captured lines containing that literal substring; the result then
@@ -145,7 +148,12 @@ migrated when you change the Live Directory or rename a Target.
 
 Edit the Live Directory in the Web UI Bindings panel in **CRT Mode** only (same
 loopback-only write path as Port Binding). The footer shows the configured
-directory and current session log filenames when assigned.
+directory and current session log filenames when assigned. Click a current
+Session Log filename to reveal it in the host file manager (Hub host /
+loopback). Download the current file with
+`GET /api/session-log?target=<TargetName>` (loopback or
+`Authorization: Bearer`, advertised as `log_url` on each Target in
+`serial_status`). Click does not download.
 
 ## Bridge Mode and CRT Mode
 

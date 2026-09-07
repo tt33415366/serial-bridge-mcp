@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from serial_bridge.config import Config, SlotPolicy, load_config, persist_slots
+from serial_bridge.constants import SESSION_LOG_ROUTE
 from serial_bridge.hub.coalesce import LineCoalescer
 from serial_bridge.hub.mode_transition import ModeTransition
 from serial_bridge.hub.queue import exec_result
@@ -167,6 +168,9 @@ class Hub:
                     "open": k in workers and workers[k].is_open,
                     "busy": k in workers and workers[k].is_busy,
                     "log": str(v["log"]) if v.get("log") else "",
+                    "log_url": (
+                        f"{SESSION_LOG_ROUTE}?target={k}" if v.get("log") else ""
+                    ),
                 }
                 for k, v in self.ports.items()
             },

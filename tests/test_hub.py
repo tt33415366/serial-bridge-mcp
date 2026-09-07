@@ -721,6 +721,8 @@ class LiveDirectoryTest(unittest.TestCase):
             self.assertEqual(str(live.resolve()), status["live_dir"])
             self.assertEqual("", status["ports"]["linux"]["log"])
             self.assertEqual("", status["ports"]["rtos"]["log"])
+            self.assertEqual("", status["ports"]["linux"]["log_url"])
+            self.assertEqual("", status["ports"]["rtos"]["log_url"])
 
     def test_bridge_creates_session_log_files_with_shared_timestamp(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -739,6 +741,14 @@ class LiveDirectoryTest(unittest.TestCase):
                 status = hub.status()
                 self.assertEqual(str(linux_log.resolve()), status["ports"]["linux"]["log"])
                 self.assertEqual(str(rtos_log.resolve()), status["ports"]["rtos"]["log"])
+                self.assertEqual(
+                    "/api/session-log?target=linux",
+                    status["ports"]["linux"]["log_url"],
+                )
+                self.assertEqual(
+                    "/api/session-log?target=rtos",
+                    status["ports"]["rtos"]["log_url"],
+                )
                 self.assertTrue((live / "bridge_status.json").is_file())
 
     def test_second_bridge_session_creates_distinct_log_files(self):
@@ -775,6 +785,10 @@ class LiveDirectoryTest(unittest.TestCase):
 
                 self.assertEqual(expected, hub.ports["linux"]["log"])
                 self.assertEqual(str(expected.resolve()), hub.status()["ports"]["linux"]["log"])
+                self.assertEqual(
+                    "/api/session-log?target=linux",
+                    hub.status()["ports"]["linux"]["log_url"],
+                )
 
     def test_changing_live_dir_does_not_migrate_old_logs(self):
         with tempfile.TemporaryDirectory() as temp_dir:

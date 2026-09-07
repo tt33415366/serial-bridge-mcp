@@ -32,6 +32,10 @@ _Avoid_: port config (vague), device map
 The single directory where the Hub writes Bridge-session Target log files and `bridge_status.json`, defaulting beside the Hub app (`<app-dir>\live\`), configurable like Port Binding, and applied on the next entry into Bridge Mode.
 _Avoid_: log path (alone — ambiguous with a single file), CRT_LOG, transcript root (jargon)
 
+**Session Log**:
+The complete on-disk record of one Target for one entry into Bridge Mode, written under the Live Directory as `<TargetName>-YYYY-MM-DD-HHMMSS.log`. The live transcript view and Exec output are bounded subsets of it, not replacements.
+_Avoid_: saved logs file, log file (alone), transcript (the live view)
+
 **Bridge Mode**:
 Hub holds the serial ports open; Operator and Agent may both send and observe the same streams.
 _Avoid_: agent mode, connected mode

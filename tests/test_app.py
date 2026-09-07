@@ -257,6 +257,178 @@ class AppSendTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([("mode", "bridge")], fake_hub.calls)
 
 
+class SessionLogDownloadTest(unittest.TestCase):
+    def setUp(self):
+        self.token_temp_dir = tempfile.TemporaryDirectory()
+        init_token_store(
+            config_path=Path(self.token_temp_dir.name) / "serial_bridge.json",
+            environ={},
+        )
+        self.files = tempfile.TemporaryDirectory()
+        self.log_path = Path(self.files.name) / "linux-2026-08-18-093045.log"
+        self.log_path.write_bytes(b"first snapshot\n")
+        self.fake_hub = FakeHub()
+        self.fake_hub.ports["linux"]["log"] = self.log_path
+
+    def tearDown(self):
+        reset_token_store()
+        self.token_temp_dir.cleanup()
+        self.files.cleanup()
+
+    def test_loopback_download_returns_file_snapshot(self):
+        client = TestClient(app_module.app, client=("127.0.0.1", 50000))
+        with patch.object(app_module, "hub", self.fake_hub):
+            response = client.get("/api/session-log?target=linux")
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(b"first snapshot\n", response.content)
+        self.assertIn("text/plain", response.headers["content-type"])
+        disposition = response.headers["content-disposition"]
+        self.assertIn("attachment", disposition)
+        self.assertIn("linux-2026-08-18-093045.log", disposition)
+
+    def test_download_is_a_snapshot_not_a_follow(self):
+        client = TestClient(app_module.app, client=("127.0.0.1", 50000))
+        with patch.object(app_module, "hub", self.fake_hub):
+            first = client.get("/api/session-log?target=linux")
+            self.log_path.write_bytes(b"first snapshot\nlater line\n")
+            second = client.get("/api/session-log?target=linux")
+        self.assertEqual(b"first snapshot\n", first.content)
+        self.assertEqual(b"first snapshot\nlater line\n", second.content)
+
+    def test_download_ignores_bytes_appended_after_snapshot_size_captured(self):
+        client = TestClient(app_module.app, client=("127.0.0.1", 50000))
+        log_path = self.log_path
+        original_stat = Path.stat
+
+        def stat_then_grow(path_self, *args, **kwargs):
+            st = original_stat(path_self, *args, **kwargs)
+            if path_self == log_path:
+                with log_path.open("ab") as handle:
+                    handle.write(b"appended after snapshot\n")
+            return st
+
+        with (
+            patch.object(app_module, "hub", self.fake_hub),
+            patch.object(Path, "stat", stat_then_grow),
+        ):
+            response = client.get("/api/session-log?target=linux")
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(b"first snapshot\n", response.content)
+        self.assertNotIn(b"appended after snapshot", response.content)
+
+    def test_non_loopback_download_without_token_returns_401(self):
+        client = TestClient(app_module.app, client=("192.0.2.10", 50000))
+        with (
+            patch.object(app_module, "hub", self.fake_hub),
+            patch.dict("os.environ", {"SERIAL_BRIDGE_TOKEN": "secret"}, clear=False),
+        ):
+            response = client.get("/api/session-log?target=linux")
+        self.assertEqual(401, response.status_code)
+        self.assertEqual("Bearer", response.headers["www-authenticate"])
+
+    def test_non_loopback_download_with_bearer_returns_file(self):
+        client = TestClient(app_module.app, client=("192.0.2.10", 50000))
+        with (
+            patch.object(app_module, "hub", self.fake_hub),
+            patch.dict("os.environ", {"SERIAL_BRIDGE_TOKEN": "secret"}, clear=False),
+        ):
+            response = client.get(
+                "/api/session-log?target=linux",
+                headers={"Authorization": "Bearer secret"},
+            )
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(b"first snapshot\n", response.content)
+
+    def test_download_unknown_target_returns_400(self):
+        client = TestClient(app_module.app, client=("127.0.0.1", 50000))
+        with patch.object(app_module, "hub", self.fake_hub):
+            response = client.get("/api/session-log?target=both")
+        self.assertEqual(400, response.status_code)
+        self.assertIn("unknown target", response.json()["detail"])
+
+    def test_download_without_assigned_log_returns_404(self):
+        self.fake_hub.ports["linux"]["log"] = None
+        client = TestClient(app_module.app, client=("127.0.0.1", 50000))
+        with patch.object(app_module, "hub", self.fake_hub):
+            response = client.get("/api/session-log?target=linux")
+        self.assertEqual(404, response.status_code)
+
+    def test_download_missing_file_returns_404(self):
+        self.log_path.unlink()
+        client = TestClient(app_module.app, client=("127.0.0.1", 50000))
+        with patch.object(app_module, "hub", self.fake_hub):
+            response = client.get("/api/session-log?target=linux")
+        self.assertEqual(404, response.status_code)
+
+
+class SessionLogRevealTest(unittest.TestCase):
+    def setUp(self):
+        self.token_temp_dir = tempfile.TemporaryDirectory()
+        init_token_store(
+            config_path=Path(self.token_temp_dir.name) / "serial_bridge.json",
+            environ={},
+        )
+        self.files = tempfile.TemporaryDirectory()
+        self.log_path = Path(self.files.name) / "linux-2026-08-18-093045.log"
+        self.log_path.write_text("body\n", encoding="utf-8")
+        self.fake_hub = FakeHub()
+        self.fake_hub.ports["linux"]["log"] = self.log_path
+
+    def tearDown(self):
+        reset_token_store()
+        self.token_temp_dir.cleanup()
+        self.files.cleanup()
+
+    def test_loopback_reveal_selects_the_session_log(self):
+        client = TestClient(app_module.app, client=("127.0.0.1", 50000))
+        with (
+            patch.object(app_module, "hub", self.fake_hub),
+            patch.object(bridge_operator, "reveal_session_log") as reveal,
+        ):
+            response = client.post("/api/session-log/reveal?target=linux")
+        self.assertEqual(200, response.status_code)
+        self.assertEqual({"ok": True}, response.json())
+        reveal.assert_called_once()
+        revealed = reveal.call_args.args[0]
+        self.assertEqual(self.log_path.resolve(), Path(revealed).resolve())
+
+    def test_non_loopback_reveal_with_bearer_is_rejected(self):
+        client = TestClient(app_module.app, client=("192.0.2.10", 50000))
+        with (
+            patch.object(app_module, "hub", self.fake_hub),
+            patch.dict("os.environ", {"SERIAL_BRIDGE_TOKEN": "secret"}, clear=False),
+            patch.object(bridge_operator, "reveal_session_log") as reveal,
+        ):
+            response = client.post(
+                "/api/session-log/reveal?target=linux",
+                headers={"Authorization": "Bearer secret"},
+            )
+        self.assertEqual(403, response.status_code)
+        reveal.assert_not_called()
+
+    def test_reveal_without_assigned_log_returns_404(self):
+        self.fake_hub.ports["linux"]["log"] = None
+        client = TestClient(app_module.app, client=("127.0.0.1", 50000))
+        with (
+            patch.object(app_module, "hub", self.fake_hub),
+            patch.object(bridge_operator, "reveal_session_log") as reveal,
+        ):
+            response = client.post("/api/session-log/reveal?target=linux")
+        self.assertEqual(404, response.status_code)
+        reveal.assert_not_called()
+
+    def test_reveal_session_log_uses_platform_file_manager(self):
+        with patch.object(bridge_operator.subprocess, "Popen") as popen:
+            with patch.object(bridge_operator.sys, "platform", "win32"):
+                bridge_operator.reveal_session_log(self.log_path)
+            popen.assert_called_once()
+            args = popen.call_args.args[0]
+            self.assertEqual("explorer", args[0])
+            self.assertTrue(args[1].startswith("/select,"))
+            self.assertIn(str(self.log_path.resolve()), args[1])
+
+
 class AppHttpAuthorizationTest(unittest.TestCase):
     def setUp(self):
         self.token_temp_dir = tempfile.TemporaryDirectory()

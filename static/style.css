@@ -963,6 +963,31 @@ body::after {
   white-space: nowrap;
 }
 
+.foot-session-logs {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.foot-session-log {
+  overflow: hidden;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--dim);
+  font: 9px var(--mono);
+  letter-spacing: normal;
+  text-transform: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
 .live-depth {
   display: flex;
   align-items: center;

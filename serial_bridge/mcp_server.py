@@ -24,7 +24,7 @@ def _resolve_target(target: object) -> tuple[str | None, str | None]:
 
 
 async def serial_status() -> dict[str, Any]:
-    """Return mode and per-target Port Bindings with open/busy hints."""
+    """Return Hub mode and each Target's Port Binding, open/busy hints, and the current Session Log (`log` filesystem path on the Hub host; relative `log_url` for a Bearer GET of that file from the same origin as /mcp). Empty log/log_url means none assigned. Do not pull the Session Log into serial_exec output."""
     return await offload(_get_hub().status)
 
 

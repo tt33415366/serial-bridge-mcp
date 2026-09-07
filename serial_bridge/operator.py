@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from serial_bridge.auth import (
     _is_loopback,
@@ -16,6 +18,7 @@ from serial_bridge.auth import (
     _who_for,
     origin_allowed,
 )
+from serial_bridge.constants import SESSION_LOG_ROUTE
 from serial_bridge.hub import available_ports
 from serial_bridge.offload import offload
 
@@ -36,6 +39,37 @@ def _send(target: object, cmd: str, who: str) -> dict[str, Any]:
         return {"ok": False, "error": error}
     assert target_name is not None
     return _get_hub().send(target_name, cmd, who=who)
+
+
+def _assigned_session_log(target: object) -> Path:
+    target_name, error = _resolve_target(target)
+    if error is not None:
+        raise HTTPException(status_code=400, detail=error)
+    path = _get_hub().ports[target_name].get("log")
+    if not path or not Path(path).is_file():
+        raise HTTPException(status_code=404, detail="no current Session Log")
+    return Path(path)
+
+
+def _iter_session_log_snapshot(path: Path, size: int):
+    with path.open("rb") as handle:
+        remaining = size
+        while remaining > 0:
+            chunk = handle.read(min(remaining, 65536))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+            yield chunk
+
+
+def reveal_session_log(path: Path) -> None:
+    resolved = path.resolve()
+    if sys.platform == "win32":
+        subprocess.Popen(["explorer", f"/select,{resolved}"])
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", "-R", str(resolved)])
+    else:
+        subprocess.Popen(["xdg-open", str(resolved.parent)])
 
 
 class ModeBody(BaseModel):
@@ -141,6 +175,29 @@ def register_operator_routes(app: FastAPI, static_dir: Path) -> None:
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
         return await offload(_send, body.target, body.cmd, _who_for(authorization))
+
+    @app.get(SESSION_LOG_ROUTE, dependencies=[Depends(_require_send_access)])
+    async def api_session_log(target: str) -> StreamingResponse:
+        path = _assigned_session_log(target)
+        size = path.stat().st_size
+        headers = {
+            "Content-Disposition": f'attachment; filename="{path.name}"',
+            "Content-Length": str(size),
+        }
+        return StreamingResponse(
+            _iter_session_log_snapshot(path, size),
+            media_type="text/plain; charset=utf-8",
+            headers=headers,
+        )
+
+    @app.post(
+        f"{SESSION_LOG_ROUTE}/reveal",
+        dependencies=[Depends(_require_operator_access)],
+    )
+    async def api_reveal_session_log(target: str) -> dict[str, Any]:
+        path = _assigned_session_log(target)
+        reveal_session_log(path)
+        return {"ok": True}
 
     @app.get("/api/tail")
     async def api_tail(target: str = "both", n: int = 80) -> dict[str, Any]:

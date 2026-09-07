@@ -1966,6 +1966,101 @@ class GroundStationExecUiTest(unittest.TestCase):
         self.assertEqual("spine-node send", result["className"])
         self.assertNotEqual("not in view", result["pill"])
 
+    def test_footer_session_log_basename_posts_reveal(self):
+        result = run_ui_scenario(
+            """
+  await nextTurn();
+  send({
+    type: "status",
+    mode: "bridge",
+    live_dir: "D:\\\\logs\\\\serial-bridge",
+    ports: {
+      linux: {
+        name: "linux", title: "Linux", com: "COM8", baud: 115200,
+        open: true, busy: false,
+        log: "D:\\\\logs\\\\serial-bridge\\\\linux-2026-08-18-093045.log",
+        log_url: "/api/session-log?target=linux",
+      },
+      rtos: {
+        name: "rtos", title: "RTOS", com: "COM9", baud: 115200,
+        open: true, busy: false,
+        log: "D:\\\\logs\\\\serial-bridge\\\\rtos-2026-08-18-093045.log",
+        log_url: "/api/session-log?target=rtos",
+      },
+    },
+  });
+  const host = document.getElementById("foot-session-logs");
+  const labels = host.children.map((child) => child.textContent);
+  const targets = host.children.map((child) => child.dataset.target);
+  const tags = host.children.map((child) => child.tagName);
+  host.children[0].dispatch("click");
+  await nextTurn();
+  return {
+    labelHidden: document.getElementById("foot-logs-label").hidden,
+    labels,
+    targets,
+    tags,
+    fetchRequests,
+  };
+"""
+        )
+        self.assertFalse(result["labelHidden"])
+        self.assertEqual(
+            ["linux-2026-08-18-093045.log", "rtos-2026-08-18-093045.log"],
+            result["labels"],
+        )
+        self.assertEqual(["linux", "rtos"], result["targets"])
+        self.assertEqual(["BUTTON", "BUTTON"], result["tags"])
+        reveal = [
+            entry
+            for entry in result["fetchRequests"]
+            if str(entry.get("url", "")).startswith("/api/session-log/reveal")
+        ]
+        self.assertEqual(1, len(reveal))
+        self.assertEqual("/api/session-log/reveal?target=linux", reveal[0]["url"])
+        self.assertEqual("POST", (reveal[0].get("options") or {}).get("method"))
+        self.assertFalse(
+            any(
+                str(entry.get("url", "")).startswith("/api/session-log?")
+                for entry in result["fetchRequests"]
+            )
+        )
+
+    def test_footer_hides_session_logs_when_unassigned(self):
+        result = run_ui_scenario(
+            """
+  await nextTurn();
+  send({
+    type: "status",
+    mode: "crt",
+    live_dir: "D:\\\\logs\\\\serial-bridge",
+    ports: {
+      linux: {
+        name: "linux", title: "Linux", com: "COM8", baud: 115200,
+        open: false, busy: false, log: "", log_url: "",
+      },
+      rtos: {
+        name: "rtos", title: "RTOS", com: "COM9", baud: 115200,
+        open: false, busy: false, log: "", log_url: "",
+      },
+    },
+  });
+  const host = document.getElementById("foot-session-logs");
+  return {
+    labelHidden: document.getElementById("foot-logs-label").hidden,
+    childCount: host.children.length,
+  };
+"""
+        )
+        self.assertTrue(result["labelHidden"])
+        self.assertEqual(0, result["childCount"])
+
+    def test_footer_session_log_css_preserves_basename_casing(self):
+        css = (ROOT / "static" / "style.css").read_text(encoding="utf-8")
+        logs_block = css[css.index(".foot-session-logs {") : css.index(".live-depth {")]
+        self.assertIn("text-transform: none", logs_block)
+        self.assertIn("letter-spacing: normal", logs_block)
+
 
 class FollowedWindowTest(unittest.TestCase):
     def test_followed_window_materializes_240_while_the_model_retains_the_budget(self):

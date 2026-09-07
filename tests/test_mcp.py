@@ -97,6 +97,26 @@ class McpHttpTest(unittest.TestCase):
             {tool["name"] for tool in response.json()["result"]["tools"]},
         )
 
+    def test_serial_status_description_advertises_session_log_url(self):
+        response = self.client.post(
+            "/mcp",
+            headers=MCP_HEADERS,
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/list",
+                "params": {},
+            },
+        )
+
+        tools = {tool["name"]: tool for tool in response.json()["result"]["tools"]}
+        description = tools["serial_status"]["description"]
+        self.assertIn("Session Log", description)
+        self.assertIn("log_url", description)
+        self.assertIn("Bearer", description)
+        self.assertIn("serial_exec", description)
+        self.assertNotIn("serial_tail", {tool["name"] for tool in tools.values()})
+
     def test_mcp_has_no_port_binding_write_capability(self):
         response = self.client.post(
             "/mcp",
