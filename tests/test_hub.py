@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 
 import serial_bridge.hub as hub_module
 from serial_bridge.config import Config, DEFAULT_LIVE_DIR, SlotDecision, SlotPolicy
+from serial_bridge.constants import TAIL_DEFAULT_N, TAIL_MAX_N
 from serial_bridge.hub import Hub
 
 
@@ -706,6 +707,116 @@ class HubTailTest(unittest.TestCase):
             result = hub.get_tail()
 
         self.assertEqual({"linux": "linux line", "rtos": "rtos line"}, result)
+
+
+class HubSerialTailTest(unittest.TestCase):
+    def test_tail_returns_last_n_lines_for_one_target(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log = Path(temp_dir) / "linux.log"
+            log.write_text("\n".join(f"line{i}" for i in range(100)), encoding="utf-8")
+            hub = Hub(make_config())
+            hub.ports["linux"]["log"] = log
+
+            result = hub.tail("linux", n=5)
+
+        self.assertEqual(
+            {
+                "ok": True,
+                "target": "linux",
+                "tail": "\n".join(f"line{i}" for i in range(95, 100)),
+                "n": 5,
+            },
+            result,
+        )
+
+    def test_tail_defaults_n_to_80(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log = Path(temp_dir) / "linux.log"
+            log.write_text("\n".join(f"line{i}" for i in range(90)), encoding="utf-8")
+            hub = Hub(make_config())
+            hub.ports["linux"]["log"] = log
+
+            result = hub.tail("linux")
+
+        self.assertEqual(TAIL_DEFAULT_N, result["n"])
+        self.assertEqual(
+            "\n".join(f"line{i}" for i in range(10, 90)),
+            result["tail"],
+        )
+
+    def test_tail_rejects_n_outside_1_to_200(self):
+        hub = Hub(make_config())
+        for bad in (0, 201, -1):
+            result = hub.tail("linux", n=bad)
+            self.assertFalse(result["ok"], bad)
+            self.assertEqual("linux", result["target"])
+            self.assertEqual("", result["tail"])
+            self.assertEqual(bad, result["n"])
+            self.assertEqual("n must be an integer from 1 to 200", result["error"])
+
+    def test_tail_unknown_target_is_error(self):
+        hub = Hub(make_config())
+        result = hub.tail("both")
+        self.assertFalse(result["ok"])
+        self.assertEqual("both", result["target"])
+        self.assertEqual("", result["tail"])
+        self.assertEqual(TAIL_DEFAULT_N, result["n"])
+        self.assertIn("unknown target", result["error"])
+
+    def test_tail_missing_assignment_is_error(self):
+        hub = Hub(make_config())
+        result = hub.tail("linux")
+        self.assertEqual(
+            {
+                "ok": False,
+                "target": "linux",
+                "tail": "",
+                "n": TAIL_DEFAULT_N,
+                "error": "no current Session Log",
+            },
+            result,
+        )
+
+    def test_tail_missing_file_is_error(self):
+        hub = Hub(make_config())
+        hub.ports["linux"]["log"] = Path("missing-session.log")
+        result = hub.tail("linux")
+        self.assertFalse(result["ok"])
+        self.assertEqual("no current Session Log", result["error"])
+
+    def test_tail_empty_assigned_file_is_success(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log = Path(temp_dir) / "linux.log"
+            log.write_text("", encoding="utf-8")
+            hub = Hub(make_config())
+            hub.ports["linux"]["log"] = log
+
+            result = hub.tail("linux")
+
+        self.assertEqual(
+            {
+                "ok": True,
+                "target": "linux",
+                "tail": "",
+                "n": TAIL_DEFAULT_N,
+            },
+            result,
+        )
+
+    def test_tail_reads_assigned_log_after_crt(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            live = Path(temp_dir)
+            hub = Hub(make_config(live / "serial_bridge.json", live_dir=live))
+            hub.start_bridge()
+            log = Path(hub.ports["linux"]["log"])
+            log.write_text("kept after crt\n", encoding="utf-8")
+            hub.stop_bridge()
+
+            result = hub.tail("linux")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("kept after crt", result["tail"])
+        self.assertEqual(str(log), str(hub.ports["linux"]["log"]))
 
 
 class LiveDirectoryTest(unittest.TestCase):

@@ -109,6 +109,53 @@ class FakeHub:
                 out[key] = ""
         return out
 
+    def tail(self, target, n=80):
+        from serial_bridge.constants import TAIL_DEFAULT_N, TAIL_MAX_N
+
+        target_name, error = self.resolve_target(target)
+        resolved = target_name or ""
+        if not isinstance(n, int) or isinstance(n, bool) or n < 1 or n > TAIL_MAX_N:
+            echoed = n if isinstance(n, int) and not isinstance(n, bool) else TAIL_DEFAULT_N
+            result = {
+                "ok": False,
+                "target": resolved,
+                "tail": "",
+                "n": echoed,
+                "error": f"n must be an integer from 1 to {TAIL_MAX_N}",
+            }
+            self.calls.append(("tail", target, n, result["ok"]))
+            return result
+        if error is not None:
+            result = {
+                "ok": False,
+                "target": resolved,
+                "tail": "",
+                "n": n,
+                "error": error,
+            }
+            self.calls.append(("tail", target, n, result["ok"]))
+            return result
+        log_path = self.ports[target_name].get("log")
+        if not log_path or not Path(log_path).is_file():
+            result = {
+                "ok": False,
+                "target": target_name,
+                "tail": "",
+                "n": n,
+                "error": "no current Session Log",
+            }
+            self.calls.append(("tail", target, n, result["ok"]))
+            return result
+        lines = Path(log_path).read_text(encoding="utf-8", errors="replace").splitlines()
+        result = {
+            "ok": True,
+            "target": target_name,
+            "tail": "\n".join(lines[-n:]),
+            "n": n,
+        }
+        self.calls.append(("tail", target, n, result["ok"]))
+        return result
+
 
 class BlockingExecHub(FakeHub):
     def __init__(self):

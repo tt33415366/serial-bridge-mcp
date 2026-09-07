@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from serial_bridge.config import Config, SlotPolicy, load_config, persist_slots
-from serial_bridge.constants import SESSION_LOG_ROUTE
+from serial_bridge.constants import SESSION_LOG_ROUTE, TAIL_DEFAULT_N, TAIL_MAX_N
 from serial_bridge.hub.coalesce import LineCoalescer
 from serial_bridge.hub.mode_transition import ModeTransition
 from serial_bridge.hub.queue import exec_result
@@ -181,6 +181,42 @@ class Hub:
 
     def get_tail(self, target: str = "both", n: int = 80) -> dict[str, str]:
         return self._transcript.get_tail(target, n)
+
+    def tail(self, target: str, n: int = TAIL_DEFAULT_N) -> dict[str, Any]:
+        target_name, error = self.resolve_target(target)
+        resolved = target_name or ""
+        if not isinstance(n, int) or isinstance(n, bool) or n < 1 or n > TAIL_MAX_N:
+            echoed = n if isinstance(n, int) and not isinstance(n, bool) else TAIL_DEFAULT_N
+            return {
+                "ok": False,
+                "target": resolved,
+                "tail": "",
+                "n": echoed,
+                "error": f"n must be an integer from 1 to {TAIL_MAX_N}",
+            }
+        if error is not None:
+            return {
+                "ok": False,
+                "target": resolved,
+                "tail": "",
+                "n": n,
+                "error": error,
+            }
+        path = self.ports[target_name].get("log")
+        if not path or not Path(path).is_file():
+            return {
+                "ok": False,
+                "target": target_name,
+                "tail": "",
+                "n": n,
+                "error": "no current Session Log",
+            }
+        return {
+            "ok": True,
+            "target": target_name,
+            "tail": self.get_tail(target=target_name, n=n)[target_name],
+            "n": n,
+        }
 
     def update_slots(
         self,

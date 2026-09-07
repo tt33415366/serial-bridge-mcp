@@ -70,7 +70,8 @@ Use `/mcp` exactly; the Web UI is at `/`. The MCP Server exposes:
   open state, busy hint, and current Session Log (`log` is the filesystem
   path on the Hub host; `log_url` is a relative Bearer GET of that file from
   the same origin as `/mcp`). Empty `log` / `log_url` means none assigned.
-  Do not pull the Session Log into `serial_exec` output.
+  Last N lines are `serial_tail`, not Exec output. Do not pull the Session Log
+  into `serial_exec` output.
 - `serial_exec`: send one text command and capture output until an idle gap,
   an optional prompt match, or the 60-second timeout. Optionally pass `grep` to
   return only captured lines containing that literal substring; the result then
@@ -79,6 +80,9 @@ Use `/mcp` exactly; the Web UI is at `/`. The MCP Server exposes:
   regular expression. `grep_context` is an optional symmetric neighbor count
   around each hit; overlapping windows merge.
 - `serial_send`: send a text line or Raw Payload without waiting for output.
+- `serial_tail`: read one Target's last `n` lines of the current Session Log
+  (default 80, max 200); result `{ok, target, tail, n}`. The whole file remains
+  `log_url`.
 
 To exercise status and Exec:
 

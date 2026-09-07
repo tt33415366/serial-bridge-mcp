@@ -65,6 +65,7 @@ class McpHttpTest(unittest.TestCase):
         self.assertTrue(callable(mcp_server.serial_status))
         self.assertTrue(callable(mcp_server.serial_exec))
         self.assertTrue(callable(mcp_server.serial_send))
+        self.assertTrue(callable(mcp_server.serial_tail))
         self.assertTrue(callable(mcp_server.create_mcp))
         self.assertTrue(callable(mcp_server.mount_mcp))
 
@@ -93,7 +94,7 @@ class McpHttpTest(unittest.TestCase):
         )
 
         self.assertEqual(
-            {"serial_exec", "serial_send", "serial_status"},
+            {"serial_exec", "serial_send", "serial_status", "serial_tail"},
             {tool["name"] for tool in response.json()["result"]["tools"]},
         )
 
@@ -115,7 +116,8 @@ class McpHttpTest(unittest.TestCase):
         self.assertIn("log_url", description)
         self.assertIn("Bearer", description)
         self.assertIn("serial_exec", description)
-        self.assertNotIn("serial_tail", {tool["name"] for tool in tools.values()})
+        self.assertIn("serial_tail", {tool["name"] for tool in tools.values()})
+        self.assertIn("serial_tail", description)
 
     def test_mcp_has_no_port_binding_write_capability(self):
         response = self.client.post(
@@ -167,6 +169,75 @@ class McpHttpTest(unittest.TestCase):
 
         self.assertEqual(200, response.status_code)
         self.assertEqual(fake_hub.status(), response.json()["result"]["structuredContent"])
+
+    def test_serial_tail_returns_last_n_lines(self):
+        fake_hub = FakeHub()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log = Path(temp_dir) / "linux.log"
+            log.write_text("a\nb\nc\n", encoding="utf-8")
+            fake_hub.ports["linux"]["log"] = log
+            with patch.object(app_module, "hub", fake_hub):
+                response = call_tool(
+                    self.client,
+                    "serial_tail",
+                    {"target": "linux", "n": 2},
+                )
+
+        result = response.json()["result"]["structuredContent"]
+        self.assertEqual(
+            {"ok": True, "target": "linux", "tail": "b\nc", "n": 2},
+            result,
+        )
+        self.assertEqual(("tail", "linux", 2, True), fake_hub.calls[-1])
+
+    def test_serial_tail_defaults_n_and_rejects_out_of_range(self):
+        fake_hub = FakeHub()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log = Path(temp_dir) / "linux.log"
+            log.write_text("only\n", encoding="utf-8")
+            fake_hub.ports["linux"]["log"] = log
+            with patch.object(app_module, "hub", fake_hub):
+                defaulted = call_tool(
+                    self.client, "serial_tail", {"target": "linux"}
+                )
+                bad = call_tool(
+                    self.client,
+                    "serial_tail",
+                    {"target": "linux", "n": 201},
+                )
+
+        self.assertEqual(
+            {"ok": True, "target": "linux", "tail": "only", "n": 80},
+            defaulted.json()["result"]["structuredContent"],
+        )
+        rejected = bad.json()["result"]["structuredContent"]
+        self.assertFalse(rejected["ok"])
+        self.assertEqual("n must be an integer from 1 to 200", rejected["error"])
+        self.assertEqual(201, rejected["n"])
+
+    def test_serial_tail_unknown_target_and_missing_log(self):
+        fake_hub = FakeHub()
+        with patch.object(app_module, "hub", fake_hub):
+            unknown = call_tool(
+                self.client, "serial_tail", {"target": "both"}
+            )
+            missing = call_tool(
+                self.client, "serial_tail", {"target": "linux"}
+            )
+
+        unknown_result = unknown.json()["result"]["structuredContent"]
+        self.assertFalse(unknown_result["ok"])
+        self.assertIn("unknown target", unknown_result["error"])
+        self.assertEqual(
+            {
+                "ok": False,
+                "target": "linux",
+                "tail": "",
+                "n": 80,
+                "error": "no current Session Log",
+            },
+            missing.json()["result"]["structuredContent"],
+        )
 
     def test_serial_exec_delegates_to_hub_and_returns_designed_fields(self):
         fake_hub = FakeHub()

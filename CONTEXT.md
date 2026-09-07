@@ -36,6 +36,10 @@ _Avoid_: log path (alone — ambiguous with a single file), CRT_LOG, transcript 
 The complete on-disk record of one Target for one entry into Bridge Mode, written under the Live Directory as `<TargetName>-YYYY-MM-DD-HHMMSS.log`. The live transcript view and Exec output are bounded subsets of it, not replacements.
 _Avoid_: saved logs file, log file (alone), transcript (the live view)
 
+**Tail**:
+A bounded snapshot of the last N lines of the current Session Log.
+_Avoid_: Follow (the Operator pane pin), session log (the whole file), transcript (the live view), live tail (English in Follow, not this term)
+
 **Bridge Mode**:
 Hub holds the serial ports open; Operator and Agent may both send and observe the same streams.
 _Avoid_: agent mode, connected mode
@@ -62,7 +66,7 @@ _Avoid_: run, shell (implies a local OS shell), send (see Send)
 
 **Grep**:
 An optional post-capture narrowing on one Exec: after capture completes, retain only lines matching a pattern (literal substring by default, or a regular expression when opted in), plus any requested neighboring lines around each match. The Agent receives that subset as output, not the full capture.
-_Avoid_: filter (vague), search / tail (those mean the session log), keyword (the contract is one pattern, like prompt)
+_Avoid_: filter (vague), search (vague), Tail (the last-N Session Log snapshot), keyword (the contract is one pattern, like prompt)
 
 **Send**:
 One Agent request that writes a command to a Target and returns immediately without waiting for device output.
