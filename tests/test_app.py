@@ -633,24 +633,58 @@ class AppHttpAuthorizationTest(unittest.TestCase):
 
         self.assertEqual(403, response.status_code)
 
-    def test_binding_update_requires_both_slots(self):
+    def test_binding_update_rejects_zero_or_three_slots(self):
         client = TestClient(app_module.app, client=("127.0.0.1", 50000))
 
-        response = client.post(
+        empty = client.post("/api/bindings", json={"slots": []})
+        three = client.post(
             "/api/bindings",
             json={
                 "slots": [
-                    {
-                        "name": "linux",
-                        "title": "Linux",
-                        "com": "COM8",
-                        "baud": 57600,
-                    }
+                    {"name": "linux", "title": "Linux", "com": "COM8", "baud": 57600},
+                    {"name": "rtos", "title": "RTOS", "com": "COM9", "baud": 115200},
+                    {"name": "extra", "title": "Extra", "com": "COM7", "baud": 9600},
                 ]
             },
         )
 
-        self.assertEqual(422, response.status_code)
+        self.assertEqual(422, empty.status_code)
+        self.assertEqual(422, three.status_code)
+
+    def test_loopback_binding_update_persists_one_slot(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "serial_bridge.json"
+            current = Config(
+                slots=[
+                    {"name": "linux", "title": "Linux", "com": "COM3", "baud": 115200},
+                    {"name": "rtos", "title": "RTOS", "com": "COM6", "baud": 115200},
+                ],
+                path=config_path,
+            )
+            client = TestClient(app_module.app, client=("127.0.0.1", 50000))
+            with patch.object(app_module, "hub", Hub(current)):
+                response = client.post(
+                    "/api/bindings",
+                    json={
+                        "slots": [
+                            {
+                                "name": "linux",
+                                "title": "Linux",
+                                "com": "COM8",
+                                "baud": 57600,
+                            }
+                        ]
+                    },
+                )
+
+            restarted = Hub(load_config(environ={}, config_path=config_path))
+            saved = json.loads(config_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(200, response.status_code)
+        self.assertTrue(response.json()["ok"])
+        self.assertEqual(["linux"], list(response.json()["ports"]))
+        self.assertNotIn("rtos", restarted.status()["ports"])
+        self.assertEqual(1, len(saved["slots"]))
 
     def test_binding_update_rejects_uppercase_target_name(self):
         client = TestClient(app_module.app, client=("127.0.0.1", 50000))

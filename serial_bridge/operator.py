@@ -84,7 +84,7 @@ class SlotBindingBody(BaseModel):
 
 
 class BindingsBody(BaseModel):
-    slots: list[SlotBindingBody] = Field(min_length=2, max_length=2)
+    slots: list[SlotBindingBody] = Field(min_length=1, max_length=2)
     live_dir: str | None = Field(default=None, min_length=1)
 
 
