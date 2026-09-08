@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Visual dual-serial console: Bridge mode (agent+you) or CRT mode (release ports)."""
+"""Visual one- or two-serial console: Bridge mode (agent+you) or CRT mode (release ports)."""
 from __future__ import annotations
 
 import argparse

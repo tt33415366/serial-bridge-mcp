@@ -1,6 +1,6 @@
 # Serial Bridge
 
-Serial Bridge is a Hub that shares two serial consoles between a local Operator
+Serial Bridge is a Hub that shares one or two serial consoles between a local Operator
 and MCP Agents. It is not OS-specific: install the Python packages in
 `requirements.txt` and run it on any host with Python 3.10+. The Hub lives in
 the `serial_bridge/` package; start it with `python -m serial_bridge` or the
@@ -123,6 +123,15 @@ Equivalent CLI flags are `--linux-port`, `--linux-baud`, `--rtos-port`, and
 `--rtos-baud`. `SERIAL_BRIDGE_CONFIG` or `--config` selects the persisted JSON
 file. The load order is built-in defaults, then environment/CLI values, then
 the persisted file; saved Web UI values win.
+
+The persisted config file holds an ordered `slots` array. A persisted `slots` array of
+length 1 is valid and is the count. In **CRT Mode** the Operator may add a second
+Target or remove one Target.
+
+`SERIAL_BRIDGE_RTOS_PORT`, `SERIAL_BRIDGE_RTOS_BAUD`, `--rtos-port`, `--rtos-baud`,
+`SERIAL_BRIDGE_SLOT1_PORT`, and `SERIAL_BRIDGE_SLOT1_BAUD` refer to Target Slot 1. When
+the persisted file defines only one Slot, those env/CLI overrides fail startup; the
+error states that the override refers to Target Slot 1 but only one Slot is configured.
 
 Only the Operator can edit Port Bindings, and only in **CRT Mode** while the
 Hub has released the ports. The Web UI lists the detected serial ports in a

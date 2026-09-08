@@ -9,8 +9,8 @@ The single in-process authority that owns serial ports, mode, and the live conso
 _Avoid_: bridge process, backend, server (ambiguous with MCP Server)
 
 **Target**:
-A console endpoint identified by a configurable Agent-facing **Target Name** (defaults `linux` and `rtos`), each bound to a COM port and baud. Exactly two Targets exist in MVP; Agents address a Target by Target Name, not by COM number.
-_Avoid_: port (alone), device, channel, COM3/COM6 as primary names in Agent APIs
+A console endpoint identified by a configurable Agent-facing **Target Name** (defaults `linux` and `rtos`), bound to a COM port and baud. A Hub has one or two Targets; Agents address a Target by Target Name, not by COM number.
+_Avoid_: port (alone), device, channel, interface, COM3/COM6 as primary names in Agent APIs
 
 **Target Name**:
 The Agent-facing identifier string for a Target (`^[a-z][a-z0-9_]{0,31}$`, unique across Target Slots, stored lowercase). The Web UI derives it from the Display Title instead of showing its own field, so it changes only in CRT Mode.
@@ -21,8 +21,8 @@ The Operator-facing label for a Target in the Web UI (defaults “Linux” / “
 _Avoid_: name (alone — ambiguous with Target Name), label (vague), title (alone)
 
 **Target Slot**:
-One of the two fixed MVP positions that hold a Target’s name, Display Title, and Port Binding; slots are not created or deleted by the Operator.
-_Avoid_: channel index, port index (sounds like COM)
+A Hub position that holds one Target’s name, Display Title, and Port Binding. A Hub has one or two Slots; the Operator adds the second or removes one only in CRT Mode, and the new Target exists only after that add is confirmed.
+_Avoid_: channel index, port index (sounds like COM), serial interface
 
 **Port Binding**:
 The Operator-facing assignment of a Target to a COM port and baud, loaded from environment/CLI and editable in the Web UI with persistence to a config file.
@@ -89,7 +89,7 @@ Whether that Target pane is pinned to the live tail; leaving the tail pauses mat
 _Avoid_: auto-scroll (implementation), stick (vague), tail mode (jargon)
 
 **Live View Budget**:
-The Operator-chosen cap, shared by both Target panes, on retained transcript entries available to virtual history, including Transcript Gap markers. Tightening it drops the oldest retained entries; it does not change the complete session log. DOM materialization is a separate bounded virtual window that limits how many entries render at once.
+The Operator-chosen cap, shared by the Target panes, on retained transcript entries available to virtual history, including Transcript Gap markers. Tightening it drops the oldest retained entries; it does not change the complete session log. DOM materialization is a separate bounded virtual window that limits how many entries render at once.
 _Avoid_: max term lines, scrollback (alone — sounds like the session log), buffer size
 
 **Raw Payload**:
