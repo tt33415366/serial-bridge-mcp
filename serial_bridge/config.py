@@ -9,19 +9,30 @@ import tempfile
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, Sequence
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 APP_DIR = PACKAGE_DIR.parent
 DEFAULT_CONFIG_PATH = APP_DIR / "serial_bridge.json"
 DEFAULT_LIVE_DIR = APP_DIR / "live"
-SLOT_COUNT = 2
+MIN_SLOT_COUNT = 1
+MAX_SLOT_COUNT = 2
+SLOT_COUNT = MAX_SLOT_COUNT
 DEFAULT_SLOTS: list[dict[str, str | int]] = [
     {"name": "linux", "title": "Linux", "com": "COM3", "baud": 115200},
     {"name": "rtos", "title": "RTOS", "com": "COM6", "baud": 115200},
 ]
 LEGACY_PORT_KEYS = ("linux", "rtos")
 TARGET_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+
+
+def unused_default_slot(slots: Sequence[Mapping[str, object]]) -> dict[str, str | int]:
+    taken = {str(slot["name"]) for slot in slots}
+    for default in DEFAULT_SLOTS:
+        if default["name"] not in taken:
+            return dict(default)
+    raise ValueError("both default Target Names are already used")
+
 
 _ENV_SLOT_NAMES = (
     {
@@ -73,6 +84,12 @@ class SlotPolicy:
         mode: str,
         has_workers: bool,
     ) -> SlotDecision:
+        if not MIN_SLOT_COUNT <= len(slots) <= MAX_SLOT_COUNT:
+            return SlotDecision(
+                False,
+                False,
+                error="A Hub has one or two Target Slots",
+            )
         title_only = self._title_only(slots)
         new_live_dir: Path | None = None
         if live_dir is not None:
@@ -247,8 +264,10 @@ def _parse_saved_slots(data: object) -> list[dict[str, str | int]]:
 
     if "slots" in data:
         raw_slots = data["slots"]
-        if not isinstance(raw_slots, list) or len(raw_slots) != SLOT_COUNT:
-            raise ValueError(f"slots must be an array of exactly {SLOT_COUNT} entries")
+        if not isinstance(raw_slots, list) or not (
+            MIN_SLOT_COUNT <= len(raw_slots) <= MAX_SLOT_COUNT
+        ):
+            raise ValueError("slots must be an array of 1 or 2 entries")
         slots: list[dict[str, str | int]] = []
         for index, values in enumerate(raw_slots):
             if not isinstance(values, dict):
@@ -275,8 +294,10 @@ def _validated_slots(data: object) -> list[dict[str, str | int]]:
         raise ValueError("top-level 'slots' array is required")
 
     raw_slots = data["slots"]
-    if not isinstance(raw_slots, list) or len(raw_slots) != SLOT_COUNT:
-        raise ValueError(f"slots must be an array of exactly {SLOT_COUNT} entries")
+    if not isinstance(raw_slots, list) or not (
+        MIN_SLOT_COUNT <= len(raw_slots) <= MAX_SLOT_COUNT
+    ):
+        raise ValueError("slots must be an array of 1 or 2 entries")
 
     slots: list[dict[str, str | int]] = []
     for index, values in enumerate(raw_slots):
@@ -387,6 +408,27 @@ def _apply_cli_bindings(
             slots[index]["baud"] = _validated_baud(baud, f"--{target}-baud")
 
 
+def _slot1_override_source(
+    env: Mapping[str, str],
+    cli_overrides: Mapping[str, Mapping[str, str | int | None]] | None,
+) -> str | None:
+    for names in (_ENV_SLOT_NAMES[1], _ENV_ALIASES[1]):
+        for key in names.values():
+            if key in env:
+                return key
+    cli = cli_overrides or {}
+    for alias, flag_com, flag_baud in (
+        ("rtos", "--rtos-port", "--rtos-baud"),
+        ("slot1", "--slot1-port", "--slot1-baud"),
+    ):
+        values = cli.get(alias) or {}
+        if values.get("com") is not None:
+            return flag_com
+        if values.get("baud") is not None:
+            return flag_baud
+    return None
+
+
 def load_config(
     *,
     environ: Mapping[str, str] | None = None,
@@ -410,7 +452,7 @@ def load_config(
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
             saved = _parse_saved_slots(raw)
-            candidate = deepcopy(slots)
+            candidate = deepcopy(slots[: len(saved)])
             for index, values in enumerate(saved):
                 candidate[index].update(values)
             _assert_unique_target_names(candidate)
@@ -423,6 +465,13 @@ def load_config(
                 warning = f"Could not load config {path}: {exc}"
         except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
             warning = f"Could not load config {path}: {exc}"
+
+    if len(slots) == 1:
+        source = _slot1_override_source(env, cli_overrides)
+        if source is not None:
+            raise ValueError(
+                f"{source} refers to Target Slot 1 but only one Slot is configured"
+            )
 
     return Config(slots=slots, path=path, live_dir=live_dir, warning=warning)
 

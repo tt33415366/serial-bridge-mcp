@@ -13,6 +13,7 @@ from serial_bridge.config import (
     load_config,
     load_config_from_args,
     persist_slots,
+    unused_default_slot,
     validate_live_dir,
 )
 
@@ -124,6 +125,47 @@ class ConfigTest(unittest.TestCase):
 
         self.assertTrue(decision.allowed)
         self.assertEqual(live.resolve(), decision.live_dir)
+
+    def test_slot_policy_rejects_zero_or_three_slots(self):
+        config = Config(slots=_default_slots(), path=Path("serial_bridge.json"))
+        policy = config_module.SlotPolicy(config)
+
+        empty = policy.decide([], live_dir=None, mode="crt", has_workers=False)
+        three = policy.decide(
+            _default_slots() + [{"name": "x", "title": "X", "com": "COM7", "baud": 1}],
+            live_dir=None,
+            mode="crt",
+            has_workers=False,
+        )
+
+        self.assertFalse(empty.allowed)
+        self.assertEqual("A Hub has one or two Target Slots", empty.error)
+        self.assertFalse(three.allowed)
+        self.assertEqual("A Hub has one or two Target Slots", three.error)
+
+    def test_slot_policy_rejects_count_change_in_bridge_mode(self):
+        config = Config(slots=_default_slots(), path=Path("serial_bridge.json"))
+        one = [_default_slots()[0]]
+
+        decision = config_module.SlotPolicy(config).decide(
+            one, live_dir=None, mode="bridge", has_workers=True
+        )
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(
+            "Port Bindings can only be changed in CRT Mode", decision.error
+        )
+
+    def test_slot_policy_allows_count_change_in_idle_crt_mode(self):
+        config = Config(slots=_default_slots(), path=Path("serial_bridge.json"))
+        one = [_default_slots()[0]]
+
+        decision = config_module.SlotPolicy(config).decide(
+            one, live_dir=None, mode="crt", has_workers=False
+        )
+
+        self.assertTrue(decision.allowed)
+        self.assertFalse(decision.title_only)
 
     def test_file_wins_over_cli_environment_and_defaults(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -624,6 +666,169 @@ class ConfigTest(unittest.TestCase):
         self.assertIn("--live-dir", readme)
         self.assertIn("YYYY-MM-DD-HHMMSS", readme)
         self.assertIn("migrated", readme.lower())
+
+    def test_readme_documents_one_or_two_slots(self):
+        readme = (APP_DIR / "README.md").read_text(encoding="utf-8")
+        self.assertIn("one or two", readme.lower())
+        self.assertIn("only one Slot", readme)
+
+    def test_one_slot_file_is_the_count(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "serial_bridge.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "slots": [
+                            {
+                                "name": "rtos",
+                                "title": "RTOS",
+                                "com": "COM18",
+                                "baud": 115200,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_config(environ={}, config_path=config_path)
+
+            self.assertEqual(1, len(config.slots))
+            self.assertEqual("rtos", config.slots[0]["name"])
+            self.assertEqual("COM18", config.slots[0]["com"])
+            self.assertIsNone(config.warning)
+
+    def test_one_slot_file_rejects_rtos_env(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "serial_bridge.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "slots": [
+                            {
+                                "name": "linux",
+                                "title": "Linux",
+                                "com": "COM8",
+                                "baud": 115200,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(ValueError) as ctx:
+                load_config(
+                    environ={"SERIAL_BRIDGE_RTOS_PORT": "COM9"},
+                    config_path=config_path,
+                )
+
+        self.assertIn("SERIAL_BRIDGE_RTOS_PORT", str(ctx.exception))
+        self.assertIn("only one Slot", str(ctx.exception))
+
+    def test_one_slot_file_rejects_rtos_cli(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "serial_bridge.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "slots": [
+                            {
+                                "name": "linux",
+                                "title": "Linux",
+                                "com": "COM8",
+                                "baud": 115200,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(ValueError) as ctx:
+                load_config_from_args(
+                    ["--rtos-port", "COM9"],
+                    environ={},
+                    config_path=config_path,
+                )
+
+        self.assertIn("--rtos-port", str(ctx.exception))
+
+    def test_one_slot_file_allows_linux_env_then_file_wins(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "serial_bridge.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "slots": [
+                            {
+                                "name": "linux",
+                                "title": "Linux",
+                                "com": "COM30",
+                                "baud": 38400,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_config(
+                environ={"SERIAL_BRIDGE_LINUX_PORT": "COM20"},
+                config_path=config_path,
+            )
+
+            self.assertEqual(1, len(config.slots))
+            self.assertEqual("COM30", config.slots[0]["com"])
+
+    def test_three_slot_file_falls_back_with_warning(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "serial_bridge.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "slots": [
+                            {"name": "linux", "title": "Linux", "com": "COM3", "baud": 115200},
+                            {"name": "rtos", "title": "RTOS", "com": "COM6", "baud": 115200},
+                            {"name": "extra", "title": "Extra", "com": "COM7", "baud": 115200},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_config(environ={}, config_path=config_path)
+
+            self.assertEqual(2, len(config.slots))
+            self.assertIn("Could not load config", config.warning or "")
+
+    def test_persist_slots_accepts_one_slot(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "serial_bridge.json"
+            config = Config(slots=list(DEFAULT_SLOTS), path=config_path)
+            one = [
+                {"name": "linux", "title": "Linux", "com": "COM8", "baud": 57600},
+            ]
+
+            saved = persist_slots(config, one)
+            raw = json.loads(config_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(1, len(saved))
+        self.assertEqual(1, len(raw["slots"]))
+        self.assertEqual("COM8", raw["slots"][0]["com"])
+
+    def test_unused_default_slot_prefers_first_free_twin(self):
+        linux_only = [{"name": "linux", "title": "Linux", "com": "COM3", "baud": 115200}]
+        rtos_only = [{"name": "rtos", "title": "RTOS", "com": "COM6", "baud": 115200}]
+        radio = [{"name": "radio", "title": "Radio", "com": "COM6", "baud": 115200}]
+
+        self.assertEqual("rtos", unused_default_slot(linux_only)["name"])
+        self.assertEqual("COM6", unused_default_slot(linux_only)["com"])
+        self.assertEqual("linux", unused_default_slot(rtos_only)["name"])
+        self.assertEqual("COM3", unused_default_slot(rtos_only)["com"])
+        self.assertEqual("COM3", unused_default_slot(radio)["com"])
+        with self.assertRaises(ValueError):
+            unused_default_slot(list(DEFAULT_SLOTS))
 
 
 if __name__ == "__main__":
