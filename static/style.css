@@ -373,69 +373,141 @@ body::after {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 8px;
+  align-items: stretch;
 }
 
-.binding-remove {
-  grid-column: 1 / -1;
-  justify-self: start;
-}
-
-.add-target-dialog {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 120px 88px;
-  gap: 10px;
-  align-items: end;
-  padding: 12px;
-  margin-top: 10px;
-  border: 1px solid var(--rule-hot);
-  background: rgba(0, 0, 0, 0.24);
-}
-
-.add-target-dialog[hidden] {
-  display: none;
-}
-
-.add-target-head,
-.add-target-actions {
-  grid-column: 1 / -1;
-}
-
-.add-target-head {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 12px;
-  align-items: baseline;
-}
-
-.add-target-head strong {
-  font: 9px var(--display);
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--text);
-}
-
-.add-target-head span {
-  font: 10px/1.3 var(--mono);
-  color: var(--dim);
-}
-
-.add-target-actions {
-  display: flex;
-  gap: 6px;
-  justify-content: flex-end;
-}
-
-#note-add-target {
-  grid-column: 1 / -1;
+.binding-slot,
+.binding-empty-bay {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .binding-slot {
   display: grid;
   grid-template-columns: minmax(0, 1.4fr) minmax(0, 1.5fr) minmax(0, 0.8fr);
-  gap: 6px 8px;
+  gap: 8px;
   align-items: end;
-  padding-left: 8px;
-  border-left: 1px solid var(--rule-hot);
+  padding: 10px 10px 11px;
+  border: 1px solid var(--rule);
+  background: linear-gradient(180deg, var(--panel-2), var(--deep));
+}
+
+.binding-slot::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 2px;
+}
+
+.binding-slot.slot0::before {
+  background: linear-gradient(90deg, var(--linux), transparent 80%);
+  box-shadow: 0 0 12px rgba(47, 240, 214, 0.4);
+}
+
+.binding-slot.slot1::before {
+  background: linear-gradient(90deg, var(--rtos), transparent 80%);
+  box-shadow: 0 0 12px rgba(255, 154, 60, 0.4);
+}
+
+.binding-slot-head {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 22px;
+}
+
+.add-target-title {
+  margin-left: auto;
+  font: 8px var(--display);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--rtos);
+}
+
+.binding-remove {
+  padding: 4px 8px;
+  border-color: color-mix(in srgb, var(--alarm) 42%, var(--rule));
+  color: var(--alarm);
+}
+
+.binding-remove:hover:not(:disabled) {
+  border-color: var(--alarm);
+  color: var(--alarm);
+  background: rgba(255, 95, 109, 0.08);
+}
+
+.binding-empty-bay {
+  appearance: none;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 7px;
+  padding: 18px 14px;
+  border: 1px dashed var(--rule-hot);
+  color: var(--dim);
+  background:
+    repeating-linear-gradient(
+      -55deg,
+      transparent,
+      transparent 7px,
+      rgba(47, 240, 214, 0.03) 7px,
+      rgba(47, 240, 214, 0.03) 8px
+    ),
+    rgba(4, 6, 13, 0.35);
+  cursor: pointer;
+}
+
+.binding-empty-bay .binding-tag {
+  color: var(--linux);
+}
+
+.binding-empty-bay strong {
+  font: 9px var(--display);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.binding-empty-bay > span:last-child {
+  color: var(--faint);
+  font: 10px/1.3 var(--mono);
+  letter-spacing: 0.04em;
+}
+
+.binding-empty-bay:hover {
+  border-color: var(--linux);
+  color: var(--linux);
+  box-shadow: inset 0 0 0 1px rgba(47, 240, 214, 0.12), 0 0 22px rgba(47, 240, 214, 0.1);
+}
+
+.add-target-dialog {
+  align-content: start;
+}
+
+.add-target-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+#btn-add-target-confirm {
+  border-color: color-mix(in srgb, var(--linux) 55%, var(--rule-hot));
+  color: var(--void);
+  background: linear-gradient(180deg, var(--linux), #12ae9f);
+}
+
+#btn-add-target-confirm:hover:not(:disabled) {
+  color: var(--void);
+  border-color: var(--linux);
+}
+
+#btn-add-target[hidden],
+#add-target-dialog[hidden] {
+  display: none;
 }
 
 .binding-panel .field {
@@ -476,7 +548,7 @@ body::after {
 .binding-panel select:disabled,
 .binding-panel button:disabled { opacity: 0.35; cursor: not-allowed; }
 
-.binding-panel button,
+.binding-panel button:not(.binding-empty-bay),
 .ghost {
   appearance: none;
   padding: 7px 11px;
@@ -489,7 +561,7 @@ body::after {
   text-transform: uppercase;
 }
 
-.binding-panel button:hover:not(:disabled),
+.binding-panel button:not(.binding-empty-bay):hover:not(:disabled),
 .ghost:hover { border-color: var(--rtos); color: var(--rtos); }
 
 .field {
@@ -503,7 +575,7 @@ body::after {
   grid-template-columns: minmax(0, 1fr) 208px;
 }
 
-.binding-slots:has(#binding-row-slot1[hidden]) {
+.binding-slots:has(#binding-row-slot1[hidden]):has(#btn-add-target[hidden]):has(#add-target-dialog[hidden]) {
   grid-template-columns: 1fr;
 }
 

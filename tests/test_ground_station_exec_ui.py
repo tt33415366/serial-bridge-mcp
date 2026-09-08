@@ -2076,6 +2076,7 @@ class GroundStationExecUiTest(unittest.TestCase):
     row1Hidden: document.getElementById("binding-row-slot1").hidden,
     strip1Hidden: document.getElementById("binding-strip-seg-slot1").hidden,
     tube0Hidden: document.getElementById("tube-slot0").hidden,
+    addBayHidden: document.getElementById("btn-add-target").hidden,
     summary: document.getElementById("bindings-summary").textContent,
     spinePresent: Boolean(document.getElementById("spine-body")),
   };
@@ -2085,6 +2086,7 @@ class GroundStationExecUiTest(unittest.TestCase):
         self.assertTrue(result["row1Hidden"])
         self.assertTrue(result["strip1Hidden"])
         self.assertFalse(result["tube0Hidden"])
+        self.assertFalse(result["addBayHidden"])
         self.assertIn("Linux", result["summary"])
         self.assertNotIn("RTOS", result["summary"])
         self.assertTrue(result["spinePresent"])
@@ -2140,10 +2142,12 @@ class GroundStationExecUiTest(unittest.TestCase):
   send(oneTarget);
   return {
     dialogHidden: document.getElementById("add-target-dialog").hidden,
+    addBayHidden: document.getElementById("btn-add-target").hidden,
   };
 """
         )
         self.assertFalse(result["dialogHidden"])
+        self.assertTrue(result["addBayHidden"])
 
     def test_add_target_cancel_does_not_post(self):
         result = run_ui_scenario(
@@ -2162,11 +2166,13 @@ class GroundStationExecUiTest(unittest.TestCase):
   await nextTurn();
   return {
     hidden: document.getElementById("add-target-dialog").hidden,
+    addBayHidden: document.getElementById("btn-add-target").hidden,
     extraPosts: fetchRequests.length - before,
   };
 """
         )
         self.assertTrue(result["hidden"])
+        self.assertFalse(result["addBayHidden"])
         self.assertEqual(0, result["extraPosts"])
 
     def test_remove_target_posts_other_slot_only_after_confirm(self):

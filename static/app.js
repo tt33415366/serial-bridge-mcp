@@ -82,6 +82,7 @@
   let slotTargets = ["linux", "rtos"];
   let targetToSlot = { linux: "slot0", rtos: "slot1" };
   let lastPortCount = 2;
+  let addDialogOpen = false;
   let lastAddDefaults = null;
   let portsLoaded = false;
   const savedSlots = {};
@@ -259,7 +260,7 @@
     const crt = mode === "crt";
     const oneTarget = lastPortCount === 1;
     const twoTargets = lastPortCount >= 2;
-    btnAddTarget.hidden = !crt || !oneTarget;
+    btnAddTarget.hidden = !crt || !oneTarget || addDialogOpen;
     for (const slot of SLOT_KEYS) {
       btnRemoveSlot[slot].hidden = !crt || !twoTargets;
     }
@@ -300,7 +301,9 @@
     fillPortOptions(addTargetCom, defaults.com);
     addTargetBaud.value = defaults.baud;
     refreshAddTargetNote();
+    addDialogOpen = true;
     addTargetDialog.hidden = false;
+    updateTargetSlotActions();
   }
 
   function basename(path) {
@@ -1766,7 +1769,9 @@
   addTargetTitle.addEventListener("input", refreshAddTargetNote);
 
   btnAddTargetCancel.addEventListener("click", () => {
+    addDialogOpen = false;
     addTargetDialog.hidden = true;
+    updateTargetSlotActions();
   });
 
   btnAddTargetConfirm.addEventListener("click", async () => {
@@ -1794,6 +1799,7 @@
           baud: Number(addTargetBaud.value),
         },
       ]);
+      addDialogOpen = false;
       addTargetDialog.hidden = true;
       bindingHint.textContent = "Saved — survives restart.";
       setPill("bindings saved", "ok");

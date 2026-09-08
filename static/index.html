@@ -63,16 +63,19 @@
           <span id="binding-hint">Editable in CRT only.</span>
         </div>
         <div class="binding-actions">
-          <button type="button" id="btn-add-target" class="ghost" hidden>Add Target</button>
           <button type="button" id="btn-scan-ports" class="ghost">Scan</button>
           <button type="submit" id="btn-save-bindings">Save</button>
         </div>
       </div>
 
       <div class="binding-slots">
-        <div class="binding-slot" id="binding-row-slot0">
+        <div class="binding-slot slot0" id="binding-row-slot0">
+          <header class="binding-slot-head">
+            <span class="binding-tag">Slot 0</span>
+            <button type="button" id="btn-remove-slot0" class="ghost binding-remove" hidden>Remove</button>
+          </header>
           <label class="field">
-            <span>Slot 0 title</span>
+            <span>Title</span>
             <input id="binding-slot0-title" name="slot0-title" type="text" maxlength="64" required />
           </label>
           <label class="field">
@@ -84,12 +87,15 @@
             <input id="binding-slot0-baud" name="slot0-baud" type="number" min="1" step="1" required />
           </label>
           <p class="field-note" id="note-slot0" aria-live="polite">—</p>
-          <button type="button" id="btn-remove-slot0" class="ghost binding-remove" hidden>Remove</button>
         </div>
 
-        <div class="binding-slot" id="binding-row-slot1">
+        <div class="binding-slot slot1" id="binding-row-slot1">
+          <header class="binding-slot-head">
+            <span class="binding-tag">Slot 1</span>
+            <button type="button" id="btn-remove-slot1" class="ghost binding-remove" hidden>Remove</button>
+          </header>
           <label class="field">
-            <span>Slot 1 title</span>
+            <span>Title</span>
             <input id="binding-slot1-title" name="slot1-title" type="text" maxlength="64" required />
           </label>
           <label class="field">
@@ -101,33 +107,38 @@
             <input id="binding-slot1-baud" name="slot1-baud" type="number" min="1" step="1" required />
           </label>
           <p class="field-note" id="note-slot1" aria-live="polite">—</p>
-          <button type="button" id="btn-remove-slot1" class="ghost binding-remove" hidden>Remove</button>
         </div>
-      </div>
 
-      <section class="add-target-dialog" id="add-target-dialog" hidden>
-        <div class="add-target-head">
+        <button type="button" id="btn-add-target" class="binding-empty-bay" hidden>
+          <span class="binding-tag">Open bay</span>
           <strong>Add Target</strong>
-          <span>Second slot for another device line.</span>
-        </div>
-        <label class="field">
-          <span>Title</span>
-          <input id="add-target-title" type="text" maxlength="64" required />
-        </label>
-        <label class="field">
-          <span>COM</span>
-          <select id="add-target-com" required></select>
-        </label>
-        <label class="field">
-          <span>Baud</span>
-          <input id="add-target-baud" type="number" min="1" step="1" required />
-        </label>
-        <p class="field-note" id="note-add-target" aria-live="polite">—</p>
-        <div class="add-target-actions">
-          <button type="button" id="btn-add-target-cancel" class="ghost">Cancel</button>
-          <button type="button" id="btn-add-target-confirm">Add</button>
-        </div>
-      </section>
+          <span>Commission the second console</span>
+        </button>
+
+        <section class="add-target-dialog binding-slot slot1" id="add-target-dialog" hidden>
+          <header class="binding-slot-head">
+            <span class="binding-tag">Open bay</span>
+            <strong class="add-target-title">Add Target</strong>
+          </header>
+          <label class="field">
+            <span>Title</span>
+            <input id="add-target-title" type="text" maxlength="64" required />
+          </label>
+          <label class="field">
+            <span>COM</span>
+            <select id="add-target-com" required></select>
+          </label>
+          <label class="field">
+            <span>Baud</span>
+            <input id="add-target-baud" type="number" min="1" step="1" required />
+          </label>
+          <p class="field-note" id="note-add-target" aria-live="polite">—</p>
+          <div class="add-target-actions">
+            <button type="button" id="btn-add-target-cancel" class="ghost">Cancel</button>
+            <button type="button" id="btn-add-target-confirm">Commission</button>
+          </div>
+        </section>
+      </div>
 
       <label class="field binding-live-dir" id="binding-live-dir-field">
         <span>Live Directory</span>
