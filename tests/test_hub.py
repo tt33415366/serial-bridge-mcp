@@ -25,6 +25,18 @@ def make_config(path=Path("serial_bridge.json"), live_dir=None):
         kwargs["live_dir"] = live_dir
     return Config(**kwargs)
 
+
+def make_one_slot_config(path=Path("serial_bridge.json"), live_dir=None):
+    kwargs = {
+        "slots": [
+            {"name": "linux", "title": "Linux", "com": "COM3", "baud": 115200},
+        ],
+        "path": path,
+    }
+    if live_dir is not None:
+        kwargs["live_dir"] = live_dir
+    return Config(**kwargs)
+
 class FakePortWorker:
     instances = []
 
@@ -671,6 +683,79 @@ class HubTest(unittest.TestCase):
 
                 self.assertFalse(result["ok"])
                 self.assertEqual("COM3", hub.ports["linux"]["com"])
+
+    def test_update_slots_can_drop_to_one_target_in_crt(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            hub = Hub(make_config(Path(temp_dir) / "serial_bridge.json"))
+            one = [dict(hub.config.slots[0])]
+
+            result = hub.update_slots(one)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(["linux"], list(hub.ports))
+        self.assertNotIn("rtos", hub.status()["ports"])
+        self.assertEqual("rtos", hub.status()["add_defaults"]["name"])
+
+    def test_update_slots_can_add_second_target_in_crt(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            hub = Hub(make_one_slot_config(Path(temp_dir) / "serial_bridge.json"))
+            two = [
+                dict(hub.config.slots[0]),
+                {"name": "rtos", "title": "RTOS", "com": "COM6", "baud": 115200},
+            ]
+
+            result = hub.update_slots(two)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual({"linux", "rtos"}, set(hub.ports))
+        self.assertIsNone(hub.status().get("add_defaults"))
+
+    def test_update_slots_keeps_remaining_target_log_when_removing_other(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            hub = Hub(make_config(Path(temp_dir) / "serial_bridge.json"))
+            hub.ports["rtos"]["log"] = str(Path(temp_dir) / "rtos-session.log")
+            one = [dict(hub.config.slots[1])]
+
+            result = hub.update_slots(one)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(["rtos"], list(hub.ports))
+        self.assertEqual(
+            str(Path(temp_dir) / "rtos-session.log"),
+            hub.ports["rtos"]["log"],
+        )
+
+    def test_update_slots_rejects_count_change_in_bridge_mode(self):
+        hub = Hub(make_config())
+        hub.mode = "bridge"
+        hub.workers["linux"] = object()
+
+        result = hub.update_slots([dict(hub.config.slots[0])])
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(
+            "Port Bindings can only be changed in CRT Mode", result["error"]
+        )
+        self.assertEqual(2, len(hub.ports))
+
+    def test_one_target_bridge_system_line_says_the_stream(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            live = Path(temp_dir)
+            with patch.object(hub_module, "PortWorker", FakePortWorker):
+                hub = Hub(make_one_slot_config(live / "serial_bridge.json", live_dir=live))
+                emitted = []
+                with patch.object(hub, "emit", emitted.append):
+                    hub.start_bridge()
+
+                self.assertEqual(1, len(FakePortWorker.instances))
+                system_texts = [
+                    msg["text"]
+                    for msg in emitted
+                    if msg.get("type") == "system"
+                ]
+                self.assertTrue(
+                    any("the stream" in text and "both streams" not in text for text in system_texts)
+                )
 
 
 class HubTailTest(unittest.TestCase):

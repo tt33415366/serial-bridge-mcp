@@ -92,12 +92,17 @@ class ModeTransition:
             with self._hub._state_lock:
                 self._hub.mode = "bridge"
             self._hub.emit({"type": "status", **self._hub.status()})
+            streams = (
+                "both streams"
+                if len(self._hub.ports) > 1
+                else "the stream"
+            )
             self._hub.emit(
                 {
                     "type": "system",
                     "text": (
                         "Entered Bridge Mode: "
-                        "Agent and Operator share both streams below"
+                        f"Agent and Operator share {streams} below"
                     ),
                 }
             )

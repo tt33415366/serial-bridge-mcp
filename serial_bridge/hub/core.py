@@ -7,7 +7,14 @@ import threading
 from pathlib import Path
 from typing import Any, Mapping
 
-from serial_bridge.config import Config, SlotPolicy, load_config, persist_slots
+from serial_bridge.config import (
+    MAX_SLOT_COUNT,
+    Config,
+    SlotPolicy,
+    load_config,
+    persist_slots,
+    unused_default_slot,
+)
 from serial_bridge.constants import SESSION_LOG_ROUTE, TAIL_DEFAULT_N, TAIL_MAX_N
 from serial_bridge.hub.coalesce import LineCoalescer
 from serial_bridge.hub.mode_transition import ModeTransition
@@ -67,9 +74,15 @@ class Hub:
     def _apply_slot_updates(self, slots: list[dict[str, str | int]]) -> None:
         new_ports: dict[str, dict[str, Any]] = {}
         for index, slot in enumerate(slots):
-            old_name = str(self.config.slots[index]["name"])
             new_name = str(slot["name"])
-            if old_name in self.ports and old_name == new_name:
+            old_name = (
+                str(self.config.slots[index]["name"])
+                if index < len(self.config.slots)
+                else None
+            )
+            if new_name in self.ports:
+                entry = dict(self.ports[new_name])
+            elif old_name is not None and old_name in self.ports and old_name == new_name:
                 entry = dict(self.ports[old_name])
             else:
                 entry = {"log": None}
@@ -177,6 +190,8 @@ class Hub:
         }
         if self.config.warning:
             status["config_warning"] = self.config.warning
+        if len(self.config.slots) < MAX_SLOT_COUNT:
+            status["add_defaults"] = unused_default_slot(self.config.slots)
         return status
 
     def get_tail(self, target: str = "both", n: int = 80) -> dict[str, str]:
