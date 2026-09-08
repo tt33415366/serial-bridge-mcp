@@ -375,6 +375,60 @@ body::after {
   gap: 8px;
 }
 
+.binding-remove {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+
+.add-target-dialog {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px 88px;
+  gap: 10px;
+  align-items: end;
+  padding: 12px;
+  margin-top: 10px;
+  border: 1px solid var(--rule-hot);
+  background: rgba(0, 0, 0, 0.24);
+}
+
+.add-target-dialog[hidden] {
+  display: none;
+}
+
+.add-target-head,
+.add-target-actions {
+  grid-column: 1 / -1;
+}
+
+.add-target-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: baseline;
+}
+
+.add-target-head strong {
+  font: 9px var(--display);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.add-target-head span {
+  font: 10px/1.3 var(--mono);
+  color: var(--dim);
+}
+
+.add-target-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+#note-add-target {
+  grid-column: 1 / -1;
+}
+
 .binding-slot {
   display: grid;
   grid-template-columns: minmax(0, 1.4fr) minmax(0, 1.5fr) minmax(0, 0.8fr);
@@ -443,6 +497,20 @@ body::after {
   grid-template-columns: minmax(0, 1fr) 208px minmax(0, 1fr);
   gap: 10px;
   min-height: 0;
+}
+
+.field:has(#tube-slot1[hidden]) {
+  grid-template-columns: minmax(0, 1fr) 208px;
+}
+
+.binding-slots:has(#binding-row-slot1[hidden]) {
+  grid-template-columns: 1fr;
+}
+
+#tube-slot1[hidden],
+#binding-row-slot1[hidden],
+#binding-strip-seg-slot1[hidden] {
+  display: none;
 }
 
 .tube {

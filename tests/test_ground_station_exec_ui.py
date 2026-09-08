@@ -2061,6 +2061,158 @@ class GroundStationExecUiTest(unittest.TestCase):
         self.assertIn("text-transform: none", logs_block)
         self.assertIn("letter-spacing: normal", logs_block)
 
+    def test_one_target_status_hides_second_pane_and_binding_row(self):
+        result = run_ui_scenario(
+            """
+  send({
+    type: "status",
+    mode: "crt",
+    ports: {
+      linux: { name: "linux", title: "Linux", com: "COM3", baud: 115200, open: false },
+    },
+  });
+  return {
+    tube1Hidden: document.getElementById("tube-slot1").hidden,
+    row1Hidden: document.getElementById("binding-row-slot1").hidden,
+    strip1Hidden: document.getElementById("binding-strip-seg-slot1").hidden,
+    tube0Hidden: document.getElementById("tube-slot0").hidden,
+    summary: document.getElementById("bindings-summary").textContent,
+    spinePresent: Boolean(document.getElementById("spine-body")),
+  };
+"""
+        )
+        self.assertTrue(result["tube1Hidden"])
+        self.assertTrue(result["row1Hidden"])
+        self.assertTrue(result["strip1Hidden"])
+        self.assertFalse(result["tube0Hidden"])
+        self.assertIn("Linux", result["summary"])
+        self.assertNotIn("RTOS", result["summary"])
+        self.assertTrue(result["spinePresent"])
+
+    def test_add_target_confirm_posts_defaults_and_dirty_existing_slot(self):
+        result = run_ui_scenario(
+            """
+  send({
+    type: "status",
+    mode: "crt",
+    add_defaults: { name: "rtos", title: "RTOS", com: "COM6", baud: 115200 },
+    ports: {
+      linux: { name: "linux", title: "Linux", com: "COM3", baud: 115200, open: false },
+    },
+    live_dir: "D:/live",
+  });
+  document.getElementById("binding-slot0-com").value = "COM19";
+  document.getElementById("btn-add-target").dispatch("click");
+  const title = document.getElementById("add-target-title").value;
+  const com = document.getElementById("add-target-com").value;
+  const baud = document.getElementById("add-target-baud").value;
+  document.getElementById("btn-add-target-confirm").dispatch("click");
+  await nextTurn();
+  const posted = fetchRequests.filter((item) => item.url === "/api/bindings").pop();
+  return {
+    title, com, baud: Number(baud),
+    dialogHiddenAfterOpen: document.getElementById("add-target-dialog").hidden === false,
+    body: JSON.parse(posted.options.body),
+  };
+"""
+        )
+        self.assertEqual("RTOS", result["title"])
+        self.assertEqual("COM6", result["com"])
+        self.assertEqual(115200, result["baud"])
+        self.assertEqual("COM19", result["body"]["slots"][0]["com"])
+        self.assertEqual("rtos", result["body"]["slots"][1]["name"])
+        self.assertEqual("RTOS", result["body"]["slots"][1]["title"])
+        self.assertEqual(2, len(result["body"]["slots"]))
+
+    def test_add_target_dialog_stays_open_on_status_tick(self):
+        result = run_ui_scenario(
+            """
+  const oneTarget = {
+    type: "status",
+    mode: "crt",
+    add_defaults: { name: "rtos", title: "RTOS", com: "COM6", baud: 115200 },
+    ports: {
+      linux: { name: "linux", title: "Linux", com: "COM3", baud: 115200, open: false },
+    },
+  };
+  send(oneTarget);
+  document.getElementById("btn-add-target").dispatch("click");
+  send(oneTarget);
+  return {
+    dialogHidden: document.getElementById("add-target-dialog").hidden,
+  };
+"""
+        )
+        self.assertFalse(result["dialogHidden"])
+
+    def test_add_target_cancel_does_not_post(self):
+        result = run_ui_scenario(
+            """
+  send({
+    type: "status",
+    mode: "crt",
+    add_defaults: { name: "rtos", title: "RTOS", com: "COM6", baud: 115200 },
+    ports: {
+      linux: { name: "linux", title: "Linux", com: "COM3", baud: 115200, open: false },
+    },
+  });
+  const before = fetchRequests.length;
+  document.getElementById("btn-add-target").dispatch("click");
+  document.getElementById("btn-add-target-cancel").dispatch("click");
+  await nextTurn();
+  return {
+    hidden: document.getElementById("add-target-dialog").hidden,
+    extraPosts: fetchRequests.length - before,
+  };
+"""
+        )
+        self.assertTrue(result["hidden"])
+        self.assertEqual(0, result["extraPosts"])
+
+    def test_remove_target_posts_other_slot_only_after_confirm(self):
+        result = run_ui_scenario(
+            """
+  globalThis.confirm = () => true;
+  send({
+    type: "status",
+    mode: "crt",
+    ports: {
+      linux: { name: "linux", title: "Linux", com: "COM3", baud: 115200, open: false },
+      rtos: { name: "rtos", title: "RTOS", com: "COM6", baud: 115200, open: false },
+    },
+    live_dir: "D:/live",
+  });
+  document.getElementById("binding-slot0-com").value = "COM19";
+  document.getElementById("btn-remove-slot1").dispatch("click");
+  await nextTurn();
+  const posted = fetchRequests.filter((item) => item.url === "/api/bindings").pop();
+  return { body: JSON.parse(posted.options.body) };
+"""
+        )
+        self.assertEqual(1, len(result["body"]["slots"]))
+        self.assertEqual("linux", result["body"]["slots"][0]["name"])
+        self.assertEqual("COM19", result["body"]["slots"][0]["com"])
+
+    def test_remove_target_cancel_confirm_does_not_post(self):
+        result = run_ui_scenario(
+            """
+  globalThis.confirm = () => false;
+  send({
+    type: "status",
+    mode: "crt",
+    ports: {
+      linux: { name: "linux", title: "Linux", com: "COM3", baud: 115200, open: false },
+      rtos: { name: "rtos", title: "RTOS", com: "COM6", baud: 115200, open: false },
+    },
+  });
+  const before = fetchRequests.length;
+  document.getElementById("btn-remove-slot1").dispatch("click");
+  await nextTurn();
+  return { extraPosts: fetchRequests.length - before };
+"""
+        )
+        self.assertEqual(0, result["extraPosts"])
+
 
 class FollowedWindowTest(unittest.TestCase):
     def test_followed_window_materializes_240_while_the_model_retains_the_budget(self):

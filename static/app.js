@@ -10,6 +10,18 @@
   const bindingHint = document.getElementById("binding-hint");
   const btnSaveBindings = document.getElementById("btn-save-bindings");
   const btnScanPorts = document.getElementById("btn-scan-ports");
+  const btnAddTarget = document.getElementById("btn-add-target");
+  const btnRemoveSlot = {
+    slot0: document.getElementById("btn-remove-slot0"),
+    slot1: document.getElementById("btn-remove-slot1"),
+  };
+  const addTargetDialog = document.getElementById("add-target-dialog");
+  const addTargetTitle = document.getElementById("add-target-title");
+  const addTargetCom = document.getElementById("add-target-com");
+  const addTargetBaud = document.getElementById("add-target-baud");
+  const addTargetNote = document.getElementById("note-add-target");
+  const btnAddTargetConfirm = document.getElementById("btn-add-target-confirm");
+  const btnAddTargetCancel = document.getElementById("btn-add-target-cancel");
   const bindingsSummary = document.getElementById("bindings-summary");
   const bindingStripSlots = {
     slot0: document.getElementById("binding-strip-slot0"),
@@ -69,6 +81,9 @@
   let knownPorts = [];
   let slotTargets = ["linux", "rtos"];
   let targetToSlot = { linux: "slot0", rtos: "slot1" };
+  let lastPortCount = 2;
+  let lastAddDefaults = null;
+  let portsLoaded = false;
   const savedSlots = {};
   const openCaptures = {};
   /**
@@ -101,6 +116,10 @@
   function portEntries(ports) {
     if (!ports) return [];
     return Object.entries(ports);
+  }
+
+  function activeSlotKeys() {
+    return SLOT_KEYS.slice(0, lastPortCount);
   }
 
   function syncTargetMaps(ports) {
@@ -191,10 +210,11 @@
   }
 
   function refreshBindingNotes() {
-    const resolved = SLOT_KEYS.map(resolveTargetName);
+    const slots = activeSlotKeys();
+    const resolved = slots.map(resolveTargetName);
     let valid = true;
     resolved.forEach((entry, index) => {
-      const note = bindingNotes[SLOT_KEYS[index]];
+      const note = bindingNotes[slots[index]];
       const clash =
         entry.ok && resolved.some((other, i) => i !== index && other.ok && other.name === entry.name);
       if (!entry.ok) note.textContent = "title needs a letter a–z to name the target";
@@ -204,6 +224,83 @@
       if (!entry.ok || clash) valid = false;
     });
     return { names: resolved.map((entry) => entry.name), valid };
+  }
+
+  function currentActiveFormSlots() {
+    const { names, valid } = refreshBindingNotes();
+    if (!valid) return null;
+    return activeSlotKeys().map((slot, index) => ({
+      name: names[index],
+      title: bindingInputs[slot].title.value.trim(),
+      com: bindingInputs[slot].com.value,
+      baud: Number(bindingInputs[slot].baud.value),
+    }));
+  }
+
+  async function postSlots(slots) {
+    const response = await fetch("/api/bindings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        live_dir: bindingLiveDir.value.trim(),
+        slots,
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) {
+      throw new Error(data.error || data.detail || "save failed");
+    }
+    bindingsDirty = false;
+    applyStatus(data);
+    return data;
+  }
+
+  function updateTargetSlotActions() {
+    const crt = mode === "crt";
+    const oneTarget = lastPortCount === 1;
+    const twoTargets = lastPortCount >= 2;
+    btnAddTarget.hidden = !crt || !oneTarget;
+    for (const slot of SLOT_KEYS) {
+      btnRemoveSlot[slot].hidden = !crt || !twoTargets;
+    }
+  }
+
+  function defaultAddTargetFields() {
+    if (lastAddDefaults) {
+      return {
+        title: lastAddDefaults.title || "",
+        com: lastAddDefaults.com || "",
+        baud: lastAddDefaults.baud || 115200,
+      };
+    }
+    const slots = currentActiveFormSlots();
+    const remaining = slots && slots[0] ? slots[0].name : "";
+    if (remaining === "linux") {
+      return { title: "RTOS", com: "COM6", baud: 115200 };
+    }
+    return { title: "Linux", com: "COM3", baud: 115200 };
+  }
+
+  function refreshAddTargetNote() {
+    const title = addTargetTitle.value;
+    const { name, ok } = { name: deriveTargetName(title), ok: TARGET_NAME_RE.test(deriveTargetName(title)) };
+    const slots = currentActiveFormSlots();
+    const clash =
+      ok && slots && slots.some((slot) => slot.name === name);
+    if (!ok) addTargetNote.textContent = "title needs a letter a–z to name the target";
+    else if (clash) addTargetNote.textContent = `target ${name} · already used by the other slot`;
+    else addTargetNote.textContent = `target ${name}`;
+    addTargetNote.classList.toggle("err", !ok || clash);
+    return { name, valid: ok && !clash };
+  }
+
+  function openAddTargetDialog() {
+    const defaults = defaultAddTargetFields();
+    addTargetTitle.value = defaults.title;
+    fillPortOptions(addTargetCom, defaults.com);
+    addTargetBaud.value = defaults.baud;
+    refreshAddTargetNote();
+    addTargetDialog.hidden = false;
   }
 
   function basename(path) {
@@ -257,6 +354,16 @@
     if (s.ports) {
       syncTargetMaps(s.ports);
       const entries = portEntries(s.ports);
+      lastPortCount = entries.length;
+      SLOT_KEYS.forEach((slot, index) => {
+        const hidden = index >= entries.length;
+        const tube = document.getElementById(`tube-${slot}`);
+        const row = document.getElementById(`binding-row-${slot}`);
+        const strip = document.getElementById(`binding-strip-seg-${slot}`);
+        if (tube) tube.hidden = hidden;
+        if (row) row.hidden = hidden;
+        if (strip) strip.hidden = hidden;
+      });
       entries.forEach(([name, binding], index) => {
         const slot = SLOT_KEYS[index];
         if (!slot || !binding) return;
@@ -273,16 +380,25 @@
         }
       });
       refreshBindingNotes();
-      if (entries.length >= 2) {
+      if (entries.length === 1) {
+        const only = entries[0][1];
+        bindingsSummary.textContent = `${only.title} (${only.name}) @ ${only.baud}`;
+      } else if (entries.length >= 2) {
         const first = entries[0][1];
         const second = entries[1][1];
         bindingsSummary.textContent =
           `${first.title} (${first.name}) · ${second.title} (${second.name}) @ ${first.baud}/${second.baud}`;
       }
+      if (!portsLoaded) {
+        portsLoaded = true;
+        refreshPorts();
+      }
     }
     if (s.live_dir) {
       if (!bindingsDirty) bindingLiveDir.value = s.live_dir;
     }
+    if (s.add_defaults) lastAddDefaults = s.add_defaults;
+    updateTargetSlotActions();
     updateFooterLogs(s);
     if (s.error) setPill(s.error, "err");
     if (s.config_warning) setPill(s.config_warning, "err");
@@ -1623,7 +1739,7 @@
 
   bindingForm.addEventListener("submit", async (e) => {
     e.preventDefault();
-    const { names, valid } = refreshBindingNotes();
+    const { valid } = refreshBindingNotes();
     if (!valid) {
       bindingHint.textContent = "Fix the flagged title before saving.";
       setPill("bindings not saved", "err");
@@ -1632,25 +1748,7 @@
     btnSaveBindings.disabled = true;
     bindingHint.textContent = "saving…";
     try {
-      const response = await fetch("/api/bindings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          live_dir: bindingLiveDir.value.trim(),
-          slots: SLOT_KEYS.map((slot, index) => ({
-            name: names[index],
-            title: bindingInputs[slot].title.value.trim(),
-            com: bindingInputs[slot].com.value,
-            baud: Number(bindingInputs[slot].baud.value),
-          })),
-        }),
-      });
-      const data = await response.json();
-      if (!response.ok || !data.ok) {
-        throw new Error(data.error || data.detail || "save failed");
-      }
-      bindingsDirty = false;
-      applyStatus(data);
+      await postSlots(currentActiveFormSlots());
       bindingHint.textContent = "Saved — survives restart.";
       setPill("bindings saved", "ok");
     } catch (error) {
@@ -1660,6 +1758,94 @@
       setBindingEditability();
     }
   });
+
+  btnAddTarget.addEventListener("click", () => {
+    openAddTargetDialog();
+  });
+
+  addTargetTitle.addEventListener("input", refreshAddTargetNote);
+
+  btnAddTargetCancel.addEventListener("click", () => {
+    addTargetDialog.hidden = true;
+  });
+
+  btnAddTargetConfirm.addEventListener("click", async () => {
+    const current = currentActiveFormSlots();
+    if (!current) {
+      bindingHint.textContent = "Fix the flagged title before saving.";
+      setPill("bindings not saved", "err");
+      return;
+    }
+    const { name, valid } = refreshAddTargetNote();
+    if (!valid) {
+      bindingHint.textContent = "Fix the flagged title before saving.";
+      setPill("bindings not saved", "err");
+      return;
+    }
+    btnAddTargetConfirm.disabled = true;
+    bindingHint.textContent = "saving…";
+    try {
+      await postSlots([
+        ...current,
+        {
+          name,
+          title: addTargetTitle.value.trim(),
+          com: addTargetCom.value,
+          baud: Number(addTargetBaud.value),
+        },
+      ]);
+      addTargetDialog.hidden = true;
+      bindingHint.textContent = "Saved — survives restart.";
+      setPill("bindings saved", "ok");
+    } catch (error) {
+      bindingHint.textContent = error.message || "save failed";
+      setPill(error.message || "save failed", "err");
+    } finally {
+      btnAddTargetConfirm.disabled = false;
+      setBindingEditability();
+    }
+  });
+
+  for (const slot of SLOT_KEYS) {
+    btnRemoveSlot[slot].addEventListener("click", async () => {
+      if (
+        !globalThis.confirm(
+          "Remove this Target? Agents will no longer be able to address it."
+        )
+      ) {
+        return;
+      }
+      const other = slot === "slot0" ? "slot1" : "slot0";
+      const { names, valid } = refreshBindingNotes();
+      if (!valid) {
+        bindingHint.textContent = "Fix the flagged title before saving.";
+        setPill("bindings not saved", "err");
+        return;
+      }
+      const otherIndex = activeSlotKeys().indexOf(other);
+      if (otherIndex < 0) return;
+      btnRemoveSlot[slot].disabled = true;
+      bindingHint.textContent = "saving…";
+      try {
+        await postSlots([
+          {
+            name: names[otherIndex],
+            title: bindingInputs[other].title.value.trim(),
+            com: bindingInputs[other].com.value,
+            baud: Number(bindingInputs[other].baud.value),
+          },
+        ]);
+        bindingHint.textContent = "Saved — survives restart.";
+        setPill("bindings saved", "ok");
+      } catch (error) {
+        bindingHint.textContent = error.message || "save failed";
+        setPill(error.message || "save failed", "err");
+      } finally {
+        btnRemoveSlot[slot].disabled = false;
+        setBindingEditability();
+      }
+    });
+  }
 
   document.querySelectorAll(".composer").forEach((form) => {
     const index = Number.parseInt(form.getAttribute("data-slot"), 10);
@@ -1742,6 +1928,5 @@
   hydrateAgentLog();
   fetch("/api/status")
     .then((r) => r.json())
-    .then(applyStatus)
-    .then(refreshPorts);
+    .then(applyStatus);
 })();
