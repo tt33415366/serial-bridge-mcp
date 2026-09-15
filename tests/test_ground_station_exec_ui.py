@@ -2254,6 +2254,70 @@ class GroundStationExecUiTest(unittest.TestCase):
         )
         self.assertEqual(0, result["extraPosts"])
 
+    def test_removing_left_target_moves_right_transcript_to_slot0(self):
+        result = run_ui_scenario(
+            """
+  send({
+    type: "status",
+    mode: "crt",
+    ports: {
+      linux: { name: "linux", title: "Linux", com: "COM3", baud: 115200, open: false },
+      rtos: { name: "rtos", title: "RTOS", com: "COM6", baud: 115200, open: false },
+    },
+  });
+  send({ type: "line", target: "linux", direction: "<<<", text: "left-linux" });
+  send({ type: "line", target: "rtos", direction: "<<<", text: "right-rtos" });
+  send({
+    type: "status",
+    mode: "crt",
+    ports: {
+      rtos: { name: "rtos", title: "RTOS", com: "COM6", baud: 115200, open: false },
+    },
+  });
+  send({ type: "line", target: "rtos", direction: "<<<", text: "rtos-after" });
+  return {
+    slot0: term("slot0").textContent,
+    slot1: term("slot1").textContent,
+    tube1Hidden: document.getElementById("tube-slot1").hidden,
+  };
+"""
+        )
+        self.assertIn("right-rtos", result["slot0"])
+        self.assertIn("rtos-after", result["slot0"])
+        self.assertNotIn("left-linux", result["slot0"])
+        self.assertNotIn("right-rtos", result["slot1"])
+        self.assertTrue(result["tube1Hidden"])
+
+    def test_removing_right_target_keeps_left_transcript_on_slot0(self):
+        result = run_ui_scenario(
+            """
+  send({
+    type: "status",
+    mode: "crt",
+    ports: {
+      linux: { name: "linux", title: "Linux", com: "COM3", baud: 115200, open: false },
+      rtos: { name: "rtos", title: "RTOS", com: "COM6", baud: 115200, open: false },
+    },
+  });
+  send({ type: "line", target: "linux", direction: "<<<", text: "left-linux" });
+  send({ type: "line", target: "rtos", direction: "<<<", text: "right-rtos" });
+  send({
+    type: "status",
+    mode: "crt",
+    ports: {
+      linux: { name: "linux", title: "Linux", com: "COM3", baud: 115200, open: false },
+    },
+  });
+  return {
+    slot0: term("slot0").textContent,
+    slot1: term("slot1").textContent,
+  };
+"""
+        )
+        self.assertIn("left-linux", result["slot0"])
+        self.assertNotIn("right-rtos", result["slot0"])
+        self.assertNotIn("right-rtos", result["slot1"])
+
 
 class FollowedWindowTest(unittest.TestCase):
     def test_followed_window_materializes_240_while_the_model_retains_the_budget(self):

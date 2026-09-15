@@ -124,6 +124,7 @@
   }
 
   function syncTargetMaps(ports) {
+    rebindPanes(ports);
     const entries = portEntries(ports);
     slotTargets = entries.map(([name]) => name);
     targetToSlot = {};
@@ -696,6 +697,100 @@
 
   function resetFollowState(slot) {
     followState[slot] = { following: true, evicted: 0, tail: [], writes: [] };
+  }
+
+  function dropCaptureIndexSlot(slot) {
+    const prefix = `${slot}:`;
+    for (const key of [...captureIndex.keys()]) {
+      if (key.startsWith(prefix)) captureIndex.delete(key);
+    }
+  }
+
+  function remapCaptureIndexSlot(fromSlot, toSlot) {
+    const fromPrefix = `${fromSlot}:`;
+    const toPrefix = `${toSlot}:`;
+    const next = new Map();
+    for (const [key, row] of captureIndex) {
+      if (key.startsWith(fromPrefix)) {
+        next.set(toPrefix + key.slice(fromPrefix.length), row);
+      } else if (!key.startsWith(toPrefix)) {
+        next.set(key, row);
+      }
+    }
+    captureIndex.clear();
+    for (const [key, row] of next) captureIndex.set(key, row);
+  }
+
+  function forgetPaneRows(slot) {
+    const el = terms[slot];
+    el.innerHTML = "";
+    windowCounts[slot] = 0;
+    historyStates[slot] = null;
+    historyJumpRest.delete(el);
+    pendingHistoryRenders.delete(slot);
+    pendingScrolls.delete(el);
+    resetFollowState(slot);
+    setHolder(slot, false);
+    paneModels[slot].clear();
+    dropCaptureIndexSlot(slot);
+  }
+
+  function moveTermRows(fromSlot, toSlot) {
+    const from = terms[fromSlot];
+    const to = terms[toSlot];
+    to.innerHTML = "";
+    while (from.firstElementChild) {
+      const row = from.firstElementChild;
+      from.removeChild(row);
+      to.appendChild(row);
+    }
+  }
+
+  function adoptPane(fromSlot, toSlot) {
+    if (fromSlot === toSlot) return;
+    const discarded = paneModels[toSlot];
+    paneModels[toSlot] = paneModels[fromSlot];
+    paneModels[fromSlot] = discarded;
+    discarded.clear();
+    moveTermRows(fromSlot, toSlot);
+    windowCounts[toSlot] = windowCounts[fromSlot];
+    windowCounts[fromSlot] = 0;
+    followState[toSlot] = followState[fromSlot];
+    resetFollowState(fromSlot);
+    const historyPending = pendingHistoryRenders.has(fromSlot);
+    pendingHistoryRenders.delete(fromSlot);
+    pendingHistoryRenders.delete(toSlot);
+    if (historyPending) pendingHistoryRenders.add(toSlot);
+    historyStates[toSlot] = historyStates[fromSlot];
+    historyStates[fromSlot] = null;
+    historyJumpRest.delete(terms[fromSlot]);
+    historyJumpRest.delete(terms[toSlot]);
+    pendingScrolls.delete(terms[fromSlot]);
+    remapCaptureIndexSlot(fromSlot, toSlot);
+  }
+
+  function rebindPanes(ports) {
+    const entries = portEntries(ports);
+    const nextSlots = {};
+    const used = new Set();
+    entries.forEach(([name], index) => {
+      const dest = SLOT_KEYS[index];
+      if (!dest) return;
+      nextSlots[name] = dest;
+      used.add(dest);
+    });
+    for (const [name, dest] of Object.entries(nextSlots)) {
+      const src = targetToSlot[name];
+      if (src && src !== dest) adoptPane(src, dest);
+      else if (!src) forgetPaneRows(dest);
+    }
+    for (const slot of SLOT_KEYS) {
+      if (!used.has(slot)) forgetPaneRows(slot);
+    }
+    for (const target of Object.keys(openCaptures)) {
+      if (!nextSlots[target]) delete openCaptures[target];
+      else openCaptures[target].slot = nextSlots[target];
+    }
   }
 
   /** Missing timestamps sort as the empty string so every pair has a well-defined, transitive order. */
@@ -1916,15 +2011,7 @@
   });
 
   document.getElementById("btn-clear").addEventListener("click", () => {
-    for (const slot of SLOT_KEYS) {
-      terms[slot].innerHTML = "";
-      windowCounts[slot] = 0;
-      historyStates[slot] = null;
-      historyJumpRest.delete(terms[slot]);
-      resetFollowState(slot);
-      setHolder(slot, false);
-      paneModels[slot].clear();
-    }
+    for (const slot of SLOT_KEYS) forgetPaneRows(slot);
     overflowProbes.length = 0;
     for (const target of Object.keys(openCaptures)) {
       delete openCaptures[target];
