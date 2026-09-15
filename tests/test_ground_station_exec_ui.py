@@ -2091,6 +2091,41 @@ class GroundStationExecUiTest(unittest.TestCase):
         self.assertNotIn("RTOS", result["summary"])
         self.assertTrue(result["spinePresent"])
 
+    def test_binding_form_does_not_require_hidden_add_target_fields(self):
+        html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        form = html[html.index('id="binding-form"') : html.index("</form>")]
+        for control_id in ("add-target-title", "add-target-com", "add-target-baud"):
+            with self.subTest(control_id=control_id):
+                self.assertRegex(form, rf'id="{control_id}"')
+                self.assertNotRegex(
+                    form,
+                    rf'id="{control_id}"[^>]*\brequired\b',
+                )
+
+    def test_hidden_slot_controls_are_disabled_in_crt(self):
+        result = run_ui_scenario(
+            """
+  send({
+    type: "status",
+    mode: "crt",
+    ports: {
+      linux: { name: "linux", title: "Linux", com: "COM3", baud: 115200, open: false },
+    },
+    live_dir: "D:/live",
+  });
+  return {
+    slot0Disabled: document.getElementById("binding-slot0-com").disabled,
+    slot1Disabled: document.getElementById("binding-slot1-com").disabled,
+    slot1TitleDisabled: document.getElementById("binding-slot1-title").disabled,
+    slot1BaudDisabled: document.getElementById("binding-slot1-baud").disabled,
+  };
+"""
+        )
+        self.assertFalse(result["slot0Disabled"])
+        self.assertTrue(result["slot1Disabled"])
+        self.assertTrue(result["slot1TitleDisabled"])
+        self.assertTrue(result["slot1BaudDisabled"])
+
     def test_add_target_confirm_posts_defaults_and_dirty_existing_slot(self):
         result = run_ui_scenario(
             """

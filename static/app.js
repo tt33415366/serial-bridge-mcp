@@ -176,12 +176,14 @@
 
   function setBindingEditability() {
     const crtEditable = mode === "crt";
+    const active = new Set(activeSlotKeys());
     btnSaveBindings.disabled = !crtEditable;
     btnScanPorts.disabled = !crtEditable;
     for (const slot of SLOT_KEYS) {
-      bindingInputs[slot].title.disabled = !crtEditable;
-      bindingInputs[slot].com.disabled = !crtEditable;
-      bindingInputs[slot].baud.disabled = !crtEditable;
+      const editable = crtEditable && active.has(slot);
+      bindingInputs[slot].title.disabled = !editable;
+      bindingInputs[slot].com.disabled = !editable;
+      bindingInputs[slot].baud.disabled = !editable;
     }
     bindingLiveDir.disabled = !crtEditable;
     bindingLiveDirField.hidden = !crtEditable;
@@ -344,7 +346,6 @@
     btnCrt.classList.toggle("active-crt", mode === "crt");
     bindingStrip.hidden = mode !== "bridge";
     bindingForm.hidden = mode !== "crt";
-    setBindingEditability();
     if (mode === "bridge") {
       modeLabel.textContent = "Bridge";
       modeHint.textContent = "Hub owns ports. You and Agent share the streams (colors differ).";
@@ -401,6 +402,7 @@
       if (!bindingsDirty) bindingLiveDir.value = s.live_dir;
     }
     if (s.add_defaults) lastAddDefaults = s.add_defaults;
+    setBindingEditability();
     updateTargetSlotActions();
     updateFooterLogs(s);
     if (s.error) setPill(s.error, "err");
