@@ -6,9 +6,11 @@
   const remoteNote = document.getElementById("remote-note");
   const accessToken = document.getElementById("access-token");
   const cursorSnippet = document.getElementById("cursor-snippet");
+  const agentRule = document.getElementById("agent-rule");
   const envWarning = document.getElementById("env-warning");
   const btnCopyToken = document.getElementById("btn-copy-token");
   const btnCopySnippet = document.getElementById("btn-copy-snippet");
+  const btnCopyRule = document.getElementById("btn-copy-rule");
   const btnRotate = document.getElementById("btn-rotate-token");
 
   function showLoopback(data) {
@@ -33,6 +35,7 @@
     const data = await response.json();
     hubUrl.textContent = data.hub_url;
     authNote.textContent = data.auth_note;
+    agentRule.textContent = data.agent_rule || "";
     if (data.loopback) {
       showLoopback(data);
     } else {
@@ -55,6 +58,10 @@
 
   btnCopySnippet.addEventListener("click", () => {
     copyText(cursorSnippet.textContent, btnCopySnippet);
+  });
+
+  btnCopyRule.addEventListener("click", () => {
+    copyText(agentRule.textContent, btnCopyRule);
   });
 
   btnRotate.addEventListener("click", async () => {

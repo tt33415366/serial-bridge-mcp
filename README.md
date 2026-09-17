@@ -54,8 +54,9 @@ change modes or Port Bindings.
 
 ## MCP
 
-Use **Setup** (`/setup`) on the Hub host for a copy-paste Cursor config. Manual
-wiring:
+Use **Setup** (`/setup`) on the Hub host for a copy-paste Cursor config and a
+short Cursor rule ("Agent guide") that teaches the Agent the token-saving Exec
+options below. Manual wiring:
 
 Configure the Agent's Streamable HTTP MCP connection with:
 
@@ -73,15 +74,29 @@ Use `/mcp` exactly; the Web UI is at `/`. The MCP Server exposes:
   Last N lines are `serial_tail`, not Exec output. Do not pull the Session Log
   into `serial_exec` output.
 - `serial_exec`: send one text command and capture output until an idle gap,
-  an optional prompt match, or the 60-second timeout. Optionally pass `grep` to
-  return only captured lines containing that literal substring; the result then
-  includes `grepped: true` and `match_count` (hits before the output cap).
-  `grep_is_regex` defaults to false; set it to true only when `grep` is a
-  regular expression. `grep_context` is an optional symmetric neighbor count
-  around each hit; overlapping windows merge.
+  an optional prompt match, or the 60-second timeout. The device's Echo of the
+  command and the matched prompt text are removed from `output`; the Session
+  Log keeps both. Options:
+  - `prompt` / `prompt_is_regex`: end early when the prompt appears.
+    `prompt_settle_ms` (0–999, default 0) is a Settle Window: after the prompt
+    matches, keep capturing until the device is quiet for that long, for
+    consoles that print the prompt before the command's output.
+  - `exit_code: true`: Exit Code Probe for POSIX shell Targets. The Hub wraps
+    the command so the shell prints `$?` behind a one-time token, removes that
+    trailer, and reports `exit_code` (an integer, or `null` when the trailer
+    never arrived and the Exec ended by idle). Cannot be combined with
+    `prompt`; works with `grep`.
+  - `grep` / `grep_is_regex` / `grep_context`: keep only matching lines (plus
+    neighbors). `grep_invert: true` keeps the non-matching lines instead;
+    `match_count` is always the number of matching lines. `grep_invert` and
+    `grep_context` are mutually exclusive.
+  - `max_lines`: keep only the last N lines after Grep; `lines_dropped`
+    reports how many were cut.
 - `serial_send`: send a text line or Raw Payload without waiting for output.
 - `serial_tail`: read one Target's last `n` lines of the current Session Log
-  (default 80, max 200); result `{ok, target, tail, n}`. The whole file remains
+  (default 40, max 200); result `{ok, target, tail, n}`. Each line is reduced
+  to direction (`<<<` rx, `>>>` tx, `---` system) and text; pass
+  `with_timestamps: true` to prefix `HH:MM:SS.mmm`. The whole file remains
   `log_url`.
 
 To exercise status and Exec:
@@ -96,12 +111,21 @@ To exercise status and Exec:
    `prompt_is_regex` to `true` only when the prompt value is a regular
    expression.
 
-Exec accepts the Target names `linux` and `rtos`, not serial device names. It
-returns captured `output` plus `timed_out`, `truncated`, and `aborted` flags.
-When `grep` is used, the result also includes `grepped` and `match_count`.
+Exec accepts the Target names `linux` and `rtos`, not serial device names. The
+result is `{ok, output}`; `truncated`, `timed_out`, and `aborted` appear only
+when true, and `error` only on failure. `ok` means the capture finished
+(prompt or idle), not that the remote command succeeded — use `exit_code` for
+that on shell Targets. `truncated` is only the trailing 32KiB cap, not an
+early prompt match. On Target `linux`, do not use a short shell prompt such as
+`#` as `prompt`: a literal `#` matches comments and ends Exec early.
 
 Exec output and the `live/*.log` transcripts are plain text with ANSI escapes
 removed. The Web UI instead interprets the escapes and shows device colors.
+
+The **Agent Trace** in the Web UI lists every Exec, Send, Tail, and status read
+with the bytes each returned to the Agent, and its footer shows the running
+total for this Hub session. Compare that total across the same device task
+before and after changing how the Agent calls the tools.
 
 ## Port Binding
 

@@ -30,6 +30,30 @@ def _hub_mcp_url(host: str) -> str:
     return f"http://{host}:{HUB_PORT}/mcp"
 
 
+AGENT_RULE_SNIPPET = """\
+# Serial Bridge (MCP) — Agent guide
+
+Address Targets by Target Name (`linux`, `rtos`), never by COM port. Call
+`serial_status` once per task; Exec and Send require Bridge Mode.
+
+- `serial_exec` returns `{ok, output}`; `truncated`, `timed_out`, `aborted`
+  appear only when true. `ok` means the capture finished, not that the remote
+  command succeeded. The command Echo and the matched prompt are already
+  removed from `output`.
+- Shell Targets (`linux`): pass `exit_code: true` and read `exit_code` from the
+  result (`null` = no status came back). Do not combine it with `prompt`.
+  Never use a bare `#` as `prompt`.
+- Consoles that print their prompt before the command's output (`rtos`): pass
+  `prompt` plus `prompt_settle_ms: 300` so the output after the prompt is kept.
+- Shrink output at the source instead of reading everything: `grep`
+  (`grep_invert: true` drops noise lines), `max_lines` (keeps the tail and
+  reports `lines_dropped`). Chain several shell commands in one Exec.
+- `serial_tail` shows what happened outside your Exec (default 40 lines). Do
+  not re-read what an Exec already returned. `serial_send` is only for
+  fire-and-forget text or raw bytes.
+"""
+
+
 def _cursor_snippet(host: str, token: str) -> str:
     payload = {
         "mcpServers": {
@@ -52,6 +76,8 @@ def setup_payload(*, loopback: bool) -> dict[str, Any]:
             f"Set URL to {_hub_mcp_url('<hub-host>')} and send "
             "Authorization: Bearer <access-token> on every MCP request."
         ),
+        # No secret inside, so remote viewers get it too.
+        "agent_rule": AGENT_RULE_SNIPPET,
     }
     if loopback:
         store = get_token_store()

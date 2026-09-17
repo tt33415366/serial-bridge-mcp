@@ -124,6 +124,29 @@ class SetupPageTest(unittest.TestCase):
         self.assertNotIn("cursor_snippet", body)
         self.assertNotIn("remote-hidden-token", response.text)
         self.assertIn("192.168.1.42", body["hub_url"])
+        self.assertIn("exit_code", body["agent_rule"])
+
+    def test_setup_api_ships_the_agent_rule_without_secrets(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "serial_bridge.json"
+            token_path = config_path.with_name(DEFAULT_TOKEN_FILENAME)
+            token_path.write_text("rule-token\n", encoding="utf-8")
+            with (
+                patch.dict("os.environ", {}, clear=True),
+                patch.object(bridge_setup, "detect_lan_ip", return_value=None),
+            ):
+                init_token_store(config_path=config_path, environ={})
+                client = TestClient(app_module.app, client=("127.0.0.1", 50000))
+                body = client.get("/api/setup").json()
+
+        rule = body["agent_rule"]
+        self.assertEqual(bridge_setup.AGENT_RULE_SNIPPET, rule)
+        self.assertNotIn("rule-token", rule)
+        for keyword in ("exit_code", "prompt_settle_ms", "grep_invert", "max_lines", "serial_tail"):
+            self.assertIn(keyword, rule)
+        setup_html = (app_module.STATIC / "setup.html").read_text(encoding="utf-8")
+        self.assertIn('id="agent-rule"', setup_html)
+        self.assertIn('id="btn-copy-rule"', setup_html)
 
     def test_non_loopback_rotate_is_rejected(self):
         client = TestClient(app_module.app, client=("192.0.2.10", 50000))

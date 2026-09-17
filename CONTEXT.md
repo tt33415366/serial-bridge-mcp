@@ -37,7 +37,7 @@ The complete on-disk record of one Target for one entry into Bridge Mode, writte
 _Avoid_: saved logs file, log file (alone), transcript (the live view)
 
 **Tail**:
-A bounded snapshot of the last N lines of the current Session Log.
+A bounded snapshot of the last N lines of the current Session Log, each reduced to direction and text (the time only on request; the date and Target title are never repeated).
 _Avoid_: Follow (the Operator pane pin), session log (the whole file), transcript (the live view), live tail (English in Follow, not this term)
 
 **Bridge Mode**:
