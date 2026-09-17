@@ -200,6 +200,16 @@ class ExecEngine:
             return None, None, "grep_invert cannot be combined with grep_context"
         if request.max_lines is not None and request.max_lines < 1:
             return None, None, "max_lines must be at least 1"
+        if request.prompt_settle_ms < 0:
+            return None, None, "prompt_settle_ms must not be negative"
+        if request.prompt_settle_ms >= ExecEngine.IDLE_SECONDS * 1000:
+            return (
+                None,
+                None,
+                f"prompt_settle_ms must be below {int(ExecEngine.IDLE_SECONDS * 1000)}",
+            )
+        if request.prompt_settle_ms > 0 and request.prompt is None:
+            return None, None, "prompt_settle_ms requires prompt"
         return prompt_regex, grep_regex, None
 
     @staticmethod
@@ -247,6 +257,8 @@ class ExecEngine:
 
         started = self._clock()
         last_rx = started
+        settle_seconds = request.prompt_settle_ms / 1000.0
+        prompt_matched = False
 
         while True:
             if request.aborted.is_set():
@@ -286,27 +298,31 @@ class ExecEngine:
                     ),
                 )
 
-            if chunk:
+            if chunk and request.prompt is not None and not prompt_matched:
                 full_output = self._strip_output(captured)
-                if request.prompt is not None:
-                    matched = (
-                        prompt_regex.search(full_output) is not None
-                        if prompt_regex is not None
-                        else request.prompt in full_output
-                    )
-                    if matched:
-                        return self._finish(
-                            on_done,
-                            "prompt",
-                            self._result_from_capture(
-                                request,
-                                captured,
-                                ok=True,
-                                grep_regex=grep_regex,
-                                prompt_regex=prompt_regex,
-                                prompt_matched=True,
-                            ),
-                        )
+                prompt_matched = (
+                    prompt_regex.search(full_output) is not None
+                    if prompt_regex is not None
+                    else request.prompt in full_output
+                )
+
+            # Settle Window: after the prompt, keep capturing until the device
+            # has been quiet for settle_seconds (zero ends on the match itself).
+            if prompt_matched and (
+                settle_seconds <= 0 or now - last_rx >= settle_seconds
+            ):
+                return self._finish(
+                    on_done,
+                    "prompt",
+                    self._result_from_capture(
+                        request,
+                        captured,
+                        ok=True,
+                        grep_regex=grep_regex,
+                        prompt_regex=prompt_regex,
+                        prompt_matched=True,
+                    ),
+                )
 
             if now - last_rx >= self.IDLE_SECONDS:
                 return self._finish(

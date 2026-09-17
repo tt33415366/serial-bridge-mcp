@@ -423,6 +423,87 @@ class ExecEngineTest(unittest.TestCase):
         )
         self.assertEqual("rtos-1# busy\r\nanswer\r\n", result["output"])
 
+    def test_settle_window_keeps_output_that_follows_the_prompt(self):
+        calls = []
+        result, _, clock = execute(
+            [
+                (0.0, b"show\r\na:\\> "),
+                (0.2, b"[CAPP|NG]: set_flicker: invalid view\r\n"),
+            ],
+            prompt="a:\\>",
+            prompt_settle_ms=300,
+            on_done=calls.append,
+        )
+        self.assertEqual(["prompt"], calls)
+        self.assertTrue(result["ok"])
+        self.assertEqual("[CAPP|NG]: set_flicker: invalid view\r\n", result["output"])
+        self.assertGreaterEqual(clock.now, 0.5)
+        self.assertLess(clock.now, 1.0)
+
+    def test_settle_window_resets_on_each_chunk(self):
+        result, _, clock = execute(
+            [
+                (0.0, b"show\r\na:\\> "),
+                (0.2, b"line 1\r\n"),
+                (0.4, b"line 2\r\n"),
+            ],
+            prompt="a:\\>",
+            prompt_settle_ms=300,
+        )
+        self.assertEqual("line 1\r\nline 2\r\n", result["output"])
+        self.assertGreaterEqual(clock.now, 0.7)
+
+    def test_zero_settle_ends_on_the_prompt_match(self):
+        result, _, clock = execute(
+            [(0.0, b"show\r\na:\\> "), (0.2, b"late\r\n")],
+            prompt="a:\\>",
+        )
+        self.assertEqual("", result["output"])
+        self.assertLess(clock.now, 0.2)
+
+    def test_settle_window_still_honors_total_timeout(self):
+        def serial_factory(clock):
+            sent_prompt = False
+
+            def read():
+                nonlocal sent_prompt
+                clock.sleep(0.1)
+                if not sent_prompt:
+                    sent_prompt = True
+                    return b"a:\\> "
+                return b"chatter\r\n"
+
+            return ScriptedSerial(clock, on_read=read)
+
+        result, _, clock = execute(
+            prompt="a:\\>",
+            prompt_settle_ms=300,
+            serial_factory=serial_factory,
+        )
+        self.assertTrue(result["timed_out"])
+        self.assertAlmostEqual(60.0, clock.now, places=3)
+
+    def test_settle_at_or_above_idle_gap_is_rejected_before_tx(self):
+        result, serial, _ = execute(
+            [(0.0, b"x\r\n")], prompt="a:\\>", prompt_settle_ms=1000
+        )
+        self.assertFalse(result["ok"])
+        self.assertIn("prompt_settle_ms", result["error"])
+        self.assertEqual([], serial.writes)
+
+    def test_negative_settle_is_rejected_before_tx(self):
+        result, serial, _ = execute(
+            [(0.0, b"x\r\n")], prompt="a:\\>", prompt_settle_ms=-1
+        )
+        self.assertFalse(result["ok"])
+        self.assertEqual([], serial.writes)
+
+    def test_settle_without_prompt_is_rejected_before_tx(self):
+        result, serial, _ = execute([(0.0, b"x\r\n")], prompt_settle_ms=300)
+        self.assertFalse(result["ok"])
+        self.assertIn("prompt", result["error"])
+        self.assertEqual([], serial.writes)
+
     def test_prompt_text_stays_when_exec_ends_by_idle(self):
         result, _, _ = execute(
             [(0.0, b"show\r\nanswer\r\ndevice> ")],
