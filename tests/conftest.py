@@ -91,8 +91,9 @@ class FakeHub:
                 out[key] = ""
         return out
 
-    def tail(self, target, n=80):
+    def tail(self, target, n=40, with_timestamps=False):
         from serial_bridge.constants import TAIL_DEFAULT_N, TAIL_MAX_N
+        from serial_bridge.hub.transcript import compact_tail_line
 
         target_name, error = self.resolve_target(target)
         resolved = target_name or ""
@@ -132,10 +133,12 @@ class FakeHub:
         result = {
             "ok": True,
             "target": target_name,
-            "tail": "\n".join(lines[-n:]),
+            "tail": "\n".join(
+                compact_tail_line(line, with_timestamps) for line in lines[-n:]
+            ),
             "n": n,
         }
-        self.calls.append(("tail", target, n, result["ok"]))
+        self.calls.append(("tail", target, n, result["ok"], with_timestamps))
         return result
 
 

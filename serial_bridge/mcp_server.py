@@ -86,9 +86,10 @@ async def serial_send(
 async def serial_tail(
     target: str,
     n: int = TAIL_DEFAULT_N,
+    with_timestamps: bool = False,
 ) -> dict[str, Any]:
-    """Return a Tail of the current Session Log: last n lines (default 80, max 200) for one Target Name. The whole file is log_url from serial_status, not this tool."""
-    return await offload(_get_hub().tail, target, n)
+    """Return a Tail of the current Session Log: last n lines (default 40, max 200) for one Target Name, each reduced to direction (<<< rx, >>> tx) and text; with_timestamps adds HH:MM:SS.mmm. The whole file is log_url from serial_status, not this tool."""
+    return await offload(_get_hub().tail, target, n, with_timestamps)
 
 
 def create_mcp() -> FastMCP:

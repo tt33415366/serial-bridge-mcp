@@ -20,7 +20,7 @@ from serial_bridge.hub.coalesce import LineCoalescer
 from serial_bridge.hub.mode_transition import ModeTransition
 from serial_bridge.hub.queue import exec_result
 from serial_bridge.hub.trace import AgentTrace
-from serial_bridge.hub.transcript import Transcript
+from serial_bridge.hub.transcript import Transcript, compact_tail_line
 
 
 class Hub:
@@ -197,7 +197,12 @@ class Hub:
     def get_tail(self, target: str = "both", n: int = 80) -> dict[str, str]:
         return self._transcript.get_tail(target, n)
 
-    def tail(self, target: str, n: int = TAIL_DEFAULT_N) -> dict[str, Any]:
+    def tail(
+        self,
+        target: str,
+        n: int = TAIL_DEFAULT_N,
+        with_timestamps: bool = False,
+    ) -> dict[str, Any]:
         target_name, error = self.resolve_target(target)
         resolved = target_name or ""
         if not isinstance(n, int) or isinstance(n, bool) or n < 1 or n > TAIL_MAX_N:
@@ -226,10 +231,13 @@ class Hub:
                 "n": n,
                 "error": "no current Session Log",
             }
+        raw = self.get_tail(target=target_name, n=n)[target_name]
         return {
             "ok": True,
             "target": target_name,
-            "tail": self.get_tail(target=target_name, n=n)[target_name],
+            "tail": "\n".join(
+                compact_tail_line(line, with_timestamps) for line in raw.split("\n")
+            ),
             "n": n,
         }
 

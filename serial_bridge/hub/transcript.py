@@ -1,6 +1,7 @@
 """Live console transcript persistence and tail reads."""
 from __future__ import annotations
 
+import re
 import threading
 from collections.abc import Callable
 from datetime import datetime
@@ -8,6 +9,27 @@ from pathlib import Path
 from typing import Any
 
 from serial_bridge.hub.text import sanitize_display, strip_ansi, ts
+
+# "2026-09-16 19:56:06.647 <<< [RTOS] (agent) text" as written by append_log.
+_LOG_LINE = re.compile(
+    r"^\d{4}-\d{2}-\d{2} (?P<time>\d{2}:\d{2}:\d{2}\.\d{3}) "
+    r"(?P<direction>\S+) \[[^\]]*\](?P<rest>.*)$"
+)
+
+
+def compact_tail_line(line: str, with_timestamps: bool = False) -> str:
+    """Reduce a Session Log line to direction plus text for a Tail.
+
+    The date and Target title are dropped (the caller named the Target); the
+    time is kept only on request. Lines not in Session Log format pass through.
+    """
+    match = _LOG_LINE.match(line)
+    if match is None:
+        return line
+    compact = match.group("direction") + match.group("rest")
+    if with_timestamps:
+        compact = f"{match.group('time')} {compact}"
+    return compact
 
 
 class Transcript:

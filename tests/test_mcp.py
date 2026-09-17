@@ -188,7 +188,38 @@ class McpHttpTest(unittest.TestCase):
             {"ok": True, "target": "linux", "tail": "b\nc", "n": 2},
             result,
         )
-        self.assertEqual(("tail", "linux", 2, True), fake_hub.calls[-1])
+        self.assertEqual(("tail", "linux", 2, True, False), fake_hub.calls[-1])
+
+    def test_serial_tail_compacts_session_log_lines_and_can_add_time(self):
+        fake_hub = FakeHub()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log = Path(temp_dir) / "linux.log"
+            log.write_text(
+                "2026-09-16 19:56:06.593 >>> [RTOS] (agent) svc_app get_flicker 0\n"
+                "2026-09-16 19:56:06.647 <<< [RTOS] a:\\> [CAPP|OK]: view 0\n",
+                encoding="utf-8",
+            )
+            fake_hub.ports["linux"]["log"] = log
+            with patch.object(app_module, "hub", fake_hub):
+                compact = call_tool(
+                    self.client, "serial_tail", {"target": "linux"}
+                )
+                timed = call_tool(
+                    self.client,
+                    "serial_tail",
+                    {"target": "linux", "with_timestamps": True},
+                )
+
+        self.assertEqual(
+            ">>> (agent) svc_app get_flicker 0\n<<< a:\\> [CAPP|OK]: view 0",
+            compact.json()["result"]["structuredContent"]["tail"],
+        )
+        self.assertEqual(
+            "19:56:06.593 >>> (agent) svc_app get_flicker 0\n"
+            "19:56:06.647 <<< a:\\> [CAPP|OK]: view 0",
+            timed.json()["result"]["structuredContent"]["tail"],
+        )
+        self.assertEqual(("tail", "linux", 40, True, True), fake_hub.calls[-1])
 
     def test_serial_tail_defaults_n_and_rejects_out_of_range(self):
         fake_hub = FakeHub()
@@ -207,7 +238,7 @@ class McpHttpTest(unittest.TestCase):
                 )
 
         self.assertEqual(
-            {"ok": True, "target": "linux", "tail": "only", "n": 80},
+            {"ok": True, "target": "linux", "tail": "only", "n": 40},
             defaulted.json()["result"]["structuredContent"],
         )
         rejected = bad.json()["result"]["structuredContent"]
@@ -233,7 +264,7 @@ class McpHttpTest(unittest.TestCase):
                 "ok": False,
                 "target": "linux",
                 "tail": "",
-                "n": 80,
+                "n": 40,
                 "error": "no current Session Log",
             },
             missing.json()["result"]["structuredContent"],

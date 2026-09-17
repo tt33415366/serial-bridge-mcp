@@ -814,7 +814,7 @@ class HubSerialTailTest(unittest.TestCase):
             result,
         )
 
-    def test_tail_defaults_n_to_80(self):
+    def test_tail_defaults_n_to_40(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             log = Path(temp_dir) / "linux.log"
             log.write_text("\n".join(f"line{i}" for i in range(90)), encoding="utf-8")
@@ -823,10 +823,39 @@ class HubSerialTailTest(unittest.TestCase):
 
             result = hub.tail("linux")
 
+        self.assertEqual(40, TAIL_DEFAULT_N)
         self.assertEqual(TAIL_DEFAULT_N, result["n"])
         self.assertEqual(
-            "\n".join(f"line{i}" for i in range(10, 90)),
+            "\n".join(f"line{i}" for i in range(50, 90)),
             result["tail"],
+        )
+
+    def test_tail_compacts_session_log_lines_by_default(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log = Path(temp_dir) / "linux.log"
+            log.write_text(
+                "2026-09-16 19:50:09.121 >>> [LINUX] (agent) cat /tmp/x\n"
+                "2026-09-16 19:50:09.174 <<< [LINUX] # cat /tmp/x\n"
+                "2026-09-16 19:50:09.175 --- [LINUX] (system) closed COM3\n"
+                "not a log line\n",
+                encoding="utf-8",
+            )
+            hub = Hub(make_config())
+            hub.ports["linux"]["log"] = log
+
+            compact = hub.tail("linux")
+            timed = hub.tail("linux", with_timestamps=True)
+
+        self.assertEqual(
+            ">>> (agent) cat /tmp/x\n<<< # cat /tmp/x\n--- (system) closed COM3\nnot a log line",
+            compact["tail"],
+        )
+        self.assertEqual(
+            "19:50:09.121 >>> (agent) cat /tmp/x\n"
+            "19:50:09.174 <<< # cat /tmp/x\n"
+            "19:50:09.175 --- (system) closed COM3\n"
+            "not a log line",
+            timed["tail"],
         )
 
     def test_tail_rejects_n_outside_1_to_200(self):
