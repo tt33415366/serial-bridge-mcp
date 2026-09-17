@@ -94,6 +94,8 @@
    */
   const captureIndex = new Map();
   let spineEntries = [];
+  // Bytes the Hub has returned to Agents this session; the server is the source of truth.
+  let returnedTotal = 0;
   let hydrateVersion = 0;
   const windowCounts = Object.fromEntries(SLOT_KEYS.map((slot) => [slot, 0]));
   const rowCapture = new WeakMap();
@@ -1497,10 +1499,29 @@
     for (const entry of spineEntries) {
       const node = document.createElement("article");
       if (entry.kind === "send") {
-        node.className = "spine-node send";
+        node.className = `spine-node send${entry.ok === false ? " failed" : ""}`;
         appendSpineText(node, "spine-kicker", `SEND · ${entry.target} · ${entry.ts || "now"}`);
         appendSpineText(node, "spine-command", entry.cmd);
-        appendSpineText(node, "spine-meta", "fire-and-forget");
+        appendSpineText(
+          node,
+          "spine-meta",
+          `fire-and-forget${entry.ok === false ? " · refused" : ""}` +
+            ` · returned ${formatBytes(entry.returned_bytes || 0)}`
+        );
+      } else if (entry.kind === "tail" || entry.kind === "status") {
+        node.className = `spine-node read ${entry.kind}${entry.ok === false ? " failed" : ""}`;
+        const where = entry.target ? ` · ${entry.target}` : "";
+        appendSpineText(node, "spine-kicker", `${entry.kind.toUpperCase()}${where} · ${entry.ts || "now"}`);
+        appendSpineText(
+          node,
+          "spine-command",
+          entry.kind === "tail" ? `last ${entry.n || "?"} lines` : "mode and bindings"
+        );
+        appendSpineText(
+          node,
+          "spine-meta",
+          `${entry.ok === false ? "refused" : "read"} · returned ${formatBytes(entry.returned_bytes || 0)}`
+        );
       } else {
         const running = entry.phase === "start";
         const endedBy = normalizedEndReason(entry.ended_by);
@@ -1524,7 +1545,8 @@
             ? "running"
             : `${endedBy === "abort" ? "aborted" : endedBy} · ` +
               `${formatDuration(entry.ms || 0)} · ${formatBytes(entry.bytes || 0)}` +
-              (entry.truncated ? " · capped" : "")
+              (entry.truncated ? " · capped" : "") +
+              ` · returned ${formatBytes(entry.returned_bytes || 0)}`
         );
       }
       spineBody.appendChild(node);
@@ -1532,13 +1554,16 @@
 
     const execs = spineEntries.filter((entry) => entry.kind === "exec");
     const sends = spineEntries.filter((entry) => entry.kind === "send");
+    const reads = spineEntries.filter((entry) => entry.kind === "tail" || entry.kind === "status");
     const sealed = execs.filter((entry) => entry.phase === "end");
     const aborted = sealed.filter((entry) => entry.ended_by === "abort").length;
     const capped = sealed.filter((entry) => entry.truncated).length;
     const medianMs = median(sealed.map((entry) => Number(entry.ms) || 0));
     spineTally.textContent =
-      `exec ${execs.length} · send ${sends.length} · aborted ${aborted} · capped ${capped}` +
-      ` · median ${medianMs === null ? "—" : formatDuration(medianMs)}`;
+      `exec ${execs.length} · send ${sends.length} · read ${reads.length}` +
+      ` · aborted ${aborted} · capped ${capped}` +
+      ` · median ${medianMs === null ? "—" : formatDuration(medianMs)}` +
+      ` · returned ${formatBytes(returnedTotal)}`;
   }
 
   const MAX_SPINE_ENTRIES = 50;
@@ -1561,22 +1586,19 @@
       (entry) => entry.kind === "exec" && entry.id === msg.id
     );
     if (index < 0) return false;
+    if (typeof msg.returned_total === "number") returnedTotal = msg.returned_total;
     spineEntries[index] = { ...spineEntries[index], ...msg, phase: "end" };
     capSpineEntries();
     renderSpine();
     return true;
   }
 
-  function recordAgentSend(target, cmd, ts) {
-    spineEntries.unshift({ kind: "send", target, cmd, ts });
+  // Send, Tail, and status reads arrive sealed from the Hub's Agent Trace.
+  function recordTraceEntry(msg) {
+    if (typeof msg.returned_total === "number") returnedTotal = msg.returned_total;
+    spineEntries.unshift({ ...msg });
     capSpineEntries();
     renderSpine();
-  }
-
-  function recordLineSideEffects(target, direction, text, who, tstamp) {
-    if (direction === ">>>" && who === "agent" && !openCaptures[target]) {
-      recordAgentSend(target, text, tstamp);
-    }
   }
 
   function entriesFromAgentLog(entries) {
@@ -1601,6 +1623,7 @@
       const data = await response.json();
       if (version !== hydrateVersion || !response.ok || !data.ok) return;
       spineEntries = entriesFromAgentLog(data.entries);
+      returnedTotal = Number(data.returned_total) || 0;
       restoreHydratedHolders();
       renderSpine();
     } catch {
@@ -1698,9 +1721,6 @@
   }
 
   function appendLine(target, direction, text, who, tstamp, options = {}) {
-    if (!options.replaying) {
-      recordLineSideEffects(target, direction, text, who, tstamp);
-    }
     const slot = targetToSlot[target] || SLOT_KEYS[0];
     const el = terms[slot];
     if (!el) return;
@@ -1759,6 +1779,7 @@
       }
       if (msg.type === "exec" && msg.phase === "start") onExecStart(msg);
       if (msg.type === "exec" && msg.phase === "end") onExecEnd(msg);
+      if (msg.type === "trace") recordTraceEntry(msg);
       if (msg.type === "system") {
         for (const target of slotTargets) {
           appendLine(target, "---", msg.text, "system", "");

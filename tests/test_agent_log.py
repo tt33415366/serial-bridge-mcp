@@ -35,14 +35,15 @@ class AgentTraceTest(unittest.TestCase):
 
         with patch("serial_bridge.hub.trace.ts", return_value="09:30:00.123"):
             first = trace.record_start("linux", "one", None)
-            trace.record_end(first, "linux", "idle", 100, 10, False, True)
+            trace.record_end(first, "linux", "idle", 100, 10, False, True, 30)
             second = trace.record_start("rtos", "two", "rtos> ")
-            trace.record_end(second, "rtos", "prompt", 50, 5, False, True)
+            trace.record_end(second, "rtos", "prompt", 50, 5, False, True, 25)
 
         self.assertEqual([second, first], [entry["id"] for entry in trace.get_agent_log()])
         self.assertEqual(
             {
                 "id": second,
+                "kind": "exec",
                 "phase": "end",
                 "target": "rtos",
                 "cmd": "two",
@@ -53,12 +54,14 @@ class AgentTraceTest(unittest.TestCase):
                 "bytes": 5,
                 "truncated": False,
                 "ok": True,
+                "returned_bytes": 25,
             },
             trace.get_agent_log()[0],
         )
         self.assertEqual(
             {
                 "type": "exec",
+                "kind": "exec",
                 "phase": "start",
                 "id": first,
                 "target": "linux",
@@ -79,9 +82,58 @@ class AgentTraceTest(unittest.TestCase):
                 "bytes": 5,
                 "truncated": False,
                 "ok": True,
+                "returned_bytes": 25,
+                "returned_total": 55,
             },
             emitted[-1],
         )
+        self.assertEqual(55, trace.returned_total)
+
+    def test_record_read_seals_send_tail_and_status_entries_with_running_total(self):
+        emitted = []
+        trace = AgentTrace(emitted.append)
+
+        with patch("serial_bridge.hub.trace.ts", return_value="09:31:00.000"):
+            send_id = trace.record_read(
+                "send", target="rtos", ok=True, returned_bytes=40, cmd="reboot"
+            )
+            tail_id = trace.record_read(
+                "tail", target="linux", ok=True, returned_bytes=900, n=40
+            )
+            status_id = trace.record_read(
+                "status", target=None, ok=True, returned_bytes=300
+            )
+
+        self.assertEqual([status_id, tail_id, send_id], [e["id"] for e in trace.get_agent_log()])
+        self.assertEqual(
+            {
+                "id": tail_id,
+                "kind": "tail",
+                "phase": "end",
+                "target": "linux",
+                "ts": "09:31:00.000",
+                "ok": True,
+                "returned_bytes": 900,
+                "n": 40,
+            },
+            trace.get_agent_log()[1],
+        )
+        self.assertEqual("reboot", trace.get_agent_log()[2]["cmd"])
+        self.assertEqual(
+            {
+                "type": "trace",
+                "id": status_id,
+                "kind": "status",
+                "phase": "end",
+                "target": None,
+                "ts": "09:31:00.000",
+                "ok": True,
+                "returned_bytes": 300,
+                "returned_total": 1240,
+            },
+            emitted[-1],
+        )
+        self.assertEqual(1240, trace.returned_total)
 
     def test_agent_log_keeps_only_fifty_exec_records(self):
         trace = AgentTrace(lambda _event: None)
@@ -107,14 +159,15 @@ class AgentLogTest(unittest.TestCase):
             patch("serial_bridge.hub.trace.ts", return_value="09:30:00.123"),
         ):
             first = hub.record_exec_start("linux", "one", None)
-            hub.record_exec_end(first, "linux", "idle", 100, 10, False, True)
+            hub.record_exec_end(first, "linux", "idle", 100, 10, False, True, 30)
             second = hub.record_exec_start("rtos", "two", "rtos> ")
-            hub.record_exec_end(second, "rtos", "prompt", 50, 5, False, True)
+            hub.record_exec_end(second, "rtos", "prompt", 50, 5, False, True, 25)
 
         self.assertEqual([second, first], [entry["id"] for entry in hub.get_agent_log()])
         self.assertEqual(
             {
                 "id": second,
+                "kind": "exec",
                 "phase": "end",
                 "target": "rtos",
                 "cmd": "two",
@@ -125,12 +178,14 @@ class AgentLogTest(unittest.TestCase):
                 "bytes": 5,
                 "truncated": False,
                 "ok": True,
+                "returned_bytes": 25,
             },
             hub.get_agent_log()[0],
         )
         self.assertEqual(
             {
                 "type": "exec",
+                "kind": "exec",
                 "phase": "start",
                 "id": first,
                 "target": "linux",
@@ -151,8 +206,47 @@ class AgentLogTest(unittest.TestCase):
                 "bytes": 5,
                 "truncated": False,
                 "ok": True,
+                "returned_bytes": 25,
+                "returned_total": 55,
             },
             emitted[-1],
+        )
+        self.assertEqual(55, hub.returned_total)
+
+    def test_agent_send_is_traced_with_returned_bytes(self):
+        hub = make_hub()
+        emitted = []
+        with patch.object(hub, "emit", emitted.append):
+            result = hub.send("rtos", "reboot", who="agent")
+            hub.send("rtos", "status", who="user")
+
+        entries = hub.get_agent_log()
+        self.assertEqual(1, len(entries))
+        self.assertEqual("send", entries[0]["kind"])
+        self.assertEqual("rtos", entries[0]["target"])
+        self.assertEqual("reboot", entries[0]["cmd"])
+        self.assertFalse(entries[0]["ok"])  # CRT Mode: Send is refused
+        self.assertEqual(
+            len(json.dumps(result, ensure_ascii=False).encode("utf-8")),
+            entries[0]["returned_bytes"],
+        )
+        self.assertEqual("trace", emitted[-1]["type"])
+        self.assertEqual(entries[0]["returned_bytes"], emitted[-1]["returned_total"])
+
+    def test_record_agent_read_traces_tail_and_status_reads(self):
+        hub = make_hub()
+        with patch.object(hub, "emit"):
+            hub.record_agent_read("status", {"ok": True, "mode": "crt"})
+            hub.record_agent_read(
+                "tail", {"ok": False, "error": "x"}, target="linux", n=40
+            )
+
+        kinds = [(e["kind"], e["target"], e["ok"]) for e in hub.get_agent_log()]
+        self.assertEqual([("tail", "linux", False), ("status", None, True)], kinds)
+        self.assertEqual(40, hub.get_agent_log()[0]["n"])
+        self.assertEqual(
+            sum(e["returned_bytes"] for e in hub.get_agent_log()),
+            hub.returned_total,
         )
 
     def test_agent_log_keeps_only_fifty_exec_records(self):
@@ -281,7 +375,10 @@ class AgentLogApiTest(unittest.TestCase):
             response = client.get("/api/agent_log")
 
         self.assertEqual(200, response.status_code)
-        self.assertEqual({"ok": True, "entries": hub.get_agent_log()}, response.json())
+        self.assertEqual(
+            {"ok": True, "entries": hub.get_agent_log(), "returned_total": 0},
+            response.json(),
+        )
 
     def test_non_loopback_get_agent_log_is_rejected(self):
         client = TestClient(app_module.app, client=("192.0.2.10", 50000))

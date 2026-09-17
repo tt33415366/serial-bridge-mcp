@@ -19,7 +19,7 @@ from serial_bridge.constants import SESSION_LOG_ROUTE, TAIL_DEFAULT_N, TAIL_MAX_
 from serial_bridge.hub.coalesce import LineCoalescer
 from serial_bridge.hub.mode_transition import ModeTransition
 from serial_bridge.hub.queue import exec_result
-from serial_bridge.hub.trace import AgentTrace
+from serial_bridge.hub.trace import AgentTrace, payload_bytes
 from serial_bridge.hub.transcript import Transcript, compact_tail_line
 
 
@@ -148,6 +148,7 @@ class Hub:
         bytes: int,
         truncated: bool,
         ok: bool,
+        returned_bytes: int = 0,
     ) -> None:
         self._agent_trace.record_end(
             id,
@@ -157,10 +158,37 @@ class Hub:
             bytes,
             truncated,
             ok,
+            returned_bytes,
+        )
+
+    def record_agent_read(
+        self,
+        kind: str,
+        result: dict[str, Any],
+        *,
+        target: str | None = None,
+        **fields: Any,
+    ) -> None:
+        """Trace a Tail or status read served to an Agent (MCP layer calls this).
+
+        Exec and Send are traced inside the Hub because ``who`` identifies the
+        Agent there; status and Tail reads are shared with the Operator UI, so
+        only the MCP tools report them.
+        """
+        self._agent_trace.record_read(
+            kind,
+            target=target,
+            ok=bool(result.get("ok")),
+            returned_bytes=payload_bytes(result),
+            **fields,
         )
 
     def get_agent_log(self) -> list[dict[str, Any]]:
         return self._agent_trace.get_agent_log()
+
+    @property
+    def returned_total(self) -> int:
+        return self._agent_trace.returned_total
 
     def append_log(self, target: str, direction: str, text: str, who: str = "") -> None:
         self._transcript.append_log(target, direction, text, who)
@@ -302,6 +330,24 @@ class Hub:
         cmd: str = "",
         who: str = "user",
         raw_hex: str | None = None,
+    ) -> dict[str, Any]:
+        result = self._send(target, cmd, who, raw_hex)
+        if who == "agent":
+            self._agent_trace.record_read(
+                "send",
+                target=result.get("target") or (target if isinstance(target, str) else None),
+                ok=bool(result["ok"]),
+                returned_bytes=payload_bytes(result),
+                cmd=cmd if raw_hex is None else f"[raw] {raw_hex}",
+            )
+        return result
+
+    def _send(
+        self,
+        target: object,
+        cmd: str,
+        who: str,
+        raw_hex: str | None,
     ) -> dict[str, Any]:
         target_name, error = self.resolve_target(target)
         if error is not None:

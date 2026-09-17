@@ -26,7 +26,10 @@ def _resolve_target(target: object) -> tuple[str | None, str | None]:
 
 async def serial_status() -> dict[str, Any]:
     """Return Hub mode and each Target's Port Binding, open/busy hints, and the current Session Log (`log` filesystem path on the Hub host; relative `log_url` for a Bearer GET of that file from the same origin as /mcp). Empty log/log_url means none assigned. Use serial_tail for a Tail (last N lines). Do not pull the Session Log into serial_exec output."""
-    return await offload(_get_hub().status)
+    hub = _get_hub()
+    result = await offload(hub.status)
+    await offload(hub.record_agent_read, "status", result)
+    return result
 
 
 async def serial_exec(
@@ -89,7 +92,16 @@ async def serial_tail(
     with_timestamps: bool = False,
 ) -> dict[str, Any]:
     """Return a Tail of the current Session Log: last n lines (default 40, max 200) for one Target Name, each reduced to direction (<<< rx, >>> tx) and text; with_timestamps adds HH:MM:SS.mmm. The whole file is log_url from serial_status, not this tool."""
-    return await offload(_get_hub().tail, target, n, with_timestamps)
+    hub = _get_hub()
+    result = await offload(hub.tail, target, n, with_timestamps)
+    await offload(
+        hub.record_agent_read,
+        "tail",
+        result,
+        target=result.get("target") or None,
+        n=result.get("n"),
+    )
+    return result
 
 
 def create_mcp() -> FastMCP:

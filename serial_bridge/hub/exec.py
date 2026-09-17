@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from serial_bridge.hub.queue import ExecRequest, TargetQueue, exec_result
 from serial_bridge.hub.text import strip_ansi
+from serial_bridge.hub.trace import payload_bytes
 
 EXIT_CODE_TOKEN_PREFIX = "SBX_"
 
@@ -449,6 +450,7 @@ class ExecSession:
                 captured_bytes_seen,
                 result.get("truncated", False),
                 result["ok"],
+                payload_bytes(result),
             )
             raise
 
@@ -468,5 +470,6 @@ class ExecSession:
             captured_bytes_seen,
             result.get("truncated", False),
             result["ok"],
+            payload_bytes(result),
         )
         return result

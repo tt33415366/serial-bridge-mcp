@@ -273,7 +273,11 @@ globalThis.fetch = async (url, options) => {{
   if (url === "/api/agent_log") {{
     return {{
       ok: true,
-      json: async () => ({{ ok: true, entries: agentLogEntries }}),
+      json: async () => ({{
+        ok: true,
+        entries: agentLogEntries,
+        returned_total: globalThis.agentLogReturnedTotal || 0,
+      }}),
     }};
   }}
   return {{
@@ -404,6 +408,11 @@ class GroundStationExecUiTest(unittest.TestCase):
     cmd: "cat /proc/meminfo", prompt: null, ts: "10:20:30.000",
   });
   send({
+    type: "trace", kind: "send", id: 18, phase: "end", target: "rtos",
+    cmd: "reboot", ts: "10:20:31.000", ok: true,
+    returned_bytes: 44, returned_total: 44,
+  });
+  send({
     type: "line", target: "rtos", direction: ">>>", who: "agent",
     text: "reboot", ts: "10:20:31.000",
   });
@@ -412,8 +421,13 @@ class GroundStationExecUiTest(unittest.TestCase):
     text: "status", ts: "10:20:32.000",
   });
   send({
+    type: "trace", kind: "tail", id: 19, phase: "end", target: "linux",
+    n: 40, ts: "10:20:33.000", ok: true, returned_bytes: 900, returned_total: 944,
+  });
+  send({
     type: "exec", phase: "end", id: 17, target: "linux",
     ended_by: "abort", ms: 300, bytes: 2048, truncated: true, ok: false,
+    returned_bytes: 1100, returned_total: 2044,
   });
   const body = document.getElementById("spine-body");
   return {
@@ -425,19 +439,29 @@ class GroundStationExecUiTest(unittest.TestCase):
         )
 
         self.assertEqual(
-            ["spine-node send", "spine-node exec sealed aborted capped"],
+            [
+                "spine-node read tail",
+                "spine-node send",
+                "spine-node exec sealed aborted capped",
+            ],
             result["classes"],
         )
-        self.assertIn("reboot", result["texts"][0])
-        self.assertIn("fire-and-forget", result["texts"][0])
-        self.assertIn("cat /proc/meminfo", result["texts"][1])
-        self.assertIn("aborted", result["texts"][1])
-        self.assertIn("300 ms", result["texts"][1])
+        self.assertIn("TAIL · linux", result["texts"][0])
+        self.assertIn("last 40 lines", result["texts"][0])
+        self.assertIn("returned 900 B", result["texts"][0])
+        self.assertIn("reboot", result["texts"][1])
+        self.assertIn("fire-and-forget", result["texts"][1])
+        self.assertIn("cat /proc/meminfo", result["texts"][2])
+        self.assertIn("aborted", result["texts"][2])
+        self.assertIn("300 ms", result["texts"][2])
+        self.assertIn("returned 1.1 KiB", result["texts"][2])
         self.assertIn("exec 1", result["tally"])
         self.assertIn("send 1", result["tally"])
+        self.assertIn("read 1", result["tally"])
         self.assertIn("aborted 1", result["tally"])
         self.assertIn("capped 1", result["tally"])
         self.assertIn("median 300 ms", result["tally"])
+        self.assertIn("returned 2.0 KiB", result["tally"])
 
     def test_hydrate_replaces_spine_and_restores_running_holders(self):
         result = run_ui_scenario(
@@ -456,13 +480,18 @@ class GroundStationExecUiTest(unittest.TestCase):
     id: 9, phase: "end", target: "rtos", cmd: "version", prompt: null,
     ts: "10:00:04.000", ended_by: "idle", ms: 100, bytes: 7,
     truncated: false, ok: true,
+  }, {
+    id: 8, kind: "status", phase: "end", target: null, ts: "10:00:03.500",
+    ok: true, returned_bytes: 300,
   }];
+  agentLogReturnedTotal = 5120;
   await socket.onopen();
   const body = document.getElementById("spine-body");
   return {
     initial,
     reconnectClasses: body.children.map((child) => child.className),
     reconnectText: body.textContent,
+    reconnectTally: document.getElementById("spine-tally").textContent,
     holder0: holder("slot0").textContent,
     holder1: holder("slot1").textContent,
     fetchCount: fetchCalls.filter((url) => url === "/api/agent_log").length,
@@ -499,8 +528,12 @@ class GroundStationExecUiTest(unittest.TestCase):
         )
         self.assertEqual("AGENT EXEC", result["initial"]["holder0"])
         self.assertEqual("IDLE", result["initial"]["holder1"])
-        self.assertEqual(["spine-node exec sealed"], result["reconnectClasses"])
+        self.assertEqual(
+            ["spine-node exec sealed", "spine-node read status"],
+            result["reconnectClasses"],
+        )
         self.assertNotIn("temporary send", result["reconnectText"])
+        self.assertIn("returned 5.0 KiB", result["reconnectTally"])
         self.assertEqual("IDLE", result["holder0"])
         self.assertEqual("IDLE", result["holder1"])
         self.assertGreaterEqual(result["fetchCount"], 2)
@@ -1184,6 +1217,11 @@ class GroundStationExecUiTest(unittest.TestCase):
   linux.scrollTop = 40;
   linux.dispatch("scroll");
   send({
+    type: "trace", kind: "send", id: 3, phase: "end", target: "linux",
+    cmd: "record-once", ts: "10:00:00.001", ok: true,
+    returned_bytes: 48, returned_total: 48,
+  });
+  send({
     type: "line", target: "linux", direction: ">>>", who: "agent",
     text: "record-once", ts: "10:00:00.001",
   });
@@ -1692,8 +1730,9 @@ class GroundStationExecUiTest(unittest.TestCase):
   await nextTurn();
   for (let index = 0; index < 60; index += 1) {
     send({
-      type: "line", target: "rtos", direction: ">>>", who: "agent",
-      text: `send-${index}`, ts: "10:20:31.000",
+      type: "trace", kind: "send", id: index + 1, phase: "end", target: "rtos",
+      cmd: `send-${index}`, ts: "10:20:31.000", ok: true,
+      returned_bytes: 40, returned_total: 40 * (index + 1),
     });
   }
   const body = document.getElementById("spine-body");
@@ -1709,6 +1748,8 @@ class GroundStationExecUiTest(unittest.TestCase):
         self.assertNotIn("send-0", result["text"])
         self.assertIn("send-59", result["text"])
         self.assertIn("send 50", result["tally"])
+        # The total comes from the server, not from the capped client buffer.
+        self.assertIn("returned 2.3 KiB", result["tally"])
 
     def test_status_busy_and_unmatched_end_do_not_invent_capture(self):
         result = run_ui_scenario(
@@ -1949,8 +1990,9 @@ class GroundStationExecUiTest(unittest.TestCase):
             """
   await nextTurn();
   send({
-    type: "line", target: "linux", direction: ">>>", who: "agent",
-    text: "reboot", ts: "10:00:00.000",
+    type: "trace", kind: "send", id: 1, phase: "end", target: "linux",
+    cmd: "reboot", ts: "10:00:00.000", ok: true,
+    returned_bytes: 44, returned_total: 44,
   });
   const sendNode = document.getElementById("spine-body").children[0];
   sendNode.dispatch("click");

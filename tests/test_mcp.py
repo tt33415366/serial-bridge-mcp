@@ -188,7 +188,17 @@ class McpHttpTest(unittest.TestCase):
             {"ok": True, "target": "linux", "tail": "b\nc", "n": 2},
             result,
         )
-        self.assertEqual(("tail", "linux", 2, True, False), fake_hub.calls[-1])
+        self.assertEqual(("tail", "linux", 2, True, False), fake_hub.calls[-2])
+        self.assertEqual(
+            ("trace", "tail", "linux", True, {"n": 2}), fake_hub.calls[-1]
+        )
+
+    def test_serial_status_is_traced_as_an_agent_read(self):
+        fake_hub = FakeHub()
+        with patch.object(app_module, "hub", fake_hub):
+            call_tool(self.client, "serial_status")
+
+        self.assertEqual(("trace", "status", None, None, {}), fake_hub.calls[-1])
 
     def test_serial_tail_compacts_session_log_lines_and_can_add_time(self):
         fake_hub = FakeHub()
@@ -219,7 +229,7 @@ class McpHttpTest(unittest.TestCase):
             "19:56:06.647 <<< a:\\> [CAPP|OK]: view 0",
             timed.json()["result"]["structuredContent"]["tail"],
         )
-        self.assertEqual(("tail", "linux", 40, True, True), fake_hub.calls[-1])
+        self.assertEqual(("tail", "linux", 40, True, True), fake_hub.calls[-2])
 
     def test_serial_tail_defaults_n_and_rejects_out_of_range(self):
         fake_hub = FakeHub()

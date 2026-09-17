@@ -51,6 +51,9 @@ class FakeHub:
             },
         }
 
+    def record_agent_read(self, kind, result, *, target=None, **fields):
+        self.calls.append(("trace", kind, target, result.get("ok"), fields))
+
     def send(self, target, cmd="", who="agent", raw_hex=None):
         self.calls.append((target, cmd, who, raw_hex))
         result = {

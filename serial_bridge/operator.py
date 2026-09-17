@@ -151,7 +151,12 @@ def register_operator_routes(app: FastAPI, static_dir: Path) -> None:
 
     @app.get("/api/agent_log", dependencies=[Depends(_require_operator_access)])
     async def api_agent_log() -> dict[str, Any]:
-        return {"ok": True, "entries": await offload(_get_hub().get_agent_log)}
+        hub = _get_hub()
+        return {
+            "ok": True,
+            "entries": await offload(hub.get_agent_log),
+            "returned_total": await offload(lambda: hub.returned_total),
+        }
 
     @app.post("/api/mode", dependencies=[Depends(_require_operator_access)])
     async def api_mode(body: ModeBody) -> dict[str, Any]:

@@ -4,8 +4,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from serial_bridge.config import APP_DIR, Config
+from serial_bridge.config import Config
 from serial_bridge.hub import ExecEngine, ExecSession, Hub, PortWorker, TargetQueue
+from serial_bridge.hub.trace import payload_bytes
 
 
 class FakeClock:
@@ -103,17 +104,19 @@ class RecordingExecHub:
     def __init__(self):
         self.starts = []
         self.ends = []
+        self.returned = []
 
     def record_exec_start(self, target, cmd, prompt):
         self.starts.append((target, cmd, prompt))
         return 17
 
     def record_exec_end(
-        self, exec_id, target, ended_by, ms, captured_bytes, truncated, ok
+        self, exec_id, target, ended_by, ms, captured_bytes, truncated, ok, returned
     ):
         self.ends.append(
             (exec_id, target, ended_by, ms, captured_bytes, truncated, ok)
         )
+        self.returned.append(returned)
 
 
 class ScriptedExecEngine:
@@ -186,6 +189,8 @@ class ExecSessionTest(unittest.TestCase):
             [(17, "linux", "idle", 1200, 14, False, True)],
             hub.ends,
         )
+        self.assertEqual([payload_bytes(result)], hub.returned)
+        self.assertEqual(len('{"ok": true, "output": "answer\\r\\n"}'), hub.returned[0])
 
     def test_prompt_result_and_supervision_come_from_session(self):
         result, hub = execute_session(

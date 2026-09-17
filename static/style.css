@@ -1003,6 +1003,15 @@ body::after {
   background: linear-gradient(90deg, rgba(169, 139, 255, 0.08), transparent 75%);
 }
 
+.spine-node.read {
+  cursor: default;
+  border-left-color: var(--dim);
+  opacity: 0.85;
+}
+
+.spine-node.send.failed,
+.spine-node.read.failed { border-left-color: var(--alarm); }
+
 .spine-node.exec.aborted { border-left-color: var(--alarm); }
 .spine-node.exec.capped { border-right-color: var(--rtos); }
 
