@@ -45,7 +45,7 @@ async def serial_exec(
     max_lines: int | None = None,
     exit_code: bool = False,
 ) -> dict[str, Any]:
-    """Run one text command through the Hub and capture its serial output."""
+    """Run one text command through the Hub and capture its serial output (Echo and matched prompt removed). Shell Targets: exit_code=true reports the remote exit status. Prompt-first consoles: prompt + prompt_settle_ms. Trim at the source with grep (grep_invert drops matches) and max_lines (keeps the tail)."""
     target_name, error = _resolve_target(target)
     if error is not None:
         if target_name is not None:
