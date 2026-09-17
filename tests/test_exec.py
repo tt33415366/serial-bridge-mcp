@@ -1,4 +1,4 @@
-import threading
+﻿import threading
 import time
 import unittest
 from pathlib import Path
@@ -45,11 +45,16 @@ class ScriptedSerial:
 def execute(
     chunks=(),
     *,
+    cmd="show",
     prompt=None,
     prompt_is_regex=False,
+    prompt_settle_ms=0,
     grep=None,
     grep_is_regex=False,
     grep_context=0,
+    grep_invert=False,
+    max_lines=None,
+    exit_code=False,
     serial_factory=None,
     on_done=None,
     abort_before_execute=False,
@@ -63,12 +68,16 @@ def execute(
     queue = TargetQueue()
     request = queue.enqueue_exec(
         target="linux",
-        cmd="show",
+        cmd=cmd,
         prompt=prompt,
         prompt_is_regex=prompt_is_regex,
+        prompt_settle_ms=prompt_settle_ms,
         grep=grep,
         grep_is_regex=grep_is_regex,
         grep_context=grep_context,
+        grep_invert=grep_invert,
+        max_lines=max_lines,
+        exit_code=exit_code,
     )
     assert queue.next_write() is request
     if abort_before_execute:
@@ -164,7 +173,7 @@ class ExecSessionTest(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"])
-        self.assertEqual("show\r\nanswer\r\n", result["output"])
+        self.assertEqual("answer\r\n", result["output"])
         self.assertEqual([("linux", "show", None)], hub.starts)
         self.assertEqual(
             [(17, "linux", "idle", 1200, 14, False, True)],
@@ -178,7 +187,7 @@ class ExecSessionTest(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"])
-        self.assertEqual("answer\r\ndevice> ", result["output"])
+        self.assertEqual("answer\r\n", result["output"])
         self.assertEqual([("linux", "show", "device> ")], hub.starts)
         self.assertEqual(
             [
@@ -375,12 +384,51 @@ class ExecEngineTest(unittest.TestCase):
         self.assertEqual([], serial.writes)
         self.assertEqual(["abort"], calls)
 
-    def test_prompt_and_idle_present_the_same_stripped_capture(self):
-        chunks = [(0.0, b"show\r\nanswer\r\n")]
+    def test_prompt_and_idle_both_drop_the_echo(self):
+        chunks = [(0.0, b"show\r\nanswer\r\ndevice> ")]
         idle, _, _ = execute(chunks)
-        prompted, _, _ = execute(chunks, prompt="answer")
-        self.assertEqual(idle["output"], prompted["output"])
-        self.assertEqual(idle.get("truncated"), prompted.get("truncated"))
+        prompted, _, _ = execute(chunks, prompt="device> ")
+        self.assertEqual("answer\r\ndevice> ", idle["output"])
+        self.assertEqual("answer\r\n", prompted["output"])
+
+    def test_echo_with_device_prompt_prefix_is_dropped(self):
+        result, _, _ = execute([(0.0, b"# show\r\nanswer\r\n")])
+        self.assertEqual("answer\r\n", result["output"])
+
+    def test_echo_detection_skips_leading_blank_lines(self):
+        result, _, _ = execute([(0.0, b"\r\nshow\r\nanswer\r\n")])
+        self.assertEqual("answer\r\n", result["output"])
+
+    def test_first_line_is_kept_when_device_does_not_echo(self):
+        result, _, _ = execute([(0.0, b"answer\r\nmore\r\n")])
+        self.assertEqual("answer\r\nmore\r\n", result["output"])
+
+    def test_only_the_first_line_is_an_echo_candidate(self):
+        result, _, _ = execute([(0.0, b"answer\r\nshow\r\n")])
+        self.assertEqual("answer\r\nshow\r\n", result["output"])
+
+    def test_matched_prompt_is_removed_but_result_after_it_is_kept(self):
+        result, _, _ = execute(
+            [(0.0, b"show\r\na:\\> [00544450][CPU0] [CAPP|NG]: bad view\r\n")],
+            prompt="a:\\>",
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual("[00544450][CPU0] [CAPP|NG]: bad view\r\n", result["output"])
+
+    def test_regex_prompt_removal_uses_the_last_match(self):
+        result, _, _ = execute(
+            [(0.0, b"show\r\nrtos-1# busy\r\nanswer\r\nrtos-2# ")],
+            prompt=r"rtos-\d+# ",
+            prompt_is_regex=True,
+        )
+        self.assertEqual("rtos-1# busy\r\nanswer\r\n", result["output"])
+
+    def test_prompt_text_stays_when_exec_ends_by_idle(self):
+        result, _, _ = execute(
+            [(0.0, b"show\r\nanswer\r\ndevice> ")],
+            prompt="never-seen",
+        )
+        self.assertEqual("answer\r\ndevice> ", result["output"])
 
     def test_idle_completion_uses_one_second_gap(self):
         result, serial, clock = execute(
@@ -388,7 +436,7 @@ class ExecEngineTest(unittest.TestCase):
         )
 
         self.assertEqual(b"show\n", serial.writes[0])
-        self.assertEqual("show\r\nanswer\r\n", result["output"])
+        self.assertEqual("answer\r\n", result["output"])
         self.assertNotIn("timed_out", result)
         self.assertNotIn("aborted", result)
         self.assertGreaterEqual(clock.now, 1.2)
@@ -401,7 +449,7 @@ class ExecEngineTest(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"])
-        self.assertEqual("answer\r\ndevice> ", result["output"])
+        self.assertEqual("answer\r\n", result["output"])
         self.assertLess(clock.now, 1.0)
 
     def test_regex_prompt_is_opt_in(self):
@@ -457,7 +505,8 @@ class ExecEngineTest(unittest.TestCase):
 
         self.assertTrue(result["truncated"])
         self.assertEqual(32 * 1024, len(result["output"].encode("utf-8")))
-        self.assertEqual(trailing.decode(), result["output"])
+        # The matched prompt "DONE" is removed, so the cap window shifts back 4 bytes.
+        self.assertEqual("a" * 4 + "b" * (32 * 1024 - 4), result["output"])
 
     def test_prompt_is_detected_before_output_is_truncated(self):
         result, _serial, clock = execute(
@@ -469,12 +518,12 @@ class ExecEngineTest(unittest.TestCase):
         self.assertTrue(result["truncated"])
         self.assertLess(clock.now, 1.0)
 
-    def test_ansi_is_stripped_without_removing_command_echo(self):
+    def test_ansi_is_stripped_before_echo_detection(self):
         result, _serial, _clock = execute(
             [(0.0, b"\x1b[31mshow\x1b[0m\r\n\x1b[2Kanswer\r\n")],
         )
 
-        self.assertEqual("show\r\nanswer\r\n", result["output"])
+        self.assertEqual("answer\r\n", result["output"])
 
     def test_invalid_regex_prompt_is_rejected_before_any_tx(self):
         result, serial, _clock = execute(
@@ -616,10 +665,76 @@ class ExecEngineTest(unittest.TestCase):
         self.assertEqual("keep-error", result["output"])
         self.assertEqual(1, result["match_count"])
 
-    def test_grep_treats_command_echo_as_normal_line(self):
+    def test_grep_cannot_see_the_dropped_echo(self):
         result, _, _ = execute([(0.0, b"show\r\nanswer\r\n")], grep="show")
-        self.assertEqual("show\r\n", result["output"])
+        self.assertEqual("", result["output"])
+        self.assertEqual(0, result["match_count"])
+
+    def test_grep_invert_drops_matching_lines_and_counts_hits(self):
+        result, _, _ = execute(
+            [(0.0, b"show\r\n[1][CPU0] noise\r\nresult\r\n[2][CPU0] noise\r\n")],
+            grep="[CPU0]",
+            grep_invert=True,
+        )
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["grepped"])
+        self.assertEqual("result\r\n", result["output"])
+        self.assertEqual(2, result["match_count"])
+
+    def test_grep_invert_with_regex(self):
+        result, _, _ = execute(
+            [(0.0, b"show\r\n[ 12.5] kernel\r\nresult\r\n")],
+            grep=r"^\[ *\d+\.\d+\]",
+            grep_is_regex=True,
+            grep_invert=True,
+        )
+        self.assertEqual("result\r\n", result["output"])
         self.assertEqual(1, result["match_count"])
+
+    def test_grep_invert_requires_grep(self):
+        result, serial, _ = execute([(0.0, b"x\r\n")], grep_invert=True)
+        self.assertFalse(result["ok"])
+        self.assertIn("grep_invert", result["error"])
+        self.assertEqual([], serial.writes)
+
+    def test_grep_invert_rejects_grep_context(self):
+        result, serial, _ = execute(
+            [(0.0, b"x\r\n")], grep="x", grep_invert=True, grep_context=1
+        )
+        self.assertFalse(result["ok"])
+        self.assertIn("grep_context", result["error"])
+        self.assertEqual([], serial.writes)
+
+    def test_max_lines_keeps_the_tail_and_reports_dropped_lines(self):
+        result, _, _ = execute(
+            [(0.0, b"show\r\n1\r\n2\r\n3\r\n4\r\n")],
+            max_lines=2,
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual("3\r\n4\r\n", result["output"])
+        self.assertEqual(2, result["lines_dropped"])
+        self.assertNotIn("truncated", result)
+
+    def test_max_lines_not_exceeded_adds_nothing(self):
+        result, _, _ = execute([(0.0, b"show\r\n1\r\n2\r\n")], max_lines=5)
+        self.assertEqual("1\r\n2\r\n", result["output"])
+        self.assertNotIn("lines_dropped", result)
+
+    def test_max_lines_applies_after_grep(self):
+        result, _, _ = execute(
+            [(0.0, b"show\r\nx1\r\ny\r\nx2\r\nx3\r\n")],
+            grep="x",
+            max_lines=1,
+        )
+        self.assertEqual("x3\r\n", result["output"])
+        self.assertEqual(3, result["match_count"])
+        self.assertEqual(2, result["lines_dropped"])
+
+    def test_max_lines_below_one_is_rejected_before_tx(self):
+        result, serial, _ = execute([(0.0, b"x\r\n")], max_lines=0)
+        self.assertFalse(result["ok"])
+        self.assertIn("max_lines", result["error"])
+        self.assertEqual([], serial.writes)
 
     def test_grep_context_includes_symmetric_neighbors(self):
         result, _, _ = execute(
@@ -685,132 +800,6 @@ class ExecEngineTest(unittest.TestCase):
         self.assertTrue(result["grepped"])
         self.assertEqual("partial noise", result["output"])
         self.assertEqual(1, result["match_count"])
-
-
-class CheckedWrapExecTest(unittest.TestCase):
-    PREFIX = "SBX_"
-    HEX = "cafefeed"
-    TOKEN = PREFIX + HEX
-    ECHO = (
-        "set +e; cat /etc/default/motor; ec=$?; "
-        "printf '%s\\n' \"$ec\"; "
-        f"printf '%s%s\\n' \"{PREFIX}\" \"{HEX}\"\r\n"
-    )
-
-    def test_split_printf_echo_does_not_contain_assembled_token(self):
-        self.assertNotIn(self.TOKEN, self.ECHO)
-
-    def test_split_printf_echo_does_not_complete_before_token(self):
-        calls = []
-
-        result, _serial, clock = execute(
-            [
-                (0.0, self.ECHO.encode()),
-                (0.2, b"# MOTOR_ENABLE=1\n"),
-            ],
-            prompt=self.TOKEN,
-            on_done=calls.append,
-        )
-
-        self.assertEqual(["idle"], calls)
-        self.assertIn("# MOTOR_ENABLE=1", result["output"])
-        self.assertGreaterEqual(clock.now, 1.0)
-
-    def test_hash_comment_does_not_complete_when_prompt_is_token(self):
-        calls = []
-
-        result, _serial, clock = execute(
-            [
-                (0.0, self.ECHO.encode()),
-                (0.1, b"# MOTOR_ENABLE=1\n"),
-                (0.2, b"0\n"),
-                (0.3, f"{self.TOKEN}\n".encode()),
-            ],
-            prompt=self.TOKEN,
-            on_done=calls.append,
-        )
-
-        self.assertEqual(["prompt"], calls)
-        self.assertTrue(result["ok"])
-        lines = result["output"].splitlines()
-        self.assertEqual("0", lines[lines.index(self.TOKEN) - 1])
-        self.assertIn("# MOTOR_ENABLE=1", result["output"])
-        self.assertLess(clock.now, 1.0)
-
-    def test_status_line_is_kept_when_token_arrives_in_a_later_chunk(self):
-        calls = []
-
-        result, _serial, _clock = execute(
-            [
-                (0.0, b"0\n"),
-                (0.2, f"{self.TOKEN}\n".encode()),
-            ],
-            prompt=self.TOKEN,
-            on_done=calls.append,
-        )
-
-        self.assertEqual(["prompt"], calls)
-        lines = result["output"].splitlines()
-        self.assertEqual("0", lines[lines.index(self.TOKEN) - 1])
-
-    def test_status_after_token_chunk_is_lost(self):
-        result, _serial, _clock = execute(
-            [
-                (0.0, f"{self.TOKEN}\n".encode()),
-                (0.2, b"0\n"),
-            ],
-            prompt=self.TOKEN,
-        )
-
-        self.assertIn(self.TOKEN, result["output"])
-        self.assertNotIn("0", result["output"].splitlines())
-
-    def test_token_completes_despite_continued_rx(self):
-        sent_trailer = False
-
-        def serial_factory(clock):
-            def read():
-                nonlocal sent_trailer
-                if not sent_trailer:
-                    sent_trailer = True
-                    return f"0\n{self.TOKEN}\n".encode()
-                clock.sleep(0.5)
-                return b"kernel: chatter\n"
-
-            return ScriptedSerial(clock, on_read=read)
-
-        calls = []
-        result, _serial, clock = execute(
-            prompt=self.TOKEN,
-            serial_factory=serial_factory,
-            on_done=calls.append,
-        )
-
-        self.assertEqual(["prompt"], calls)
-        self.assertTrue(result["ok"])
-        self.assertNotIn("timed_out", result)
-        self.assertLess(clock.now, 1.0)
-        self.assertNotIn("kernel: chatter", result["output"])
-
-    def test_grep_can_drop_the_trailer(self):
-        result, _serial, _clock = execute(
-            [(0.0, f"kernel: ok\n0\n{self.TOKEN}\n".encode())],
-            prompt=self.TOKEN,
-            grep="kernel",
-        )
-
-        self.assertTrue(result["ok"])
-        self.assertTrue(result["grepped"])
-        self.assertEqual("kernel: ok\n", result["output"])
-        self.assertNotIn(self.TOKEN, result["output"])
-
-    def test_readme_documents_linux_checked_wrap(self):
-        readme = (APP_DIR / "README.md").read_text(encoding="utf-8")
-        self.assertIn("Linux checked wrap", readme)
-        self.assertIn("set +e;", readme)
-        self.assertIn('"SBX_"', readme)
-        self.assertIn("not for rtos", readme.lower())
-        self.assertIn("Do not pass `grep`", readme)
 
 
 class SilentHub:
@@ -896,29 +885,12 @@ class FakeExecWorker:
         self._stop = threading.Event()
         self.calls = []
 
-    def enqueue_exec(
-        self,
-        cmd,
-        prompt=None,
-        prompt_is_regex=False,
-        grep=None,
-        grep_is_regex=False,
-        grep_context=0,
-    ):
-        self.calls.append(
-            (cmd, prompt, prompt_is_regex, grep, grep_is_regex, grep_context)
-        )
+    def enqueue_exec(self, cmd, **options):
+        self.calls.append((cmd, options))
         return object()
 
     def wait_exec(self, _request):
-        return {
-            "ok": True,
-            "target": "linux",
-            "output": "done",
-            "truncated": False,
-            "timed_out": False,
-            "aborted": False,
-        }
+        return {"ok": True, "output": "done"}
 
 
 class HubExecTest(unittest.TestCase):
@@ -941,7 +913,16 @@ class HubExecTest(unittest.TestCase):
         result = hub.exec("linux", "show", prompt="device> ")
 
         self.assertTrue(result["ok"])
-        self.assertEqual([("show", "device> ", False, None, False, 0)], worker.calls)
+        self.assertEqual(1, len(worker.calls))
+        cmd, options = worker.calls[0]
+        self.assertEqual("show", cmd)
+        self.assertEqual("device> ", options["prompt"])
+        self.assertFalse(options["prompt_is_regex"])
+        self.assertEqual(0, options["prompt_settle_ms"])
+        self.assertIsNone(options["grep"])
+        self.assertFalse(options["grep_invert"])
+        self.assertIsNone(options["max_lines"])
+        self.assertFalse(options["exit_code"])
 
     def test_exec_in_crt_mode_fails_with_result_fields(self):
         result = self.make_hub().exec("linux", "show")

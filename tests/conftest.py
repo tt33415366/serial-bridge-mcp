@@ -63,27 +63,9 @@ class FakeHub:
             result["raw_hex"] = raw_hex
         return result
 
-    def exec(
-        self,
-        target,
-        cmd,
-        prompt=None,
-        prompt_is_regex=False,
-        grep=None,
-        grep_is_regex=False,
-        grep_context=0,
-    ):
-        self.calls.append(
-            (target, cmd, prompt, prompt_is_regex, grep, grep_is_regex, grep_context)
-        )
-        return {
-            "ok": True,
-            "target": target,
-            "output": "Linux\n",
-            "truncated": False,
-            "timed_out": False,
-            "aborted": False,
-        }
+    def exec(self, target, cmd, **options):
+        self.calls.append((target, cmd, options))
+        return {"ok": True, "output": "Linux\n"}
 
     def start_bridge(self):
         self.calls.append(("mode", "bridge"))
@@ -163,24 +145,7 @@ class BlockingExecHub(FakeHub):
         self.exec_started = threading.Event()
         self.release_exec = threading.Event()
 
-    def exec(
-        self,
-        target,
-        cmd,
-        prompt=None,
-        prompt_is_regex=False,
-        grep=None,
-        grep_is_regex=False,
-        grep_context=0,
-    ):
+    def exec(self, target, cmd, **options):
         self.exec_started.set()
         self.release_exec.wait(10)
-        return super().exec(
-            target,
-            cmd,
-            prompt,
-            prompt_is_regex,
-            grep,
-            grep_is_regex,
-            grep_context,
-        )
+        return super().exec(target, cmd, **options)

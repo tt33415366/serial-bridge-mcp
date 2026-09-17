@@ -67,43 +67,12 @@ class PortWorker:
     def is_busy(self) -> bool:
         return self._tx.is_busy
 
-    def exec(
-        self,
-        cmd: str,
-        prompt: str | None = None,
-        prompt_is_regex: bool = False,
-        grep: str | None = None,
-        grep_is_regex: bool = False,
-        grep_context: int = 0,
-    ) -> dict[str, Any]:
-        request = self.enqueue_exec(
-            cmd,
-            prompt=prompt,
-            prompt_is_regex=prompt_is_regex,
-            grep=grep,
-            grep_is_regex=grep_is_regex,
-            grep_context=grep_context,
-        )
-        return self.wait_exec(request)
+    def exec(self, cmd: str, **options: Any) -> dict[str, Any]:
+        """Run one Exec; ``options`` are the ExecRequest option fields."""
+        return self.wait_exec(self.enqueue_exec(cmd, **options))
 
-    def enqueue_exec(
-        self,
-        cmd: str,
-        prompt: str | None = None,
-        prompt_is_regex: bool = False,
-        grep: str | None = None,
-        grep_is_regex: bool = False,
-        grep_context: int = 0,
-    ) -> ExecRequest:
-        return self._tx.enqueue_exec(
-            self.name,
-            cmd,
-            prompt=prompt,
-            prompt_is_regex=prompt_is_regex,
-            grep=grep,
-            grep_is_regex=grep_is_regex,
-            grep_context=grep_context,
-        )
+    def enqueue_exec(self, cmd: str, **options: Any) -> ExecRequest:
+        return self._tx.enqueue_exec(self.name, cmd, **options)
 
     def wait_exec(self, request: ExecRequest) -> dict[str, Any]:
         wait_seconds = ExecEngine.TOTAL_SECONDS + ExecEngine.IDLE_SECONDS + 1.0

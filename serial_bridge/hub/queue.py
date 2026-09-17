@@ -20,9 +20,13 @@ class ExecRequest(WriteRequest):
     target: str = ""
     prompt: str | None = None
     prompt_is_regex: bool = False
+    prompt_settle_ms: int = 0
     grep: str | None = None
     grep_is_regex: bool = False
     grep_context: int = 0
+    grep_invert: bool = False
+    max_lines: int | None = None
+    exit_code: bool = False
     done: threading.Event = field(default_factory=threading.Event)
     started: threading.Event = field(default_factory=threading.Event)
     result: dict[str, Any] | None = None
@@ -43,6 +47,7 @@ def exec_result(
     error: str | None = None,
     grepped: bool | None = None,
     match_count: int | None = None,
+    lines_dropped: int | None = None,
 ) -> dict[str, Any]:
     """Build the compact Exec envelope: flags appear only when true.
 
@@ -62,6 +67,8 @@ def exec_result(
         result["grepped"] = grepped
     if match_count is not None:
         result["match_count"] = match_count
+    if lines_dropped is not None:
+        result["lines_dropped"] = lines_dropped
     return result
 
 
@@ -85,9 +92,13 @@ class TargetQueue:
         cmd: str,
         prompt: str | None = None,
         prompt_is_regex: bool = False,
+        prompt_settle_ms: int = 0,
         grep: str | None = None,
         grep_is_regex: bool = False,
         grep_context: int = 0,
+        grep_invert: bool = False,
+        max_lines: int | None = None,
+        exit_code: bool = False,
     ) -> ExecRequest:
         request = ExecRequest(
             cmd=cmd,
@@ -95,9 +106,13 @@ class TargetQueue:
             target=target,
             prompt=prompt,
             prompt_is_regex=prompt_is_regex,
+            prompt_settle_ms=prompt_settle_ms,
             grep=grep,
             grep_is_regex=grep_is_regex,
             grep_context=grep_context,
+            grep_invert=grep_invert,
+            max_lines=max_lines,
+            exit_code=exit_code,
         )
         with self._lock:
             self._agent.append(request)

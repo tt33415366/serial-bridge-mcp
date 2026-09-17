@@ -254,21 +254,11 @@ class McpHttpTest(unittest.TestCase):
             )
 
         result = response.json()["result"]["structuredContent"]
-        self.assertEqual(
-            {
-                "ok": True,
-                "target": "linux",
-                "output": "Linux\n",
-                "truncated": False,
-                "timed_out": False,
-                "aborted": False,
-            },
-            result,
-        )
-        self.assertEqual(
-            [("linux", "uname -a", r"\$ $", True, None, False, 0)],
-            fake_hub.calls,
-        )
+        self.assertEqual({"ok": True, "output": "Linux\n"}, result)
+        target, cmd, options = fake_hub.calls[0]
+        self.assertEqual(("linux", "uname -a"), (target, cmd))
+        self.assertEqual(r"\$ $", options["prompt"])
+        self.assertTrue(options["prompt_is_regex"])
 
     def test_serial_exec_passes_grep_to_hub(self):
         fake_hub = FakeHub()
@@ -285,10 +275,10 @@ class McpHttpTest(unittest.TestCase):
 
         self.assertEqual(200, response.status_code)
         self.assertTrue(response.json()["result"]["structuredContent"]["ok"])
-        self.assertEqual(
-            [("linux", "dmesg", None, False, "error", False, 0)],
-            fake_hub.calls,
-        )
+        target, cmd, options = fake_hub.calls[0]
+        self.assertEqual(("linux", "dmesg"), (target, cmd))
+        self.assertEqual("error", options["grep"])
+        self.assertFalse(options["grep_is_regex"])
 
     def test_serial_exec_in_crt_mode_requires_bridge_mode(self):
         config = Config(
@@ -385,8 +375,48 @@ class McpHttpTest(unittest.TestCase):
 
         result = response.json()["result"]["structuredContent"]
         self.assertTrue(result["ok"])
-        self.assertEqual("linux", result["target"])
-        self.assertEqual([("linux", "uname -a", None, False, None, False, 0)], fake_hub.calls)
+        self.assertEqual(1, len(fake_hub.calls))
+        target, cmd, options = fake_hub.calls[0]
+        self.assertEqual(("linux", "uname -a"), (target, cmd))
+        self.assertEqual(
+            {
+                "prompt": None,
+                "prompt_is_regex": False,
+                "prompt_settle_ms": 0,
+                "grep": None,
+                "grep_is_regex": False,
+                "grep_context": 0,
+                "grep_invert": False,
+                "max_lines": None,
+                "exit_code": False,
+            },
+            options,
+        )
+
+    def test_mcp_serial_exec_passes_output_shaping_options_through(self):
+        fake_hub = FakeHub()
+        with patch.object(app_module, "hub", fake_hub):
+            response = call_tool(
+                self.client,
+                "serial_exec",
+                {
+                    "target": "rtos",
+                    "cmd": "svc_app get_flicker all",
+                    "prompt": "a:\\>",
+                    "prompt_settle_ms": 300,
+                    "grep": "[CPU0]",
+                    "grep_invert": True,
+                    "max_lines": 20,
+                    "exit_code": True,
+                },
+            )
+
+        self.assertTrue(response.json()["result"]["structuredContent"]["ok"])
+        _target, _cmd, options = fake_hub.calls[0]
+        self.assertEqual(300, options["prompt_settle_ms"])
+        self.assertTrue(options["grep_invert"])
+        self.assertEqual(20, options["max_lines"])
+        self.assertTrue(options["exit_code"])
 
     def test_mcp_serial_send_normalizes_mixed_case_target_name(self):
         fake_hub = FakeHub()

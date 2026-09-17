@@ -41,6 +41,47 @@ class ExecEngine:
             trailing = trailing[1:]
         return trailing.decode("utf-8", errors="replace"), True
 
+    @staticmethod
+    def _remove_prompt(
+        text: str,
+        prompt: str,
+        prompt_regex: re.Pattern[str] | None,
+    ) -> str:
+        """Remove the last prompt match; drop its line if nothing else is on it."""
+        if prompt_regex is not None:
+            matches = list(prompt_regex.finditer(text))
+            if not matches:
+                return text
+            start, end = matches[-1].span()
+        else:
+            start = text.rfind(prompt)
+            if start < 0:
+                return text
+            end = start + len(prompt)
+        line_start = text.rfind("\n", 0, start) + 1
+        newline = text.find("\n", end)
+        line_end = len(text) if newline < 0 else newline + 1
+        rest = text[line_start:start] + text[end:line_end]
+        if not rest.strip():
+            rest = ""
+        elif start == line_start:
+            rest = rest.lstrip(" \t")
+        return text[:line_start] + rest + text[line_end:]
+
+    @staticmethod
+    def _drop_echo(lines: list[str], cmd: str) -> list[str]:
+        """Drop the first non-blank line when the device echoed the command."""
+        cmd = cmd.strip()
+        if not cmd:
+            return lines
+        for index, line in enumerate(lines):
+            if not line.strip():
+                continue
+            if line.rstrip().endswith(cmd):
+                return lines[index + 1 :]
+            break
+        return lines
+
     @classmethod
     def _select_grep_lines(
         cls,
@@ -58,7 +99,10 @@ class ExecEngine:
                 index for index, line in enumerate(lines) if request.grep in line
             ]
         match_count = len(hit_indices)
-        if request.grep_context > 0:
+        if request.grep_invert:
+            hits = set(hit_indices)
+            selected = [line for index, line in enumerate(lines) if index not in hits]
+        elif request.grep_context > 0:
             last = len(lines) - 1
             included: set[int] = set()
             for index in hit_indices:
@@ -77,17 +121,23 @@ class ExecEngine:
         request: ExecRequest,
         *,
         grep_regex: re.Pattern[str] | None = None,
+        prompt_regex: re.Pattern[str] | None = None,
+        prompt_matched: bool = False,
     ) -> tuple[str, bool, dict[str, Any]]:
         extras: dict[str, Any] = {}
+        if prompt_matched and request.prompt is not None:
+            text = cls._remove_prompt(text, request.prompt, prompt_regex)
+        lines = cls._drop_echo(text.splitlines(keepends=True), request.cmd)
         if request.grep is not None:
-            lines = text.splitlines(keepends=True)
-            selected, match_count = cls._select_grep_lines(
+            lines, match_count = cls._select_grep_lines(
                 lines, request, grep_regex=grep_regex
             )
-            text = "".join(selected)
             extras["grepped"] = True
             extras["match_count"] = match_count
-        output, truncated = cls._cap_output(text)
+        if request.max_lines is not None and len(lines) > request.max_lines:
+            extras["lines_dropped"] = len(lines) - request.max_lines
+            lines = lines[-request.max_lines :]
+        output, truncated = cls._cap_output("".join(lines))
         return output, truncated, extras
 
     def _result_from_capture(
@@ -100,9 +150,15 @@ class ExecEngine:
         aborted: bool = False,
         error: str | None = None,
         grep_regex: re.Pattern[str] | None = None,
+        prompt_regex: re.Pattern[str] | None = None,
+        prompt_matched: bool = False,
     ) -> dict[str, Any]:
         output, truncated, extras = self._present_output(
-            self._strip_output(captured), request, grep_regex=grep_regex
+            self._strip_output(captured),
+            request,
+            grep_regex=grep_regex,
+            prompt_regex=prompt_regex,
+            prompt_matched=prompt_matched,
         )
         return exec_result(
             request.target,
@@ -112,9 +168,39 @@ class ExecEngine:
             timed_out=timed_out,
             aborted=aborted,
             error=error,
-            grepped=extras.get("grepped"),
-            match_count=extras.get("match_count"),
+            **extras,
         )
+
+    @staticmethod
+    def _validate(
+        request: ExecRequest,
+    ) -> tuple[re.Pattern[str] | None, re.Pattern[str] | None, str | None]:
+        """Compile regexes and check option combinations before any TX."""
+        prompt_regex = grep_regex = None
+        if request.prompt is not None and request.prompt_is_regex:
+            try:
+                prompt_regex = re.compile(request.prompt)
+            except re.error as exc:
+                return None, None, f"prompt is not a valid regex: {exc}"
+        if request.grep is not None and request.grep_is_regex:
+            try:
+                grep_regex = re.compile(request.grep)
+            except re.error as exc:
+                return None, None, f"grep is not a valid regex: {exc}"
+        if request.grep is not None and request.grep == "":
+            return None, None, "grep must not be empty"
+        if request.grep_context < 0:
+            return None, None, "grep_context must not be negative"
+        if request.grep is None:
+            if request.grep_context > 0:
+                return None, None, "grep_context requires grep"
+            if request.grep_invert:
+                return None, None, "grep_invert requires grep"
+        if request.grep_invert and request.grep_context > 0:
+            return None, None, "grep_invert cannot be combined with grep_context"
+        if request.max_lines is not None and request.max_lines < 1:
+            return None, None, "max_lines must be at least 1"
+        return prompt_regex, grep_regex, None
 
     @staticmethod
     def _finish(
@@ -139,67 +225,12 @@ class ExecEngine:
         on_done: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
         captured = bytearray()
-        prompt_regex = None
-        if request.prompt is not None and request.prompt_is_regex:
-            try:
-                prompt_regex = re.compile(request.prompt)
-            except re.error as exc:
-                return self._finish(
-                    on_done,
-                    "error",
-                    exec_result(
-                        request.target,
-                        ok=False,
-                        error=f"prompt is not a valid regex: {exc}",
-                    ),
-                )
-
-        grep_regex = None
-        if request.grep is not None and request.grep_is_regex:
-            try:
-                grep_regex = re.compile(request.grep)
-            except re.error as exc:
-                return self._finish(
-                    on_done,
-                    "error",
-                    exec_result(
-                        request.target,
-                        ok=False,
-                        error=f"grep is not a valid regex: {exc}",
-                    ),
-                )
-
-        if request.grep is not None and request.grep == "":
+        prompt_regex, grep_regex, error = self._validate(request)
+        if error is not None:
             return self._finish(
                 on_done,
                 "error",
-                exec_result(
-                    request.target,
-                    ok=False,
-                    error="grep must not be empty",
-                ),
-            )
-
-        if request.grep_context < 0:
-            return self._finish(
-                on_done,
-                "error",
-                exec_result(
-                    request.target,
-                    ok=False,
-                    error="grep_context must not be negative",
-                ),
-            )
-
-        if request.grep_context > 0 and request.grep is None:
-            return self._finish(
-                on_done,
-                "error",
-                exec_result(
-                    request.target,
-                    ok=False,
-                    error="grep_context requires grep",
-                ),
+                exec_result(request.target, ok=False, error=error),
             )
 
         raw_command = request.cmd.encode("utf-8", errors="replace") + line_ending
@@ -272,6 +303,8 @@ class ExecEngine:
                                 captured,
                                 ok=True,
                                 grep_regex=grep_regex,
+                                prompt_regex=prompt_regex,
+                                prompt_matched=True,
                             ),
                         )
 
