@@ -36,6 +36,12 @@ class GracefulShutdownTimeoutTest(unittest.TestCase):
 
         self.assertLessEqual(timeout, 10)
 
+    def test_accept_uses_selector_loop(self):
+        """Proactor AcceptEx treats a client RST as fatal and closes :8765 (CPython gh-93821)."""
+        loop = self._run_main().kwargs.get("loop")
+
+        self.assertEqual("asyncio:SelectorEventLoop", loop)
+
 
 if __name__ == "__main__":
     unittest.main()

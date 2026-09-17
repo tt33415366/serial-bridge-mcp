@@ -112,6 +112,9 @@ def main(argv: list[str] | None = None) -> None:
         port=HUB_PORT,
         log_level="info",
         timeout_graceful_shutdown=SHUTDOWN_GRACE_SECONDS,
+        # Windows Proactor AcceptEx treats a client RST as fatal and closes the
+        # listener (CPython gh-93821 / WinError 64). Selector keeps :8765 up.
+        loop="asyncio:SelectorEventLoop",
     )
 
 
