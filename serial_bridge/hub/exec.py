@@ -356,7 +356,7 @@ class ExecSession:
                 ended_by,
                 int((self._clock() - started) * 1000),
                 captured_bytes_seen,
-                result["truncated"],
+                result.get("truncated", False),
                 result["ok"],
             )
             raise
@@ -375,7 +375,7 @@ class ExecSession:
             ended_by,
             int((self._clock() - started) * 1000),
             captured_bytes_seen,
-            result["truncated"],
+            result.get("truncated", False),
             result["ok"],
         )
         return result

@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from serial_bridge.config import Config
+from serial_bridge.config import APP_DIR, Config
 from serial_bridge.hub import ExecEngine, ExecSession, Hub, PortWorker, TargetQueue
 
 
@@ -380,7 +380,7 @@ class ExecEngineTest(unittest.TestCase):
         idle, _, _ = execute(chunks)
         prompted, _, _ = execute(chunks, prompt="answer")
         self.assertEqual(idle["output"], prompted["output"])
-        self.assertEqual(idle["truncated"], prompted["truncated"])
+        self.assertEqual(idle.get("truncated"), prompted.get("truncated"))
 
     def test_idle_completion_uses_one_second_gap(self):
         result, serial, clock = execute(
@@ -389,8 +389,8 @@ class ExecEngineTest(unittest.TestCase):
 
         self.assertEqual(b"show\n", serial.writes[0])
         self.assertEqual("show\r\nanswer\r\n", result["output"])
-        self.assertFalse(result["timed_out"])
-        self.assertFalse(result["aborted"])
+        self.assertNotIn("timed_out", result)
+        self.assertNotIn("aborted", result)
         self.assertGreaterEqual(clock.now, 1.2)
         self.assertLess(clock.now, 1.31)
 
@@ -529,7 +529,7 @@ class ExecEngineTest(unittest.TestCase):
         self.assertTrue(result["grepped"])
         self.assertEqual(2, result["match_count"])
         self.assertEqual("error 1\r\nerror 2\r\n", result["output"])
-        self.assertFalse(result["truncated"])
+        self.assertNotIn("truncated", result)
         self.assertTrue(serial.writes)
 
     def test_literal_grep_is_case_sensitive(self):
@@ -579,12 +579,9 @@ class ExecEngineTest(unittest.TestCase):
         self.assertEqual(0, result["match_count"])
         self.assertTrue(result["grepped"])
 
-    def test_omitting_grep_keeps_today_result_keys(self):
+    def test_plain_success_result_has_only_ok_and_output(self):
         result, _, _ = execute([(0.0, b"show\r\n")])
-        self.assertEqual(
-            {"ok", "target", "output", "truncated", "timed_out", "aborted"},
-            set(result),
-        )
+        self.assertEqual({"ok", "output"}, set(result))
 
     def test_grep_runs_on_timeout_capture(self):
         def serial_factory(clock):
@@ -688,6 +685,132 @@ class ExecEngineTest(unittest.TestCase):
         self.assertTrue(result["grepped"])
         self.assertEqual("partial noise", result["output"])
         self.assertEqual(1, result["match_count"])
+
+
+class CheckedWrapExecTest(unittest.TestCase):
+    PREFIX = "SBX_"
+    HEX = "cafefeed"
+    TOKEN = PREFIX + HEX
+    ECHO = (
+        "set +e; cat /etc/default/motor; ec=$?; "
+        "printf '%s\\n' \"$ec\"; "
+        f"printf '%s%s\\n' \"{PREFIX}\" \"{HEX}\"\r\n"
+    )
+
+    def test_split_printf_echo_does_not_contain_assembled_token(self):
+        self.assertNotIn(self.TOKEN, self.ECHO)
+
+    def test_split_printf_echo_does_not_complete_before_token(self):
+        calls = []
+
+        result, _serial, clock = execute(
+            [
+                (0.0, self.ECHO.encode()),
+                (0.2, b"# MOTOR_ENABLE=1\n"),
+            ],
+            prompt=self.TOKEN,
+            on_done=calls.append,
+        )
+
+        self.assertEqual(["idle"], calls)
+        self.assertIn("# MOTOR_ENABLE=1", result["output"])
+        self.assertGreaterEqual(clock.now, 1.0)
+
+    def test_hash_comment_does_not_complete_when_prompt_is_token(self):
+        calls = []
+
+        result, _serial, clock = execute(
+            [
+                (0.0, self.ECHO.encode()),
+                (0.1, b"# MOTOR_ENABLE=1\n"),
+                (0.2, b"0\n"),
+                (0.3, f"{self.TOKEN}\n".encode()),
+            ],
+            prompt=self.TOKEN,
+            on_done=calls.append,
+        )
+
+        self.assertEqual(["prompt"], calls)
+        self.assertTrue(result["ok"])
+        lines = result["output"].splitlines()
+        self.assertEqual("0", lines[lines.index(self.TOKEN) - 1])
+        self.assertIn("# MOTOR_ENABLE=1", result["output"])
+        self.assertLess(clock.now, 1.0)
+
+    def test_status_line_is_kept_when_token_arrives_in_a_later_chunk(self):
+        calls = []
+
+        result, _serial, _clock = execute(
+            [
+                (0.0, b"0\n"),
+                (0.2, f"{self.TOKEN}\n".encode()),
+            ],
+            prompt=self.TOKEN,
+            on_done=calls.append,
+        )
+
+        self.assertEqual(["prompt"], calls)
+        lines = result["output"].splitlines()
+        self.assertEqual("0", lines[lines.index(self.TOKEN) - 1])
+
+    def test_status_after_token_chunk_is_lost(self):
+        result, _serial, _clock = execute(
+            [
+                (0.0, f"{self.TOKEN}\n".encode()),
+                (0.2, b"0\n"),
+            ],
+            prompt=self.TOKEN,
+        )
+
+        self.assertIn(self.TOKEN, result["output"])
+        self.assertNotIn("0", result["output"].splitlines())
+
+    def test_token_completes_despite_continued_rx(self):
+        sent_trailer = False
+
+        def serial_factory(clock):
+            def read():
+                nonlocal sent_trailer
+                if not sent_trailer:
+                    sent_trailer = True
+                    return f"0\n{self.TOKEN}\n".encode()
+                clock.sleep(0.5)
+                return b"kernel: chatter\n"
+
+            return ScriptedSerial(clock, on_read=read)
+
+        calls = []
+        result, _serial, clock = execute(
+            prompt=self.TOKEN,
+            serial_factory=serial_factory,
+            on_done=calls.append,
+        )
+
+        self.assertEqual(["prompt"], calls)
+        self.assertTrue(result["ok"])
+        self.assertNotIn("timed_out", result)
+        self.assertLess(clock.now, 1.0)
+        self.assertNotIn("kernel: chatter", result["output"])
+
+    def test_grep_can_drop_the_trailer(self):
+        result, _serial, _clock = execute(
+            [(0.0, f"kernel: ok\n0\n{self.TOKEN}\n".encode())],
+            prompt=self.TOKEN,
+            grep="kernel",
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["grepped"])
+        self.assertEqual("kernel: ok\n", result["output"])
+        self.assertNotIn(self.TOKEN, result["output"])
+
+    def test_readme_documents_linux_checked_wrap(self):
+        readme = (APP_DIR / "README.md").read_text(encoding="utf-8")
+        self.assertIn("Linux checked wrap", readme)
+        self.assertIn("set +e;", readme)
+        self.assertIn('"SBX_"', readme)
+        self.assertIn("not for rtos", readme.lower())
+        self.assertIn("Do not pass `grep`", readme)
 
 
 class SilentHub:
@@ -826,11 +949,7 @@ class HubExecTest(unittest.TestCase):
         self.assertEqual(
             {
                 "ok": False,
-                "target": "linux",
                 "output": "",
-                "truncated": False,
-                "timed_out": False,
-                "aborted": False,
                 "error": "CRT Mode is active; switch to Bridge Mode before Exec",
             },
             result,

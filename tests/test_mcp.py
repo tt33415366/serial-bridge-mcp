@@ -308,8 +308,9 @@ class McpHttpTest(unittest.TestCase):
 
         result = response.json()["result"]["structuredContent"]
         self.assertFalse(result["ok"])
-        self.assertFalse(result["timed_out"])
-        self.assertFalse(result["aborted"])
+        self.assertNotIn("timed_out", result)
+        self.assertNotIn("aborted", result)
+        self.assertNotIn("target", result)
         self.assertIn("Bridge Mode", result["error"])
 
     def test_serial_send_delegates_text_line_without_waiting_for_output(self):

@@ -64,8 +64,20 @@ _Avoid_: AI, bot, Cursor (product-specific)
 One Agent request that sends a command to a Target and returns the captured device output until completion (idle gap and/or optional prompt).
 _Avoid_: run, shell (implies a local OS shell), send (see Send)
 
+**Echo**:
+The device's own repetition of the command text at the start of an Exec capture, with or without a leading device prompt. The Hub drops it from Exec output; the Session Log keeps it.
+_Avoid_: header line, first line (positional, not a concept), command line (ambiguous with the command itself)
+
+**Settle Window**:
+An optional quiet period after an Exec's prompt matches: capture continues until no device output arrives for that long, so results a device prints after its prompt are still included. Zero means the prompt match ends the Exec at once.
+_Avoid_: grace period (vague), post-prompt idle (conflates with the idle gap that ends an unprompted Exec), delay (implies waiting before sending)
+
+**Exit Code Probe**:
+An opt-in Exec on a shell Target where the Hub wraps the command so the device prints its exit status behind a one-time token, then removes that trailer from the output and reports the exit code separately. A null exit code means the trailer never arrived; the Exec itself still completes by idle.
+_Avoid_: checked wrap (the retired Agent-side recipe), status line (ambiguous with serial_status), return code (fine in shell docs, but the API field is exit code)
+
 **Grep**:
-An optional post-capture narrowing on one Exec: after capture completes, retain only lines matching a pattern (literal substring by default, or a regular expression when opted in), plus any requested neighboring lines around each match. The Agent receives that subset as output, not the full capture.
+An optional post-capture narrowing on one Exec: after capture completes, retain only lines matching a pattern (literal substring by default, or a regular expression when opted in), plus any requested neighboring lines around each match; or, when inverted, drop the matching lines and retain the rest. The Agent receives that subset as output, not the full capture.
 _Avoid_: filter (vague), search (vague), Tail (the last-N Session Log snapshot), keyword (the contract is one pattern, like prompt)
 
 **Send**:
@@ -73,8 +85,8 @@ One Agent request that writes a command to a Target and returns immediately with
 _Avoid_: fire-and-forget (jargon), exec (implies waiting)
 
 **Agent Trace**:
-The Operator-facing list, in the Bridge console, of this Hub session’s Agent Exec and Send activity used for at-a-glance supervision.
-_Avoid_: spine (layout jargon), activity feed, agent history (sounds durable across Hub restarts)
+The Operator-facing list, in the Bridge console, of this Hub session’s Agent activity — Exec, Send, Tail, and status reads — with the bytes each returned to the Agent and the session’s running total, used for at-a-glance supervision.
+_Avoid_: spine (layout jargon), activity feed, agent history (sounds durable across Hub restarts), exec log (Tail and status reads belong too)
 
 **Trace Jump**:
 The Operator action of selecting an Agent Trace Exec entry to scroll to and briefly highlight that Exec’s capture in the Target’s live transcript. The pane materializes the capture if needed; the jump succeeds while at least one of its lines remains retained, and misses only after all capture lines leave retention (or none existed).

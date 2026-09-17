@@ -44,14 +44,18 @@ def exec_result(
     grepped: bool | None = None,
     match_count: int | None = None,
 ) -> dict[str, Any]:
-    result: dict[str, Any] = {
-        "ok": ok,
-        "target": target,
-        "output": output,
-        "truncated": truncated,
-        "timed_out": timed_out,
-        "aborted": aborted,
-    }
+    """Build the compact Exec envelope: flags appear only when true.
+
+    ``target`` is accepted for call-site symmetry but not echoed back; the
+    caller already knows which Target it addressed.
+    """
+    result: dict[str, Any] = {"ok": ok, "output": output}
+    if truncated:
+        result["truncated"] = True
+    if timed_out:
+        result["timed_out"] = True
+    if aborted:
+        result["aborted"] = True
     if error is not None:
         result["error"] = error
     if grepped is not None:
