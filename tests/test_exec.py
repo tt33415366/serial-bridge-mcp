@@ -82,7 +82,11 @@ def execute(
     assert queue.next_write() is request
     if abort_before_execute:
         queue.abort_agents()
-    result = ExecEngine(clock=clock.monotonic, sleep=clock.sleep).execute(
+    result = ExecEngine(
+        clock=clock.monotonic,
+        sleep=clock.sleep,
+        token_factory=lambda: TOKEN,
+    ).execute(
         serial,
         queue,
         request,
@@ -90,6 +94,9 @@ def execute(
         on_done=on_done,
     )
     return result, serial, clock
+
+
+TOKEN = "SBX_cafefeed"
 
 
 class RecordingExecHub:
@@ -881,6 +888,131 @@ class ExecEngineTest(unittest.TestCase):
         self.assertTrue(result["grepped"])
         self.assertEqual("partial noise", result["output"])
         self.assertEqual(1, result["match_count"])
+
+
+class ExitCodeProbeTest(unittest.TestCase):
+    WIRE = "cat /etc/default/motor; printf '%s\\n' \"$?\"; printf '%s%s\\n' \"SBX_\" \"cafefeed\""
+
+    def test_wire_command_wraps_user_cmd_and_splits_the_token(self):
+        result, serial, _ = execute(
+            [(0.0, f"{self.WIRE}\r\nMOTOR=1\r\n0\r\n{TOKEN}\r\n".encode())],
+            cmd="cat /etc/default/motor",
+            exit_code=True,
+        )
+        self.assertEqual([(self.WIRE + "\n").encode()], serial.writes)
+        self.assertNotIn(TOKEN, self.WIRE)
+        self.assertTrue(result["ok"])
+
+    def test_exit_code_is_reported_and_trailer_is_removed(self):
+        calls = []
+        result, _, clock = execute(
+            [
+                (0.0, f"# {self.WIRE}\r\n".encode()),
+                (0.1, b"# MOTOR_ENABLE=1\r\n"),
+                (0.2, f"2\r\n{TOKEN}\r\n".encode()),
+            ],
+            cmd="cat /etc/default/motor",
+            exit_code=True,
+            on_done=calls.append,
+        )
+        self.assertEqual(["prompt"], calls)
+        self.assertEqual({"ok": True, "output": "# MOTOR_ENABLE=1\r\n", "exit_code": 2}, result)
+        self.assertLess(clock.now, 1.0)
+
+    def test_status_line_is_kept_when_token_arrives_in_a_later_chunk(self):
+        result, _, _ = execute(
+            [(0.0, b"0\r\n"), (0.2, f"{TOKEN}\r\n".encode())],
+            cmd="true",
+            exit_code=True,
+        )
+        self.assertEqual(0, result["exit_code"])
+        self.assertEqual("", result["output"])
+
+    def test_missing_trailer_falls_back_to_idle_with_null_exit_code(self):
+        calls = []
+        result, _, _ = execute(
+            [(0.0, b"svc_app: unknown command\r\na:\\> ")],
+            cmd="svc_app x",
+            exit_code=True,
+            on_done=calls.append,
+        )
+        self.assertEqual(["idle"], calls)
+        self.assertTrue(result["ok"])
+        self.assertIsNone(result["exit_code"])
+        self.assertIn("exit_code", result)
+        self.assertEqual("svc_app: unknown command\r\na:\\> ", result["output"])
+
+    def test_token_without_numeric_status_line_yields_null(self):
+        result, _, _ = execute(
+            [(0.0, f"garbled\r\n{TOKEN}\r\n".encode())],
+            cmd="true",
+            exit_code=True,
+        )
+        self.assertIsNone(result["exit_code"])
+        self.assertEqual("garbled\r\n", result["output"])
+
+    def test_exit_code_with_grep_keeps_the_code(self):
+        result, _, _ = execute(
+            [(0.0, f"kernel: ok\r\nnoise\r\n0\r\n{TOKEN}\r\n".encode())],
+            cmd="dmesg",
+            exit_code=True,
+            grep="kernel",
+        )
+        self.assertEqual("kernel: ok\r\n", result["output"])
+        self.assertEqual(0, result["exit_code"])
+        self.assertEqual(1, result["match_count"])
+
+    def test_exit_code_completes_despite_continued_rx(self):
+        sent_trailer = False
+
+        def serial_factory(clock):
+            def read():
+                nonlocal sent_trailer
+                if not sent_trailer:
+                    sent_trailer = True
+                    return f"0\n{TOKEN}\n".encode()
+                clock.sleep(0.5)
+                return b"kernel: chatter\n"
+
+            return ScriptedSerial(clock, on_read=read)
+
+        result, _, clock = execute(
+            cmd="true", exit_code=True, serial_factory=serial_factory
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(0, result["exit_code"])
+        self.assertLess(clock.now, 1.0)
+
+    def test_exit_code_with_prompt_is_rejected_before_tx(self):
+        result, serial, _ = execute(
+            [(0.0, b"x\r\n")], cmd="true", exit_code=True, prompt="# "
+        )
+        self.assertFalse(result["ok"])
+        self.assertIn("exit_code", result["error"])
+        self.assertEqual([], serial.writes)
+
+    def test_trailing_semicolon_in_cmd_does_not_break_the_wrap(self):
+        _, serial, _ = execute([(0.0, b"")], cmd="ls;", exit_code=True)
+        self.assertTrue(serial.writes[0].startswith(b"ls; printf"))
+
+    def test_on_tx_receives_the_wire_command(self):
+        clock = FakeClock()
+        queue = TargetQueue()
+        request = queue.enqueue_exec("linux", "true", exit_code=True)
+        self.assertIs(request, queue.next_write())
+        sent = []
+        ExecEngine(
+            clock=clock.monotonic, sleep=clock.sleep, token_factory=lambda: TOKEN
+        ).execute(
+            ScriptedSerial(clock, [(0.0, f"0\n{TOKEN}\n".encode())]),
+            queue,
+            request,
+            b"\n",
+            on_tx=sent.append,
+        )
+        self.assertEqual(1, len(sent))
+        self.assertTrue(sent[0].startswith("true; printf"))
+        self.assertIn('"SBX_" "cafefeed"', sent[0])
 
 
 class SilentHub:

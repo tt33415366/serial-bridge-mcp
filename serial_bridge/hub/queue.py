@@ -47,12 +47,14 @@ def exec_result(
     error: str | None = None,
     grepped: bool | None = None,
     match_count: int | None = None,
-    lines_dropped: int | None = None,
+    **extras: Any,
 ) -> dict[str, Any]:
     """Build the compact Exec envelope: flags appear only when true.
 
     ``target`` is accepted for call-site symmetry but not echoed back; the
-    caller already knows which Target it addressed.
+    caller already knows which Target it addressed. ``extras`` are presentation
+    fields (``lines_dropped``, ``exit_code``) copied verbatim, so an explicit
+    ``exit_code=None`` is reported as null rather than omitted.
     """
     result: dict[str, Any] = {"ok": ok, "output": output}
     if truncated:
@@ -67,8 +69,7 @@ def exec_result(
         result["grepped"] = grepped
     if match_count is not None:
         result["match_count"] = match_count
-    if lines_dropped is not None:
-        result["lines_dropped"] = lines_dropped
+    result.update(extras)
     return result
 
 

@@ -2,11 +2,19 @@
 from __future__ import annotations
 
 import re
+import secrets
 import time
+from functools import partial
 from typing import Any, Callable
 
 from serial_bridge.hub.queue import ExecRequest, TargetQueue, exec_result
 from serial_bridge.hub.text import strip_ansi
+
+EXIT_CODE_TOKEN_PREFIX = "SBX_"
+
+
+def _new_exit_code_token() -> str:
+    return EXIT_CODE_TOKEN_PREFIX + secrets.token_hex(4)
 
 
 class ExecEngine:
@@ -19,13 +27,46 @@ class ExecEngine:
         self,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
+        token_factory: Callable[[], str] = _new_exit_code_token,
     ) -> None:
         self._clock = clock
         self._sleep = sleep
+        self._token_factory = token_factory
 
     @property
     def clock(self) -> Callable[[], float]:
         return self._clock
+
+    @staticmethod
+    def _wrap_exit_code(cmd: str, token: str) -> str:
+        """Exit Code Probe: make a POSIX shell print ``$?`` and then the token.
+
+        The token is split across two printf arguments so the console Echo of
+        this line never contains the assembled token.
+        """
+        head, hex_part = token[: len(EXIT_CODE_TOKEN_PREFIX)], token[len(EXIT_CODE_TOKEN_PREFIX) :]
+        return (
+            f"{cmd.rstrip().rstrip(';')}; printf '%s\\n' \"$?\"; "
+            f"printf '%s%s\\n' \"{head}\" \"{hex_part}\""
+        )
+
+    @staticmethod
+    def _extract_exit_code(
+        lines: list[str], token: str
+    ) -> tuple[list[str], int | None]:
+        """Remove the token line and the status line before it; return the code."""
+        for index in range(len(lines) - 1, -1, -1):
+            if lines[index].strip() != token:
+                continue
+            code: int | None = None
+            remove_from = index
+            if index > 0:
+                status = lines[index - 1].strip()
+                if status.isdigit():
+                    code = int(status)
+                    remove_from = index - 1
+            return lines[:remove_from] + lines[index + 1 :], code
+        return lines, None
 
     @classmethod
     def _strip_output(cls, captured: bytearray) -> str:
@@ -123,11 +164,17 @@ class ExecEngine:
         grep_regex: re.Pattern[str] | None = None,
         prompt_regex: re.Pattern[str] | None = None,
         prompt_matched: bool = False,
+        sent_cmd: str | None = None,
+        exit_token: str | None = None,
     ) -> tuple[str, bool, dict[str, Any]]:
         extras: dict[str, Any] = {}
         if prompt_matched and request.prompt is not None:
             text = cls._remove_prompt(text, request.prompt, prompt_regex)
-        lines = cls._drop_echo(text.splitlines(keepends=True), request.cmd)
+        lines = cls._drop_echo(
+            text.splitlines(keepends=True), sent_cmd or request.cmd
+        )
+        if exit_token is not None:
+            lines, extras["exit_code"] = cls._extract_exit_code(lines, exit_token)
         if request.grep is not None:
             lines, match_count = cls._select_grep_lines(
                 lines, request, grep_regex=grep_regex
@@ -152,6 +199,8 @@ class ExecEngine:
         grep_regex: re.Pattern[str] | None = None,
         prompt_regex: re.Pattern[str] | None = None,
         prompt_matched: bool = False,
+        sent_cmd: str | None = None,
+        exit_token: str | None = None,
     ) -> dict[str, Any]:
         output, truncated, extras = self._present_output(
             self._strip_output(captured),
@@ -159,6 +208,8 @@ class ExecEngine:
             grep_regex=grep_regex,
             prompt_regex=prompt_regex,
             prompt_matched=prompt_matched,
+            sent_cmd=sent_cmd,
+            exit_token=exit_token,
         )
         return exec_result(
             request.target,
@@ -210,6 +261,8 @@ class ExecEngine:
             )
         if request.prompt_settle_ms > 0 and request.prompt is None:
             return None, None, "prompt_settle_ms requires prompt"
+        if request.exit_code and request.prompt is not None:
+            return None, None, "exit_code cannot be combined with prompt"
         return prompt_regex, grep_regex, None
 
     @staticmethod
@@ -229,11 +282,16 @@ class ExecEngine:
         request: ExecRequest,
         line_ending: bytes,
         *,
-        on_tx: Callable[[], None] | None = None,
+        on_tx: Callable[[str], None] | None = None,
         on_rx: Callable[[bytes], None] | None = None,
         service_operator: Callable[[], None] | None = None,
         on_done: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
+        """Send the command and capture until prompt, idle, timeout, or abort.
+
+        ``on_tx`` receives the text actually written (the wrapped command for
+        an Exit Code Probe) so the Session Log records what the device saw.
+        """
         captured = bytearray()
         prompt_regex, grep_regex, error = self._validate(request)
         if error is not None:
@@ -243,7 +301,25 @@ class ExecEngine:
                 exec_result(request.target, ok=False, error=error),
             )
 
-        raw_command = request.cmd.encode("utf-8", errors="replace") + line_ending
+        # Exit Code Probe: the token doubles as an internal literal prompt.
+        exit_token = self._token_factory() if request.exit_code else None
+        sent_cmd = (
+            self._wrap_exit_code(request.cmd, exit_token)
+            if exit_token is not None
+            else request.cmd
+        )
+        effective_prompt = exit_token if exit_token is not None else request.prompt
+        present = partial(
+            self._result_from_capture,
+            request,
+            captured,
+            grep_regex=grep_regex,
+            prompt_regex=prompt_regex,
+            sent_cmd=sent_cmd,
+            exit_token=exit_token,
+        )
+
+        raw_command = sent_cmd.encode("utf-8", errors="replace") + line_ending
         wrote = queue.write_if_allowed(request, lambda: serial_port.write(raw_command))
         if not wrote:
             return self._finish(
@@ -253,7 +329,7 @@ class ExecEngine:
             )
         serial_port.flush()
         if on_tx is not None:
-            on_tx()
+            on_tx(sent_cmd)
 
         started = self._clock()
         last_rx = started
@@ -263,15 +339,7 @@ class ExecEngine:
         while True:
             if request.aborted.is_set():
                 return self._finish(
-                    on_done,
-                    "abort",
-                    self._result_from_capture(
-                        request,
-                        captured,
-                        ok=False,
-                        aborted=True,
-                        grep_regex=grep_regex,
-                    ),
+                    on_done, "abort", present(ok=False, aborted=True)
                 )
 
             if service_operator is not None:
@@ -287,23 +355,15 @@ class ExecEngine:
             now = self._clock()
             if now - started >= self.TOTAL_SECONDS:
                 return self._finish(
-                    on_done,
-                    "timeout",
-                    self._result_from_capture(
-                        request,
-                        captured,
-                        ok=False,
-                        timed_out=True,
-                        grep_regex=grep_regex,
-                    ),
+                    on_done, "timeout", present(ok=False, timed_out=True)
                 )
 
-            if chunk and request.prompt is not None and not prompt_matched:
+            if chunk and effective_prompt is not None and not prompt_matched:
                 full_output = self._strip_output(captured)
                 prompt_matched = (
                     prompt_regex.search(full_output) is not None
                     if prompt_regex is not None
-                    else request.prompt in full_output
+                    else effective_prompt in full_output
                 )
 
             # Settle Window: after the prompt, keep capturing until the device
@@ -312,29 +372,11 @@ class ExecEngine:
                 settle_seconds <= 0 or now - last_rx >= settle_seconds
             ):
                 return self._finish(
-                    on_done,
-                    "prompt",
-                    self._result_from_capture(
-                        request,
-                        captured,
-                        ok=True,
-                        grep_regex=grep_regex,
-                        prompt_regex=prompt_regex,
-                        prompt_matched=True,
-                    ),
+                    on_done, "prompt", present(ok=True, prompt_matched=True)
                 )
 
             if now - last_rx >= self.IDLE_SECONDS:
-                return self._finish(
-                    on_done,
-                    "idle",
-                    self._result_from_capture(
-                        request,
-                        captured,
-                        ok=True,
-                        grep_regex=grep_regex,
-                    ),
-                )
+                return self._finish(on_done, "idle", present(ok=True))
             if not chunk:
                 self._sleep(self.POLL_SECONDS)
 
@@ -358,7 +400,7 @@ class ExecSession:
         request: ExecRequest,
         line_ending: bytes,
         *,
-        on_tx: Callable[[], None] | None = None,
+        on_tx: Callable[[str], None] | None = None,
         on_rx: Callable[[bytes], None] | None = None,
         service_operator: Callable[[], None] | None = None,
     ) -> dict[str, Any]:

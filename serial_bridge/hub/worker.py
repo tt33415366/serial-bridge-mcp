@@ -156,10 +156,10 @@ class PortWorker:
                                     self._tx,
                                     request,
                                     self.line_ending,
-                                    on_tx=lambda: self.hub.append_log(
+                                    on_tx=lambda sent: self.hub.append_log(
                                         self.name,
                                         ">>>",
-                                        request.cmd,
+                                        sent,
                                         who=request.who,
                                     ),
                                     on_rx=self._log_rx_chunk,
