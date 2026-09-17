@@ -4,6 +4,10 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
+from serial_bridge.constants import TAIL_DEFAULT_N
+from serial_bridge.hub.queue import ExecSpec, exec_result
+from serial_bridge.hub.transcript import tail_response
+
 
 class FakeHub:
     def __init__(self):
@@ -55,10 +59,13 @@ class FakeHub:
         self.calls.append(("trace", kind, target, result.get("ok"), fields))
 
     def send(self, target, cmd="", who="agent", raw_hex=None):
-        self.calls.append((target, cmd, who, raw_hex))
+        target_name, error = self.resolve_target(target)
+        if error is not None:
+            return {"ok": False, "error": error}
+        self.calls.append((target_name, cmd, who, raw_hex))
         result = {
             "ok": True,
-            "target": target,
+            "target": target_name,
             "cmd": cmd,
             "who": who,
         }
@@ -66,8 +73,13 @@ class FakeHub:
             result["raw_hex"] = raw_hex
         return result
 
-    def exec(self, target, cmd, **options):
-        self.calls.append((target, cmd, options))
+    def exec(self, spec: ExecSpec):
+        target_name, error = self.resolve_target(spec.target)
+        if error is not None:
+            if target_name is not None:
+                return exec_result(target_name, ok=False, error=error)
+            return exec_result("", ok=False, error=error)
+        self.calls.append((target_name, spec.cmd, spec.as_exec_options()))
         return {"ok": True, "output": "Linux\n"}
 
     def start_bridge(self):
@@ -94,54 +106,19 @@ class FakeHub:
                 out[key] = ""
         return out
 
-    def tail(self, target, n=40, with_timestamps=False):
-        from serial_bridge.constants import TAIL_DEFAULT_N, TAIL_MAX_N
-        from serial_bridge.hub.transcript import compact_tail_line
-
-        target_name, error = self.resolve_target(target)
-        resolved = target_name or ""
-        if not isinstance(n, int) or isinstance(n, bool) or n < 1 or n > TAIL_MAX_N:
-            echoed = n if isinstance(n, int) and not isinstance(n, bool) else TAIL_DEFAULT_N
-            result = {
-                "ok": False,
-                "target": resolved,
-                "tail": "",
-                "n": echoed,
-                "error": f"n must be an integer from 1 to {TAIL_MAX_N}",
-            }
-            self.calls.append(("tail", target, n, result["ok"]))
-            return result
-        if error is not None:
-            result = {
-                "ok": False,
-                "target": resolved,
-                "tail": "",
-                "n": n,
-                "error": error,
-            }
-            self.calls.append(("tail", target, n, result["ok"]))
-            return result
-        log_path = self.ports[target_name].get("log")
-        if not log_path or not Path(log_path).is_file():
-            result = {
-                "ok": False,
-                "target": target_name,
-                "tail": "",
-                "n": n,
-                "error": "no current Session Log",
-            }
-            self.calls.append(("tail", target, n, result["ok"]))
-            return result
-        lines = Path(log_path).read_text(encoding="utf-8", errors="replace").splitlines()
-        result = {
-            "ok": True,
-            "target": target_name,
-            "tail": "\n".join(
-                compact_tail_line(line, with_timestamps) for line in lines[-n:]
-            ),
-            "n": n,
-        }
-        self.calls.append(("tail", target, n, result["ok"], with_timestamps))
+    def tail(self, target, n=TAIL_DEFAULT_N, with_timestamps=False):
+        result = tail_response(
+            target,
+            n,
+            with_timestamps,
+            resolve=self.resolve_target,
+            session_log=lambda name: self.ports[name].get("log"),
+            read_tail=lambda name, count: self.get_tail(target=name, n=count)[name],
+        )
+        recorded = ("tail", target, n, result["ok"])
+        if result.get("ok"):
+            recorded += (with_timestamps,)
+        self.calls.append(recorded)
         return result
 
 
@@ -151,7 +128,7 @@ class BlockingExecHub(FakeHub):
         self.exec_started = threading.Event()
         self.release_exec = threading.Event()
 
-    def exec(self, target, cmd, **options):
+    def exec(self, spec: ExecSpec):
         self.exec_started.set()
         self.release_exec.wait(10)
-        return super().exec(target, cmd, **options)
+        return super().exec(spec)

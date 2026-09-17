@@ -27,7 +27,7 @@ SHUTDOWN_GRACE_SECONDS = 3
 _open_ui_on_startup = False
 
 hub = Hub()
-mcp = create_mcp()
+mcp = create_mcp(lambda: hub)
 
 
 def resolve_open_ui(
@@ -84,7 +84,7 @@ async def _lifespan(_: FastAPI):
 app = FastAPI(title="Serial Console", lifespan=_lifespan)
 app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 register_setup_routes(app, STATIC)
-register_operator_routes(app, STATIC)
+register_operator_routes(app, STATIC, lambda: hub)
 
 mount_mcp(app, mcp)
 

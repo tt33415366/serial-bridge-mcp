@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -19,33 +20,23 @@ from serial_bridge.auth import (
     origin_allowed,
 )
 from serial_bridge.constants import SESSION_LOG_ROUTE
-from serial_bridge.hub import available_ports
+from serial_bridge.hub import Hub, available_ports
 from serial_bridge.offload import offload
 
 
-def _get_hub():
-    from serial_bridge import app as app_module
-
-    return app_module.hub
-
-
-def _resolve_target(target: object) -> tuple[str | None, str | None]:
-    return _get_hub().resolve_target(target)
+_get_hub: Callable[[], Hub]
 
 
 def _send(target: object, cmd: str, who: str) -> dict[str, Any]:
-    target_name, error = _resolve_target(target)
-    if error is not None:
-        return {"ok": False, "error": error}
-    assert target_name is not None
-    return _get_hub().send(target_name, cmd, who=who)
+    return _get_hub().send(target, cmd, who=who)
 
 
 def _assigned_session_log(target: object) -> Path:
-    target_name, error = _resolve_target(target)
+    hub = _get_hub()
+    target_name, error = hub.resolve_target(target)
     if error is not None:
         raise HTTPException(status_code=400, detail=error)
-    path = _get_hub().ports[target_name].get("log")
+    path = hub.ports[target_name].get("log")
     if not path or not Path(path).is_file():
         raise HTTPException(status_code=404, detail="no current Session Log")
     return Path(path)
@@ -136,7 +127,12 @@ async def ws_endpoint(ws: WebSocket) -> None:
         hub.clients.discard(ws)
 
 
-def register_operator_routes(app: FastAPI, static_dir: Path) -> None:
+def register_operator_routes(
+    app: FastAPI, static_dir: Path, get_hub: Callable[[], Hub]
+) -> None:
+    global _get_hub
+    _get_hub = get_hub
+
     @app.get("/")
     async def index() -> FileResponse:
         return FileResponse(static_dir / "index.html")

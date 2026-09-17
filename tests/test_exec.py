@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from serial_bridge.config import Config
 from serial_bridge.hub import ExecEngine, ExecSession, Hub, PortWorker, TargetQueue
+from serial_bridge.hub.queue import ExecSpec
 from serial_bridge.hub.trace import payload_bytes
 
 
@@ -1128,7 +1129,7 @@ class HubExecTest(unittest.TestCase):
         hub.mode = "bridge"
         hub.workers["linux"] = worker
 
-        result = hub.exec("linux", "show", prompt="device> ")
+        result = hub.exec(ExecSpec(target="linux", cmd="show", prompt="device> "))
 
         self.assertTrue(result["ok"])
         self.assertEqual(1, len(worker.calls))
@@ -1143,7 +1144,7 @@ class HubExecTest(unittest.TestCase):
         self.assertFalse(options["exit_code"])
 
     def test_exec_in_crt_mode_fails_with_result_fields(self):
-        result = self.make_hub().exec("linux", "show")
+        result = self.make_hub().exec(ExecSpec(target="linux", cmd="show"))
 
         self.assertEqual(
             {
@@ -1172,7 +1173,7 @@ class HubExecTest(unittest.TestCase):
         worker._tx.enqueue_exec = pausing_enqueue
         result = {}
         exec_thread = threading.Thread(
-            target=lambda: result.update(hub.exec("linux", "show")),
+            target=lambda: result.update(hub.exec(ExecSpec(target="linux", cmd="show"))),
             daemon=True,
         )
         stop_thread = threading.Thread(target=hub.stop_bridge)

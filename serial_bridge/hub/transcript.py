@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from serial_bridge.constants import TAIL_DEFAULT_N, TAIL_MAX_N
 from serial_bridge.hub.text import sanitize_display, strip_ansi, ts
 
 # "2026-09-16 19:56:06.647 <<< [RTOS] (agent) text" as written by append_log.
@@ -30,6 +31,56 @@ def compact_tail_line(line: str, with_timestamps: bool = False) -> str:
     if with_timestamps:
         compact = f"{match.group('time')} {compact}"
     return compact
+
+
+def tail_response(
+    target: object,
+    n: int = TAIL_DEFAULT_N,
+    with_timestamps: bool = False,
+    *,
+    resolve: Callable[[object], tuple[str | None, str | None]],
+    session_log: Callable[[str], Any],
+    read_tail: Callable[[str, int], str],
+) -> dict[str, Any]:
+    """Build a Tail envelope: validate n, resolve the Target, compact lines."""
+    target_name, error = resolve(target)
+    resolved = target_name or ""
+    if not isinstance(n, int) or isinstance(n, bool) or n < 1 or n > TAIL_MAX_N:
+        echoed = n if isinstance(n, int) and not isinstance(n, bool) else TAIL_DEFAULT_N
+        return {
+            "ok": False,
+            "target": resolved,
+            "tail": "",
+            "n": echoed,
+            "error": f"n must be an integer from 1 to {TAIL_MAX_N}",
+        }
+    if error is not None:
+        return {
+            "ok": False,
+            "target": resolved,
+            "tail": "",
+            "n": n,
+            "error": error,
+        }
+    assert target_name is not None
+    path = session_log(target_name)
+    if not path or not Path(path).is_file():
+        return {
+            "ok": False,
+            "target": target_name,
+            "tail": "",
+            "n": n,
+            "error": "no current Session Log",
+        }
+    raw = read_tail(target_name, n)
+    return {
+        "ok": True,
+        "target": target_name,
+        "tail": "\n".join(
+            compact_tail_line(line, with_timestamps) for line in raw.split("\n")
+        ),
+        "n": n,
+    }
 
 
 class Transcript:

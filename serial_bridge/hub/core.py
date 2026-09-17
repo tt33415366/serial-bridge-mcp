@@ -15,12 +15,12 @@ from serial_bridge.config import (
     persist_slots,
     unused_default_slot,
 )
-from serial_bridge.constants import SESSION_LOG_ROUTE, TAIL_DEFAULT_N, TAIL_MAX_N
+from serial_bridge.constants import SESSION_LOG_ROUTE, TAIL_DEFAULT_N
 from serial_bridge.hub.coalesce import LineCoalescer
 from serial_bridge.hub.mode_transition import ModeTransition
-from serial_bridge.hub.queue import exec_result
+from serial_bridge.hub.queue import ExecSpec, exec_result
 from serial_bridge.hub.trace import AgentTrace, payload_bytes
-from serial_bridge.hub.transcript import Transcript, compact_tail_line
+from serial_bridge.hub.transcript import Transcript, tail_response
 
 
 class Hub:
@@ -231,43 +231,14 @@ class Hub:
         n: int = TAIL_DEFAULT_N,
         with_timestamps: bool = False,
     ) -> dict[str, Any]:
-        target_name, error = self.resolve_target(target)
-        resolved = target_name or ""
-        if not isinstance(n, int) or isinstance(n, bool) or n < 1 or n > TAIL_MAX_N:
-            echoed = n if isinstance(n, int) and not isinstance(n, bool) else TAIL_DEFAULT_N
-            return {
-                "ok": False,
-                "target": resolved,
-                "tail": "",
-                "n": echoed,
-                "error": f"n must be an integer from 1 to {TAIL_MAX_N}",
-            }
-        if error is not None:
-            return {
-                "ok": False,
-                "target": resolved,
-                "tail": "",
-                "n": n,
-                "error": error,
-            }
-        path = self.ports[target_name].get("log")
-        if not path or not Path(path).is_file():
-            return {
-                "ok": False,
-                "target": target_name,
-                "tail": "",
-                "n": n,
-                "error": "no current Session Log",
-            }
-        raw = self.get_tail(target=target_name, n=n)[target_name]
-        return {
-            "ok": True,
-            "target": target_name,
-            "tail": "\n".join(
-                compact_tail_line(line, with_timestamps) for line in raw.split("\n")
-            ),
-            "n": n,
-        }
+        return tail_response(
+            target,
+            n,
+            with_timestamps,
+            resolve=self.resolve_target,
+            session_log=lambda name: self.ports[name].get("log"),
+            read_tail=lambda name, count: self.get_tail(target=name, n=count)[name],
+        )
 
     def update_slots(
         self,
@@ -382,21 +353,8 @@ class Hub:
             result["raw_hex"] = raw.hex()
         return result
 
-    def exec(
-        self,
-        target: object,
-        cmd: str,
-        prompt: str | None = None,
-        prompt_is_regex: bool = False,
-        prompt_settle_ms: int = 0,
-        grep: str | None = None,
-        grep_is_regex: bool = False,
-        grep_context: int = 0,
-        grep_invert: bool = False,
-        max_lines: int | None = None,
-        exit_code: bool = False,
-    ) -> dict[str, Any]:
-        target_name, error = self.resolve_target(target)
+    def exec(self, spec: ExecSpec) -> dict[str, Any]:
+        target_name, error = self.resolve_target(spec.target)
         if error is not None:
             if target_name is not None:
                 return self._unknown_target_exec(target_name)
@@ -417,16 +375,5 @@ class Hub:
                     ok=False,
                     error=f"{target} port is not open",
                 )
-            request = worker.enqueue_exec(
-                cmd,
-                prompt=prompt,
-                prompt_is_regex=prompt_is_regex,
-                prompt_settle_ms=prompt_settle_ms,
-                grep=grep,
-                grep_is_regex=grep_is_regex,
-                grep_context=grep_context,
-                grep_invert=grep_invert,
-                max_lines=max_lines,
-                exit_code=exit_code,
-            )
+            request = worker.enqueue_exec(spec.cmd, **spec.as_exec_options())
         return worker.wait_exec(request)

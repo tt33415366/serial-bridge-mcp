@@ -3,8 +3,36 @@ from __future__ import annotations
 
 import threading
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any, Callable
+
+
+@dataclass(frozen=True)
+class ExecSpec:
+    """Agent-facing Exec contract: command, Target, and output-shaping options.
+
+    Queue events live on ``ExecRequest``, not here. ``Hub.exec`` maps one
+    ``ExecSpec`` into an ``ExecRequest`` at enqueue time.
+    """
+
+    target: object
+    cmd: str
+    prompt: str | None = None
+    prompt_is_regex: bool = False
+    prompt_settle_ms: int = 0
+    grep: str | None = None
+    grep_is_regex: bool = False
+    grep_context: int = 0
+    grep_invert: bool = False
+    max_lines: int | None = None
+    exit_code: bool = False
+
+    def as_exec_options(self) -> dict[str, Any]:
+        return {
+            item.name: getattr(self, item.name)
+            for item in fields(self)
+            if item.name not in {"target", "cmd"}
+        }
 
 
 @dataclass

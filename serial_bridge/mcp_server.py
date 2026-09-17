@@ -1,7 +1,7 @@
 """Agent-facing MCP tools and HTTP mount assembly for the Hub."""
 from __future__ import annotations
 
-from functools import partial
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import FastAPI
@@ -10,18 +10,10 @@ from mcp.server.transport_security import TransportSecuritySettings
 from serial_bridge.auth import McpBearerAuth
 from serial_bridge.constants import TAIL_DEFAULT_N
 from serial_bridge.hub import Hub
-from serial_bridge.hub.queue import exec_result
+from serial_bridge.hub.queue import ExecSpec
 from serial_bridge.offload import offload
 
-
-def _get_hub() -> Hub:
-    from serial_bridge import app as app_module
-
-    return app_module.hub
-
-
-def _resolve_target(target: object) -> tuple[str | None, str | None]:
-    return _get_hub().resolve_target(target)
+_get_hub: Callable[[], Hub]
 
 
 async def serial_status() -> dict[str, Any]:
@@ -46,28 +38,21 @@ async def serial_exec(
     exit_code: bool = False,
 ) -> dict[str, Any]:
     """Run one text command through the Hub and capture its serial output (Echo and matched prompt removed). Shell Targets: exit_code=true reports the remote exit status. Prompt-first consoles: prompt + prompt_settle_ms. Trim at the source with grep (grep_invert drops matches) and max_lines (keeps the tail)."""
-    target_name, error = _resolve_target(target)
-    if error is not None:
-        if target_name is not None:
-            return await offload(
-                partial(exec_result, target_name, ok=False, error=error)
-            )
-        return await offload(partial(exec_result, "", ok=False, error=error))
-    assert target_name is not None
-    hub = _get_hub()
     return await offload(
-        hub.exec,
-        target_name,
-        cmd,
-        prompt=prompt,
-        prompt_is_regex=prompt_is_regex,
-        prompt_settle_ms=prompt_settle_ms,
-        grep=grep,
-        grep_is_regex=grep_is_regex,
-        grep_context=grep_context,
-        grep_invert=grep_invert,
-        max_lines=max_lines,
-        exit_code=exit_code,
+        _get_hub().exec,
+        ExecSpec(
+            target=target,
+            cmd=cmd,
+            prompt=prompt,
+            prompt_is_regex=prompt_is_regex,
+            prompt_settle_ms=prompt_settle_ms,
+            grep=grep,
+            grep_is_regex=grep_is_regex,
+            grep_context=grep_context,
+            grep_invert=grep_invert,
+            max_lines=max_lines,
+            exit_code=exit_code,
+        ),
     )
 
 
@@ -77,12 +62,8 @@ async def serial_send(
     raw_hex: str | None = None,
 ) -> dict[str, Any]:
     """Send one text line or hex-encoded Raw Payload without waiting for RX."""
-    target_name, error = _resolve_target(target)
-    if error is not None:
-        return {"ok": False, "error": error}
-    assert target_name is not None
     return await offload(
-        _get_hub().send, target_name, cmd, who="agent", raw_hex=raw_hex
+        _get_hub().send, target, cmd, who="agent", raw_hex=raw_hex
     )
 
 
@@ -104,8 +85,10 @@ async def serial_tail(
     return result
 
 
-def create_mcp() -> FastMCP:
+def create_mcp(get_hub: Callable[[], Hub]) -> FastMCP:
     """Create the MCP server with serial_status, serial_exec, serial_send, and serial_tail tools."""
+    global _get_hub
+    _get_hub = get_hub
     mcp = FastMCP(
         "Serial Bridge",
         streamable_http_path="/mcp",

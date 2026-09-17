@@ -8,7 +8,13 @@ from serial.tools import list_ports
 from serial_bridge.hub.core import Hub
 from serial_bridge.hub.exec import ExecEngine, ExecSession
 from serial_bridge.hub.ports import available_ports
-from serial_bridge.hub.queue import ExecRequest, TargetQueue, WriteRequest, exec_result
+from serial_bridge.hub.queue import (
+    ExecRequest,
+    ExecSpec,
+    TargetQueue,
+    WriteRequest,
+    exec_result,
+)
 from serial_bridge.hub.text import sanitize_display, strip_ansi, ts
 from serial_bridge.hub.worker import PortWorker
 
@@ -16,6 +22,7 @@ __all__ = [
     "ExecEngine",
     "ExecSession",
     "ExecRequest",
+    "ExecSpec",
     "Hub",
     "PortWorker",
     "TargetQueue",
