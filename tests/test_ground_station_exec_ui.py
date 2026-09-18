@@ -194,8 +194,15 @@ class FakeElement {{
   }}
   focus() {{
     globalThis.activeElement = this;
+    if (globalThis.document) globalThis.document.activeElement = this;
   }}
   setSelectionRange() {{}}
+  contains(node) {{
+    for (let el = node; el; el = el.parentNode) {{
+      if (el === this) return true;
+    }}
+    return false;
+  }}
 }}
 
 const ids = new Map();
@@ -217,6 +224,7 @@ function createComposerForm(slotIndex) {{
 }}
 const composerForms = [createComposerForm("0"), createComposerForm("1")];
 globalThis.document = {{
+  activeElement: null,
   getElementById(id) {{
     if (!ids.has(id)) ids.set(id, new FakeElement(id));
     return ids.get(id);
@@ -237,6 +245,8 @@ globalThis.document = {{
     return [];
   }},
 }};
+globalThis.window = globalThis;
+globalThis.getSelection = () => globalThis.currentSelection || {{ isCollapsed: true, anchorNode: null }};
 globalThis.location = {{ protocol: "http:", host: "localhost" }};
 globalThis.setTimeout = () => {{}};
 globalThis.frameCallbacks = [];
@@ -333,6 +343,21 @@ const submitCmd = (slotIndex, text) => {{
   const input = form.querySelector("input");
   input.value = text;
   form.dispatch("submit", {{ preventDefault() {{}} }});
+}};
+const pressKey = (el, opts = {{}}) => {{
+  const event = {{
+    key: opts.key,
+    ctrlKey: !!opts.ctrlKey,
+    shiftKey: !!opts.shiftKey,
+    altKey: !!opts.altKey,
+    metaKey: !!opts.metaKey,
+    repeat: !!opts.repeat,
+    target: opts.target || el,
+    defaultPrevented: false,
+    preventDefault() {{ event.defaultPrevented = true; }},
+  }};
+  el.dispatch("keydown", event);
+  return event;
 }};
 const term = (slot) => document.getElementById(`term-${{slot}}`);
 const holder = (slot) => document.getElementById(`holder-${{slot}}`);
@@ -918,6 +943,212 @@ class GroundStationExecUiTest(unittest.TestCase):
         )
 
         self.assertTrue(result["focused"])
+
+    def test_composer_ctrl_c_sends_interrupt_without_submitting_draft(self):
+        result = run_ui_scenario(
+            """
+  await nextTurn();
+  const input = composer(0).querySelector("input");
+  input.value = "do not submit";
+  input.focus();
+  const event = pressKey(input, { key: "c", ctrlKey: true });
+  return {
+    sent: wsSent.map((payload) => JSON.parse(payload)),
+    draft: input.value,
+    history: localStorage.dump()["serial-bridge.command-history.slot0"] || null,
+    prevented: event.defaultPrevented,
+    httpSend: fetchRequests.filter((request) => request.url === "/api/send"),
+  };
+"""
+        )
+
+        self.assertEqual(
+            [{"type": "send", "target": "linux", "raw_hex": "03"}],
+            result["sent"],
+        )
+        self.assertEqual("do not submit", result["draft"])
+        self.assertIsNone(result["history"])
+        self.assertTrue(result["prevented"])
+        self.assertEqual([], result["httpSend"])
+
+    def test_composer_ctrl_d_sends_eof_and_prevents_default(self):
+        result = run_ui_scenario(
+            """
+  await nextTurn();
+  const input = composer(0).querySelector("input");
+  input.value = "keep draft";
+  input.focus();
+  const event = pressKey(input, { key: "d", ctrlKey: true });
+  return {
+    sent: wsSent.map((payload) => JSON.parse(payload)),
+    draft: input.value,
+    history: localStorage.dump()["serial-bridge.command-history.slot0"] || null,
+    prevented: event.defaultPrevented,
+  };
+"""
+        )
+
+        self.assertEqual(
+            [{"type": "send", "target": "linux", "raw_hex": "04"}],
+            result["sent"],
+        )
+        self.assertEqual("keep draft", result["draft"])
+        self.assertIsNone(result["history"])
+        self.assertTrue(result["prevented"])
+
+    def test_screen_and_row_ctrl_c_d_send_for_that_pane(self):
+        result = run_ui_scenario(
+            """
+  await nextTurn();
+  send({ type: "line", target: "linux", direction: "<<<", text: "row" });
+  flushFrames();
+  const screen = term("slot0");
+  const row = screen.children[0];
+  const fromScreen = pressKey(screen, { key: "c", ctrlKey: true });
+  const fromRow = pressKey(screen, { key: "d", ctrlKey: true, target: row });
+  return {
+    sent: wsSent.map((payload) => JSON.parse(payload)),
+    prevented: [fromScreen.defaultPrevented, fromRow.defaultPrevented],
+  };
+"""
+        )
+
+        self.assertEqual(
+            [
+                {"type": "send", "target": "linux", "raw_hex": "03"},
+                {"type": "send", "target": "linux", "raw_hex": "04"},
+            ],
+            result["sent"],
+        )
+        self.assertEqual([True, True], result["prevented"])
+
+    def test_ctrl_c_with_composer_or_screen_selection_does_not_send(self):
+        result = run_ui_scenario(
+            """
+  await nextTurn();
+  send({ type: "line", target: "linux", direction: "<<<", text: "selectable" });
+  flushFrames();
+  const input = composer(0).querySelector("input");
+  input.value = "abc";
+  input.selectionStart = 0;
+  input.selectionEnd = 2;
+  input.focus();
+  const composerEvent = pressKey(input, { key: "c", ctrlKey: true });
+  const screen = term("slot0");
+  const row = screen.children[0];
+  globalThis.currentSelection = { isCollapsed: false, anchorNode: row };
+  screen.focus();
+  const screenEvent = pressKey(screen, { key: "c", ctrlKey: true });
+  return {
+    sent: wsSent.map((payload) => JSON.parse(payload)),
+    composerPrevented: composerEvent.defaultPrevented,
+    screenPrevented: screenEvent.defaultPrevented,
+  };
+"""
+        )
+
+        self.assertEqual([], result["sent"])
+        self.assertFalse(result["composerPrevented"])
+        self.assertFalse(result["screenPrevented"])
+
+    def test_ctrl_d_sends_despite_selection(self):
+        result = run_ui_scenario(
+            """
+  await nextTurn();
+  send({ type: "line", target: "linux", direction: "<<<", text: "selectable" });
+  flushFrames();
+  const input = composer(0).querySelector("input");
+  input.value = "abc";
+  input.selectionStart = 0;
+  input.selectionEnd = 2;
+  input.focus();
+  const composerEvent = pressKey(input, { key: "d", ctrlKey: true });
+  const screen = term("slot0");
+  const row = screen.children[0];
+  globalThis.currentSelection = { isCollapsed: false, anchorNode: row };
+  screen.focus();
+  const screenEvent = pressKey(screen, { key: "d", ctrlKey: true });
+  return {
+    sent: wsSent.map((payload) => JSON.parse(payload)),
+    prevented: [composerEvent.defaultPrevented, screenEvent.defaultPrevented],
+  };
+"""
+        )
+
+        self.assertEqual(
+            [
+                {"type": "send", "target": "linux", "raw_hex": "04"},
+                {"type": "send", "target": "linux", "raw_hex": "04"},
+            ],
+            result["sent"],
+        )
+        self.assertEqual([True, True], result["prevented"])
+
+    def test_repeat_and_extra_modifiers_do_not_send(self):
+        result = run_ui_scenario(
+            """
+  await nextTurn();
+  const input = composer(0).querySelector("input");
+  input.focus();
+  pressKey(input, { key: "c", ctrlKey: true, repeat: true });
+  pressKey(input, { key: "c", ctrlKey: true, shiftKey: true });
+  pressKey(input, { key: "d", ctrlKey: true, altKey: true });
+  pressKey(input, { key: "d", ctrlKey: true, metaKey: true });
+  pressKey(term("slot0"), { key: "c", ctrlKey: true, shiftKey: true });
+  return { sent: wsSent.map((payload) => JSON.parse(payload)) };
+"""
+        )
+
+        self.assertEqual([], result["sent"])
+
+    def test_other_pane_sends_its_target_trace_and_bindings_do_not(self):
+        result = run_ui_scenario(
+            """
+  await nextTurn();
+  const other = pressKey(composer(1).querySelector("input"), { key: "c", ctrlKey: true });
+  const afterOther = wsSent.length;
+  pressKey(document.getElementById("spine-body"), { key: "c", ctrlKey: true });
+  pressKey(document.getElementById("binding-live-dir"), { key: "d", ctrlKey: true });
+  pressKey(document.getElementById("title-slot0"), { key: "c", ctrlKey: true });
+  return {
+    sent: wsSent.map((payload) => JSON.parse(payload)),
+    afterOther,
+    otherPrevented: other.defaultPrevented,
+  };
+"""
+        )
+
+        self.assertEqual(
+            [{"type": "send", "target": "rtos", "raw_hex": "03"}],
+            result["sent"],
+        )
+        self.assertEqual(1, result["afterOther"])
+        self.assertTrue(result["otherPrevented"])
+
+    def test_ctrl_keys_post_raw_hex_when_websocket_is_down(self):
+        result = run_ui_scenario(
+            """
+  await nextTurn();
+  socket.readyState = 0;
+  pressKey(composer(0).querySelector("input"), { key: "c", ctrlKey: true });
+  pressKey(term("slot0"), { key: "d", ctrlKey: true });
+  return {
+    wsCount: wsSent.length,
+    bodies: fetchRequests
+      .filter((request) => request.url === "/api/send")
+      .map((request) => JSON.parse(request.options.body)),
+  };
+"""
+        )
+
+        self.assertEqual(0, result["wsCount"])
+        self.assertEqual(
+            [
+                {"target": "linux", "raw_hex": "03"},
+                {"target": "linux", "raw_hex": "04"},
+            ],
+            result["bodies"],
+        )
 
     def test_composer_submit_after_trace_jump_returns_to_follow(self):
         result = run_ui_scenario(

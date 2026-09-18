@@ -1808,6 +1808,40 @@
     await refreshPorts();
   }
 
+  function sendRawHex(target, rawHex) {
+    if (!target) return;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "send", target, raw_hex: rawHex }));
+    } else {
+      fetch("/api/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target, raw_hex: rawHex }),
+      });
+    }
+  }
+
+  function paneHasCopySelection(e, input, screen) {
+    const composerFocused =
+      input && (document.activeElement === input || e.target === input);
+    if (composerFocused && input.selectionStart !== input.selectionEnd) return true;
+    const selection = window.getSelection ? window.getSelection() : null;
+    if (!selection || selection.isCollapsed || !selection.anchorNode) return false;
+    return !!(screen && screen.contains(selection.anchorNode));
+  }
+
+  function handlePaneControlKey(e, index, input, screen) {
+    if (e.repeat) return false;
+    if (!e.ctrlKey || e.shiftKey || e.altKey || e.metaKey) return false;
+    const isC = e.key === "c" || e.key === "C";
+    const isD = e.key === "d" || e.key === "D";
+    if (!isC && !isD) return false;
+    if (isC && paneHasCopySelection(e, input, screen)) return false;
+    e.preventDefault();
+    sendRawHex(slotTargets[index], isC ? "03" : "04");
+    return true;
+  }
+
   btnBridge.addEventListener("click", () => setMode("bridge"));
   btnCrt.addEventListener("click", () => setMode("crt"));
   for (const budget of LIVE_VIEW_BUDGETS) {
@@ -1816,9 +1850,15 @@
   updateLiveDepthInstrument();
 
   for (const slot of SLOT_KEYS) {
+    const index = SLOT_KEYS.indexOf(slot);
+    const form = document.querySelectorAll(".composer")[index];
+    const input = form && form.querySelector("input");
     terms[slot].addEventListener("scroll", () => {
       updateFollowState(slot);
       if (historyStates[slot]) scheduleHistoryRender(slot);
+    });
+    terms[slot].addEventListener("keydown", (e) => {
+      handlePaneControlKey(e, index, input, terms[slot]);
     });
     terms[slot].addEventListener("click", (event) => {
       const toggle = expandToggleFrom(event.target, terms[slot]);
@@ -1995,6 +2035,7 @@
     });
 
     input.addEventListener("keydown", (e) => {
+      if (handlePaneControlKey(e, index, input, terms[slot])) return;
       if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
       e.preventDefault();
       const result =
