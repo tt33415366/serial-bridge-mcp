@@ -27,8 +27,10 @@ from serial_bridge.offload import offload
 _get_hub: Callable[[], Hub]
 
 
-def _send(target: object, cmd: str, who: str) -> dict[str, Any]:
-    return _get_hub().send(target, cmd, who=who)
+def _send(
+    target: object, cmd: str, who: str, raw_hex: str | None = None
+) -> dict[str, Any]:
+    return _get_hub().send(target, cmd, who=who, raw_hex=raw_hex)
 
 
 def _assigned_session_log(target: object) -> Path:
@@ -81,7 +83,8 @@ class BindingsBody(BaseModel):
 
 class SendBody(BaseModel):
     target: str
-    cmd: str
+    cmd: str = ""
+    raw_hex: str | None = None
 
 
 async def ws_endpoint(ws: WebSocket) -> None:
@@ -106,8 +109,9 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 if _send_authorized(host, authorization):
                     target = msg.get("target", "")
                     cmd = msg.get("cmd", "")
+                    raw_hex = msg.get("raw_hex")
                     result = await offload(
-                        _send, target, cmd, _who_for(authorization)
+                        _send, target, cmd, _who_for(authorization), raw_hex
                     )
                 else:
                     result = {"ok": False, "error": "Unauthorized"}
@@ -175,7 +179,9 @@ def register_operator_routes(
         body: SendBody,
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
-        return await offload(_send, body.target, body.cmd, _who_for(authorization))
+        return await offload(
+            _send, body.target, body.cmd, _who_for(authorization), body.raw_hex
+        )
 
     @app.get(SESSION_LOG_ROUTE, dependencies=[Depends(_require_send_access)])
     async def api_session_log(target: str) -> StreamingResponse:

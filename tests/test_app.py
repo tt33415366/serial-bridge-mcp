@@ -30,6 +30,15 @@ def _binding_slots(**overrides):
     return payload
 
 
+def _default_hub():
+    return Hub(
+        Config(
+            slots=_binding_slots()["slots"],
+            path=Path("serial_bridge.json"),
+        )
+    )
+
+
 class FakeWebSocket:
     def __init__(self, message, host="127.0.0.1", authorization=None, origin=None):
         self.message = message
@@ -114,6 +123,41 @@ class AppSendTest(unittest.IsolatedAsyncioTestCase):
             ws.sent[-1],
         )
         self.assertEqual([("linux", "uname -a", "user", None)], fake_hub.calls)
+
+    async def test_websocket_send_forwards_raw_hex(self):
+        fake_hub = FakeHub()
+        ws = FakeWebSocket(
+            {"type": "send", "target": "linux", "raw_hex": "03"}
+        )
+        with patch.object(app_module, "hub", fake_hub):
+            await ws_endpoint(ws)
+
+        self.assertEqual(
+            {
+                "type": "ack",
+                "ok": True,
+                "target": "linux",
+                "cmd": "",
+                "who": "user",
+                "raw_hex": "03",
+            },
+            ws.sent[-1],
+        )
+        self.assertEqual([("linux", "", "user", "03")], fake_hub.calls)
+
+    async def test_websocket_send_raw_hex_rejected_in_crt_mode(self):
+        crt_hub = _default_hub()
+        ws = FakeWebSocket(
+            {"type": "send", "target": "linux", "raw_hex": "03"}
+        )
+        with patch.object(app_module, "hub", crt_hub):
+            await ws_endpoint(ws)
+
+        self.assertFalse(ws.sent[-1]["ok"])
+        self.assertEqual(
+            "CRT Mode is active; switch to Bridge Mode before Send",
+            ws.sent[-1]["error"],
+        )
 
     async def test_http_send_rejects_com_alias(self):
         fake_hub = FakeHub()
@@ -774,6 +818,79 @@ class AppHttpAuthorizationTest(unittest.TestCase):
             response.json(),
         )
         self.assertEqual([("linux", "uname -a", "user", None)], fake_hub.calls)
+
+    def test_http_send_forwards_raw_hex(self):
+        fake_hub = FakeHub()
+        client = TestClient(app_module.app, client=("127.0.0.1", 50000))
+        with patch.object(app_module, "hub", fake_hub):
+            response = client.post(
+                "/api/send",
+                json={"target": "linux", "raw_hex": "03"},
+            )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(
+            {
+                "ok": True,
+                "target": "linux",
+                "cmd": "",
+                "who": "user",
+                "raw_hex": "03",
+            },
+            response.json(),
+        )
+        self.assertEqual([("linux", "", "user", "03")], fake_hub.calls)
+
+    def test_http_send_rejects_cmd_and_raw_hex_together(self):
+        hub = _default_hub()
+        hub.mode = "bridge"
+        hub.workers["linux"] = SimpleNamespace(is_open=True, send=lambda *a, **k: None)
+        client = TestClient(app_module.app, client=("127.0.0.1", 50000))
+        with patch.object(app_module, "hub", hub):
+            response = client.post(
+                "/api/send",
+                json={"target": "linux", "cmd": "uname -a", "raw_hex": "03"},
+            )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(
+            {"ok": False, "error": "cmd and raw_hex are mutually exclusive"},
+            response.json(),
+        )
+
+    def test_http_send_raw_hex_rejected_in_crt_mode(self):
+        crt_hub = _default_hub()
+        client = TestClient(app_module.app, client=("127.0.0.1", 50000))
+        with patch.object(app_module, "hub", crt_hub):
+            response = client.post(
+                "/api/send",
+                json={"target": "linux", "raw_hex": "03"},
+            )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(
+            {
+                "ok": False,
+                "error": "CRT Mode is active; switch to Bridge Mode before Send",
+            },
+            response.json(),
+        )
+
+    def test_http_send_raw_hex_rejected_when_port_closed(self):
+        hub = _default_hub()
+        hub.mode = "bridge"
+        client = TestClient(app_module.app, client=("127.0.0.1", 50000))
+        with patch.object(app_module, "hub", hub):
+            response = client.post(
+                "/api/send",
+                json={"target": "linux", "raw_hex": "04"},
+            )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(
+            {"ok": False, "error": "linux port is not open"},
+            response.json(),
+        )
 
     def test_http_send_derives_who_from_token_instead_of_body(self):
         fake_hub = FakeHub()
