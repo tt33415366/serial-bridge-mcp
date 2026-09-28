@@ -236,7 +236,9 @@ class AgentLogTest(unittest.TestCase):
     def test_record_agent_read_traces_tail_and_status_reads(self):
         hub = make_hub()
         with patch.object(hub, "emit"):
-            hub.record_agent_read("status", {"ok": True, "mode": "crt"})
+            status = hub.status()
+            self.assertNotIn("ok", status)
+            hub.record_agent_read("status", status)
             hub.record_agent_read(
                 "tail", {"ok": False, "error": "x"}, target="linux", n=40
             )

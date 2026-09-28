@@ -178,7 +178,7 @@ class Hub:
         self._agent_trace.record_read(
             kind,
             target=target,
-            ok=bool(result.get("ok")),
+            ok=bool(result["ok"]) if "ok" in result else True,
             returned_bytes=payload_bytes(result),
             **fields,
         )
