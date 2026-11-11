@@ -1283,7 +1283,7 @@ body::after {
   .binding-locked { width: 100%; margin-left: 0; border-top: 1px solid var(--rule); }
   .binding-slots { grid-template-columns: 1fr; }
   .field { grid-template-columns: 1fr; }
-  .tube { min-height: 340px; }
+  .tube { height: 60dvh; min-height: 340px; }
   .agent-spine { min-height: 100px; order: 3; }
   .tube.slot1 { order: 2; }
   .foot-meta { flex-wrap: wrap; }
