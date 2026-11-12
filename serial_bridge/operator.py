@@ -81,6 +81,11 @@ class BindingsBody(BaseModel):
     live_dir: str | None = Field(default=None, min_length=1)
 
 
+class TargetPromptBody(BaseModel):
+    target: str = Field(min_length=1)
+    pattern: str = ""
+
+
 class SendBody(BaseModel):
     target: str
     cmd: str = ""
@@ -173,6 +178,10 @@ def register_operator_routes(
         hub = _get_hub()
         slots = [slot.model_dump() for slot in body.slots]
         return await offload(hub.update_slots, slots, body.live_dir)
+
+    @app.post("/api/target_prompt", dependencies=[Depends(_require_operator_access)])
+    async def api_target_prompt(body: TargetPromptBody) -> dict[str, Any]:
+        return await offload(_get_hub().set_target_prompt, body.target, body.pattern)
 
     @app.post("/api/send", dependencies=[Depends(_require_send_access)])
     async def api_send(

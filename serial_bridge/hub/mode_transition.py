@@ -49,6 +49,7 @@ class ModeTransition:
                 already_bridge = self._hub.mode == "bridge"
             if already_bridge:
                 return self._retry_bridge()
+            self._hub.clear_all_readiness()
             self.stop_bridge(quiet=True)
             try:
                 self._hub.config.live_dir.mkdir(parents=True, exist_ok=True)
@@ -144,6 +145,7 @@ class ModeTransition:
             key: {"open": True} for key in self._hub.ports
         }
         for key in retry:
+            self._hub.clear_readiness(key)
             results[key] = self._open_target(key, self._hub.ports[key])
         self._hub.emit({"type": "status", **self._hub.status()})
         failed = [k for k in retry if not results[k]["open"]]
@@ -174,6 +176,7 @@ class ModeTransition:
                 self._hub.workers.clear()
             for worker in workers:
                 worker.close()
+            self._hub.clear_all_readiness()
             if not quiet:
                 self._hub.emit({"type": "status", **self._hub.status()})
                 ports = "/".join(

@@ -1,3 +1,4 @@
+import json
 import re
 import tempfile
 import threading
@@ -86,6 +87,12 @@ class WorkerHub:
             raise RuntimeError("TX log failed")
 
     def port_lost(self, target):
+        pass
+
+    def observe_rx(self, target, chunk):
+        pass
+
+    def clear_readiness(self, target):
         pass
 
 
@@ -918,6 +925,86 @@ class HubTest(unittest.TestCase):
                 self.assertTrue(
                     any("the stream" in text and "both streams" not in text for text in system_texts)
                 )
+
+    def test_set_target_prompt_validates_persists_and_reports(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            live = Path(temp_dir)
+            hub = Hub(make_config(live / "serial_bridge.json", live_dir=live))
+            bad = hub.set_target_prompt("linux", "(")
+            self.assertFalse(bad["ok"])
+            self.assertEqual("", hub.status()["ports"]["linux"]["target_prompt"])
+            good = hub.set_target_prompt("linux", r"# $")
+            self.assertTrue(good["ok"])
+            self.assertEqual(r"# $", hub.status()["ports"]["linux"]["target_prompt"])
+            self.assertIn(
+                "target_prompts",
+                json.loads((live / "serial_bridge.json").read_text(encoding="utf-8")),
+            )
+            self.assertFalse(hub.set_target_prompt("nope", "x")["ok"])
+            self.assertTrue(hub.set_target_prompt("linux", "")["ok"])
+            self.assertEqual("", hub.status()["ports"]["linux"]["target_prompt"])
+
+    def test_status_shell_ready_then_cleared_by_each_freshness_event(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            live = Path(temp_dir)
+            with patch.object(hub_module, "PortWorker", FakePortWorker):
+                hub = Hub(make_config(live / "serial_bridge.json", live_dir=live))
+                hub.set_target_prompt("linux", r"# $")
+                hub.start_bridge()
+                self.assertEqual("unknown", hub.status()["ports"]["linux"]["shell"])
+
+                hub.observe_rx("linux", b"root@dev:~# ")
+                port = hub.status()["ports"]["linux"]
+                self.assertEqual("ready", port["shell"])
+                self.assertIsNotNone(port["shell_observed_at"])
+
+                hub.clear_readiness("linux")  # a send
+                self.assertEqual("unknown", hub.status()["ports"]["linux"]["shell"])
+
+                hub.observe_rx("linux", b"# ")
+                hub.port_lost("linux")
+                self.assertEqual("unknown", hub.status()["ports"]["linux"]["shell"])
+
+                hub.observe_rx("linux", b"# ")
+                hub.stop_bridge()
+                self.assertEqual("unknown", hub.status()["ports"]["linux"]["shell"])
+
+                hub.start_bridge()
+                self.assertEqual("unknown", hub.status()["ports"]["linux"]["shell"])
+
+                hub.set_target_prompt("linux", r"\$ $")
+                hub.observe_rx("linux", b"$ ")
+                self.assertEqual("ready", hub.status()["ports"]["linux"]["shell"])
+                hub.set_target_prompt("linux", r"\$ $")
+                self.assertEqual("unknown", hub.status()["ports"]["linux"]["shell"])
+
+    def test_hub_send_clears_readiness(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            live = Path(temp_dir)
+            with patch.object(hub_module, "PortWorker", FakePortWorker):
+                hub = Hub(make_config(live / "serial_bridge.json", live_dir=live))
+                hub.set_target_prompt("linux", r"# $")
+                hub.start_bridge()
+                hub.observe_rx("linux", b"# ")
+                hub.send("linux", "ls", who="user")
+                self.assertEqual("unknown", hub.status()["ports"]["linux"]["shell"])
+
+    def test_saving_port_bindings_preserves_target_prompts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            live = Path(temp_dir)
+            path = live / "serial_bridge.json"
+            hub = Hub(make_config(path, live_dir=live))
+            self.assertTrue(hub.set_target_prompt("linux", r"# $")["ok"])
+            result = hub.update_slots(
+                [
+                    {"name": "linux", "title": "Linux", "com": "COM8", "baud": 57600},
+                    {"name": "rtos", "title": "RTOS", "com": "COM9", "baud": 115200},
+                ]
+            )
+            self.assertTrue(result["ok"])
+            self.assertEqual(r"# $", hub.status()["ports"]["linux"]["target_prompt"])
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual({"linux": r"# $"}, saved["target_prompts"])
 
 
 class HubTailTest(unittest.TestCase):

@@ -283,7 +283,7 @@ class TokenStoreTest(unittest.TestCase):
             )
 
             saved = json.loads(config_path.read_text(encoding="utf-8"))
-            self.assertEqual({"live_dir", "slots"}, set(saved.keys()))
+            self.assertEqual({"live_dir", "slots", "target_prompts"}, set(saved.keys()))
             self.assertNotIn("must-not-leak", config_path.read_text(encoding="utf-8"))
 
     def test_init_token_store_registers_global_store(self) -> None:

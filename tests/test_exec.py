@@ -1118,6 +1118,12 @@ class SilentHub:
     def append_log(self, *args, **kwargs):
         pass
 
+    def observe_rx(self, *args, **kwargs):
+        pass
+
+    def clear_readiness(self, *args, **kwargs):
+        pass
+
     def record_exec_start(self, *args, **kwargs):
         return 1
 

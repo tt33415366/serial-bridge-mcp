@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -19,6 +21,7 @@ from serial_bridge.constants import SESSION_LOG_ROUTE, TAIL_DEFAULT_N
 from serial_bridge.hub.coalesce import LineCoalescer
 from serial_bridge.hub.mode_transition import ModeTransition
 from serial_bridge.hub.queue import ExecSpec, exec_result
+from serial_bridge.hub.readiness import ShellReadiness
 from serial_bridge.hub.trace import AgentTrace, payload_bytes
 from serial_bridge.hub.transcript import Transcript, tail_response
 
@@ -43,6 +46,7 @@ class Hub:
         )
         self._state_lock = threading.Lock()
         self._transition_lock = threading.RLock()
+        self._readiness = ShellReadiness()
         self.workers: dict[str, Any] = {}
         self.open_errors: dict[str, str] = {}
         self._mode_transition = ModeTransition(
@@ -199,6 +203,10 @@ class Hub:
             mode = self.mode
             workers = dict(self.workers)
             open_errors = dict(self.open_errors)
+        shell = {
+            k: self._readiness.evaluate(k, self.config.target_prompts.get(k))
+            for k in self.ports
+        }
         status = {
             "mode": mode,
             "live_dir": str(self.config.live_dir.resolve()),
@@ -211,6 +219,9 @@ class Hub:
                     "open": k in workers and workers[k].is_open,
                     "busy": k in workers and workers[k].is_busy,
                     "port_state": self._port_state(k, workers),
+                    "target_prompt": self.config.target_prompts.get(k, ""),
+                    "shell": shell[k][0],
+                    "shell_observed_at": shell[k][1],
                     "log": str(v["log"]) if v.get("log") else "",
                     "log_url": (
                         f"{SESSION_LOG_ROUTE}?target={k}" if v.get("log") else ""
@@ -286,6 +297,50 @@ class Hub:
         self.emit({"type": "status", **status})
         return {"ok": True, **status}
 
+    def observe_rx(self, target: str, chunk: bytes) -> None:
+        self._readiness.observe(
+            target,
+            chunk.decode("utf-8", errors="replace"),
+            datetime.now().astimezone().isoformat(timespec="milliseconds"),
+        )
+
+    def clear_readiness(self, target: str) -> None:
+        self._readiness.clear(target)
+
+    def clear_all_readiness(self) -> None:
+        self._readiness.clear()
+
+    def set_target_prompt(self, target: object, pattern: object) -> dict[str, Any]:
+        """Operator-only: set or clear (empty string) a Target's Target Prompt."""
+        target_name, error = self.resolve_target(target)
+        if error is not None:
+            return {"ok": False, "error": error}
+        if not isinstance(pattern, str):
+            return {"ok": False, "error": "pattern must be a string"}
+        if pattern:
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                return {"ok": False, "error": f"pattern is not a valid regex: {exc}"}
+        with self._transition_lock:
+            with self._state_lock:
+                previous = self.config.target_prompts
+                updated = dict(previous)
+                if pattern:
+                    updated[target_name] = pattern
+                else:
+                    updated.pop(target_name, None)
+                self.config.target_prompts = updated
+                try:
+                    persist_slots(self.config, self.config.slots)
+                except (OSError, UnicodeError, ValueError) as exc:
+                    self.config.target_prompts = previous
+                    return {"ok": False, "error": f"Could not save Target Prompt: {exc}"}
+            self.clear_readiness(target_name)
+        status = self.status()
+        self.emit({"type": "status", **status})
+        return {"ok": True, **status}
+
     def update_bindings(
         self, ports: dict[str, dict[str, str | int]]
     ) -> dict[str, Any]:
@@ -312,6 +367,7 @@ class Hub:
 
     def port_lost(self, target: str) -> None:
         """A worker's port dropped: tell clients; Bridge Mode and ports stay as they are."""
+        self._readiness.clear(target)
         self.emit({"type": "status", **self.status()})
         try:
             self._mode_transition.write_bridge_status()
@@ -370,6 +426,7 @@ class Hub:
                     return {"ok": False, "error": "raw_hex must be valid hexadecimal"}
                 if not raw:
                     return {"ok": False, "error": "raw_hex must contain at least one byte"}
+            self._readiness.clear(target)
             worker.send(cmd, who=who, raw=raw)
         result = {"ok": True, "target": target, "cmd": cmd, "who": who}
         if raw_hex is not None:
@@ -398,5 +455,6 @@ class Hub:
                     ok=False,
                     error=f"{target} port is not open",
                 )
+            self._readiness.clear(target)
             request = worker.enqueue_exec(spec.cmd, **spec.as_exec_options())
         return worker.wait_exec(request)

@@ -82,6 +82,10 @@ class FakeHub:
         self.calls.append((target_name, spec.cmd, spec.as_exec_options()))
         return {"ok": True, "output": "Linux\n"}
 
+    def set_target_prompt(self, target, pattern):
+        self.calls.append(("target_prompt", target, pattern))
+        return {"ok": True}
+
     def start_bridge(self):
         self.calls.append(("mode", "bridge"))
         return {"ok": True, "mode": "bridge"}

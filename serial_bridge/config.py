@@ -7,7 +7,7 @@ import os
 import re
 import tempfile
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -62,6 +62,7 @@ class Config:
     path: Path
     live_dir: Path = DEFAULT_LIVE_DIR
     warning: str | None = None
+    target_prompts: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -320,6 +321,26 @@ def _validated_slots(data: object) -> list[dict[str, str | int]]:
     return slots
 
 
+def _parse_saved_target_prompts(data: object) -> dict[str, str]:
+    raw = data.get("target_prompts") if isinstance(data, dict) else None
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("target_prompts must be an object")
+    prompts: dict[str, str] = {}
+    for name, pattern in raw.items():
+        if not isinstance(name, str) or not isinstance(pattern, str):
+            raise ValueError("target_prompts entries must be strings")
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            raise ValueError(
+                f"target_prompts[{name}] is not a valid regex: {exc}"
+            ) from exc
+        prompts[name] = pattern
+    return prompts
+
+
 def persist_slots(
     config: Config,
     slots: list[Mapping[str, object]],
@@ -344,6 +365,11 @@ def persist_slots(
                     {
                         "live_dir": str(config.live_dir.resolve()),
                         "slots": validated,
+                        "target_prompts": {
+                            name: pattern
+                            for name, pattern in config.target_prompts.items()
+                            if name in {str(slot["name"]) for slot in validated}
+                        },
                     },
                     ensure_ascii=False,
                     indent=2,
@@ -448,6 +474,7 @@ def load_config(
 
     path = config_path or Path(env.get("SERIAL_BRIDGE_CONFIG", DEFAULT_CONFIG_PATH))
     warning = None
+    target_prompts: dict[str, str] = {}
     if path.is_file():
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
@@ -463,6 +490,10 @@ def load_config(
                     live_dir = saved_live_dir
             except ValueError as exc:
                 warning = f"Could not load config {path}: {exc}"
+            try:
+                target_prompts = _parse_saved_target_prompts(raw)
+            except ValueError as exc:
+                warning = f"Could not load config {path}: target_prompts: {exc}"
         except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
             warning = f"Could not load config {path}: {exc}"
 
@@ -473,7 +504,13 @@ def load_config(
                 f"{source} refers to Target Slot 1 but only one Slot is configured"
             )
 
-    return Config(slots=slots, path=path, live_dir=live_dir, warning=warning)
+    return Config(
+        slots=slots,
+        path=path,
+        live_dir=live_dir,
+        warning=warning,
+        target_prompts=target_prompts,
+    )
 
 
 def load_config_from_args(

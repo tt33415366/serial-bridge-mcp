@@ -320,7 +320,7 @@ class ConfigTest(unittest.TestCase):
             self.assertEqual(config_path.parent, observed["source"].parent)
             self.assertEqual(config_path, observed["destination"])
             saved = json.loads(observed["content"])
-            self.assertEqual({"live_dir", "slots"}, set(saved.keys()))
+            self.assertEqual({"live_dir", "slots", "target_prompts"}, set(saved.keys()))
             self.assertEqual("COM8", saved["slots"][0]["com"])
             self.assertEqual(230400, saved["slots"][1]["baud"])
             self.assertFalse(observed["source"].exists())
@@ -382,7 +382,7 @@ class ConfigTest(unittest.TestCase):
             persist_slots(config, config.slots)
             saved = json.loads(config_path.read_text(encoding="utf-8"))
 
-        self.assertEqual({"live_dir", "slots"}, set(saved.keys()))
+        self.assertEqual({"live_dir", "slots", "target_prompts"}, set(saved.keys()))
         self.assertEqual("COM60", saved["slots"][1]["com"])
 
     def test_target_name_validation_and_lowercase_storage(self):
@@ -829,6 +829,38 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual("COM3", unused_default_slot(radio)["com"])
         with self.assertRaises(ValueError):
             unused_default_slot(list(DEFAULT_SLOTS))
+
+
+class TargetPromptConfigTest(unittest.TestCase):
+    def test_target_prompts_round_trip_and_survive_slot_saves(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "serial_bridge.json"
+            config = load_config(environ={}, config_path=path)
+            config.target_prompts = {"linux": r"\$ $"}
+            persist_slots(config, config.slots)
+            loaded = load_config(environ={}, config_path=path)
+            self.assertEqual({"linux": r"\$ $"}, loaded.target_prompts)
+
+    def test_persist_slots_drops_prompts_for_removed_targets(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "serial_bridge.json"
+            config = load_config(environ={}, config_path=path)
+            config.target_prompts = {"linux": "# $", "gone": "> $"}
+            persist_slots(config, config.slots)
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual({"linux": "# $"}, saved["target_prompts"])
+
+    def test_invalid_saved_prompt_is_dropped_with_warning(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "serial_bridge.json"
+            config = load_config(environ={}, config_path=path)
+            persist_slots(config, config.slots)
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data["target_prompts"] = {"linux": "("}
+            path.write_text(json.dumps(data), encoding="utf-8")
+            loaded = load_config(environ={}, config_path=path)
+            self.assertEqual({}, loaded.target_prompts)
+            self.assertIn("target_prompts", loaded.warning)
 
 
 if __name__ == "__main__":

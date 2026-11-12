@@ -526,7 +526,7 @@ class AppHttpAuthorizationTest(unittest.TestCase):
         self.assertEqual(57600, restarted.status()["ports"]["linux"]["baud"])
         self.assertEqual("COM9", restarted.status()["ports"]["rtos"]["com"])
         self.assertEqual(230400, restarted.status()["ports"]["rtos"]["baud"])
-        self.assertEqual({"live_dir", "slots"}, set(saved.keys()))
+        self.assertEqual({"live_dir", "slots", "target_prompts"}, set(saved.keys()))
 
     def test_binding_update_persists_live_dir(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -961,6 +961,19 @@ class AppHttpAuthorizationTest(unittest.TestCase):
         response = client.get("/api/tail?target=linux&n=10")
         self.assertEqual(401, response.status_code)
         self.assertEqual("Bearer", response.headers["www-authenticate"])
+
+    def test_target_prompt_endpoint_is_operator_only(self):
+        fake_hub = FakeHub()
+        body = {"target": "linux", "pattern": "# $"}
+        local_client = TestClient(app_module.app, client=("127.0.0.1", 50000))
+        remote_client = TestClient(app_module.app, client=("192.0.2.10", 50000))
+        with patch.object(app_module, "hub", fake_hub):
+            ok = local_client.post("/api/target_prompt", json=body)
+            denied = remote_client.post("/api/target_prompt", json=body)
+
+        self.assertEqual(200, ok.status_code)
+        self.assertEqual([("target_prompt", "linux", "# $")], fake_hub.calls)
+        self.assertEqual(403, denied.status_code)
 
 
 if __name__ == "__main__":

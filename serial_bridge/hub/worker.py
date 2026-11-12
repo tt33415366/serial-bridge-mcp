@@ -102,6 +102,7 @@ class PortWorker:
         )
         if not self._tx.write_if_allowed(request, lambda: self._ser.write(raw)):
             return False
+        self.hub.clear_readiness(self.name)
         self._ser.flush()
         log_text = request.cmd if request.raw is None else f"[raw] {request.raw.hex(' ')}"
         self.hub.append_log(self.name, ">>>", log_text, who=request.who)
@@ -116,7 +117,12 @@ class PortWorker:
         finally:
             self._tx.complete(request)
 
+    def _exec_on_tx(self, request: ExecRequest, sent: str) -> None:
+        self.hub.clear_readiness(self.name)
+        self.hub.append_log(self.name, ">>>", sent, who=request.who)
+
     def _log_rx_chunk(self, chunk: bytes) -> None:
+        self.hub.observe_rx(self.name, chunk)
         self._rx_buf.extend(chunk)
         while True:
             split_at = None
@@ -157,12 +163,7 @@ class PortWorker:
                                     self._tx,
                                     request,
                                     self.line_ending,
-                                    on_tx=lambda sent: self.hub.append_log(
-                                        self.name,
-                                        ">>>",
-                                        sent,
-                                        who=request.who,
-                                    ),
+                                    on_tx=lambda sent: self._exec_on_tx(request, sent),
                                     on_rx=self._log_rx_chunk,
                                     service_operator=self._service_operator_write,
                                 )
