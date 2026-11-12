@@ -17,7 +17,7 @@ _get_hub: Callable[[], Hub]
 
 
 async def serial_status() -> dict[str, Any]:
-    """Return Hub mode and each Target's Port Binding, open/busy hints, and the current Session Log (`log` filesystem path on the Hub host; relative `log_url` for a Bearer GET of that file from the same origin as /mcp). Empty log/log_url means none assigned. Use serial_tail for a Tail (last N lines). Do not pull the Session Log into serial_exec output."""
+    """Return Hub mode, mode_switch {allowed, busy, busy_targets, next_action}, and each Target's Port Binding plus port_state (closed|open|lost), busy, shell (ready|unknown; ready only while the newest device output ends at the Operator-configured Target Prompt, otherwise unknown), shell_observed_at, target_prompt (read-only; the Operator-configured regex behind shell), open_error (only when present: why the Target is not open), and the current Session Log (`log` path on the Hub host; relative `log_url` for a Bearer GET from the same origin as /mcp). Empty log/log_url means none assigned. Use serial_tail for a Tail (last N lines). Do not pull the Session Log into serial_exec output."""
     hub = _get_hub()
     result = await offload(hub.status)
     await offload(hub.record_agent_read, "status", result)
@@ -36,8 +36,9 @@ async def serial_exec(
     grep_invert: bool = False,
     max_lines: int | None = None,
     exit_code: bool = False,
+    raw: bool = False,
 ) -> dict[str, Any]:
-    """Run one text command through the Hub and capture its serial output (Echo and matched prompt removed). Shell Targets: exit_code=true reports the remote exit status. Prompt-first consoles: prompt + prompt_settle_ms. Trim at the source with grep (grep_invert drops matches) and max_lines (keeps the tail)."""
+    """Run one text command through the Hub and capture its serial output (Echo and matched prompt removed). Returns status: completed (prompt or exit-code evidence; a nonzero exit_code is still completed), quiet or timeout (observation ended only; the command may still be running, do not resend automatically), disconnected (port lost, partial output kept), aborted, or error. completed does not mean asynchronous work such as an upgrade finished. Shell Targets: exit_code=true reports the remote exit status. Prompt-first consoles: prompt + prompt_settle_ms. Trim with grep (grep_invert drops matches) and max_lines (keeps the tail). raw=true also returns raw_base64: the first 32 KiB of the unmodified capture window (echo, ANSI, wrapper included) and raw_truncated."""
     return await offload(
         _get_hub().exec,
         ExecSpec(
@@ -52,6 +53,7 @@ async def serial_exec(
             grep_invert=grep_invert,
             max_lines=max_lines,
             exit_code=exit_code,
+            raw=raw,
         ),
     )
 
@@ -85,8 +87,13 @@ async def serial_tail(
     return result
 
 
+async def serial_set_mode(mode: str) -> dict[str, Any]:
+    """Switch the whole Hub to Bridge Mode or CRT Mode ('bridge' or 'crt'). Refused unless the Operator granted Mode Switch Permission (serial_status mode_switch.allowed) and refused while any Exec is in flight (busy_targets; nothing is queued). The result reports each Target's open outcome; Bridge Mode does not mean every port opened, so check ports and serial_status port_state. Port Bindings and port discovery stay with the Operator."""
+    return await offload(_get_hub().set_mode_agent, mode)
+
+
 def create_mcp(get_hub: Callable[[], Hub]) -> FastMCP:
-    """Create the MCP server with serial_status, serial_exec, serial_send, and serial_tail tools."""
+    """Create the MCP server with serial_status, serial_exec, serial_send, serial_tail, and serial_set_mode tools."""
     global _get_hub
     _get_hub = get_hub
     mcp = FastMCP(
@@ -102,6 +109,7 @@ def create_mcp(get_hub: Callable[[], Hub]) -> FastMCP:
     mcp.tool()(serial_exec)
     mcp.tool()(serial_send)
     mcp.tool()(serial_tail)
+    mcp.tool()(serial_set_mode)
     return mcp
 
 

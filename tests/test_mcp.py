@@ -94,7 +94,13 @@ class McpHttpTest(unittest.TestCase):
         )
 
         self.assertEqual(
-            {"serial_exec", "serial_send", "serial_status", "serial_tail"},
+            {
+                "serial_exec",
+                "serial_send",
+                "serial_status",
+                "serial_tail",
+                "serial_set_mode",
+            },
             {tool["name"] for tool in response.json()["result"]["tools"]},
         )
 
@@ -435,6 +441,47 @@ class McpHttpTest(unittest.TestCase):
             },
             options,
         )
+
+    def list_tool_names(self):
+        response = self.client.post(
+            "/mcp",
+            headers=MCP_HEADERS,
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+        )
+        return [tool["name"] for tool in response.json()["result"]["tools"]]
+
+    def test_set_mode_tool_is_listed_and_calls_hub(self):
+        fake_hub = FakeHub()
+        with patch.object(app_module, "hub", fake_hub):
+            response = call_tool(self.client, "serial_set_mode", {"mode": "bridge"})
+
+        result = response.json()["result"]["structuredContent"]
+        self.assertEqual("bridge", result["mode"])
+        self.assertIn(("agent_mode", "bridge"), fake_hub.calls)
+
+    def test_tool_list_has_no_port_discovery_or_binding_tools(self):
+        self.assertEqual(
+            {
+                "serial_status",
+                "serial_exec",
+                "serial_send",
+                "serial_tail",
+                "serial_set_mode",
+            },
+            set(self.list_tool_names()),
+        )
+
+    def test_exec_passes_raw_option(self):
+        fake_hub = FakeHub()
+        with patch.object(app_module, "hub", fake_hub):
+            call_tool(
+                self.client,
+                "serial_exec",
+                {"target": "linux", "cmd": "ls", "raw": True},
+            )
+
+        options = [c for c in fake_hub.calls if c[0] == "linux" and c[1] == "ls"][-1][2]
+        self.assertTrue(options["raw"])
 
     def test_mcp_serial_exec_passes_output_shaping_options_through(self):
         fake_hub = FakeHub()
