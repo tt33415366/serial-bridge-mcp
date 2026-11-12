@@ -1,0 +1,7 @@
+# Agents may switch mode only with Operator permission
+
+Status: accepted; supersedes the mode rule in ADR 0004 and amends ADR 0009.
+
+The Operator can grant a Mode Switch Permission in the Web UI (off by default), after which an Agent may switch Bridge/CRT Mode through an MCP tool authenticated with the Access Token. Without it, MCP status reports that switching is not allowed and the next action. An Agent switch is refused while an Exec is in flight; only the Operator can abort one (ADR 0006). The switch stays global, reports each Target's open result and failure reason, and on partial failure stays in Bridge Mode rather than auto-reverting, so already-open Targets are not disturbed again; the Operator's own switch behaves the same, and a switch with every port failing reports Bridge Mode with all ports closed. Permission and busy checks and the start of the switch are one atomic step; permission is held in memory only (off after restart), and revoking it affects later requests, never one already accepted.
+
+Unchanged: the Operator's own endpoints stay loopback-only, and Port Binding edits and port discovery stay Operator-only (ADR 0017, 0018). Reaching the loopback mode endpoint through another tool such as a file manager is not a supported path. Rejected: ungated Agent switching (silently takes ports from SecureCRT) and per-Target open/close (ownership is per host).

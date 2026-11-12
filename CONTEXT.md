@@ -123,3 +123,27 @@ _Avoid_: settings page (too broad), onboarding (implies first-run wizard only)
 **Open UI**:
 Whether the Hub launches the Operator’s browser to the local console (`http://127.0.0.1:8765/`) after it is listening; on by default, switched only via environment or CLI.
 _Avoid_: auto-open (vague), startup page (sounds like Setup Page)
+
+**Mode Switch Permission**:
+The Operator-controlled Web UI setting, off by default, that lets an Agent switch Bridge/CRT Mode through MCP. Agent-facing status reports whether it is granted and what the Agent should do next. It never covers Port Binding or port discovery, and it never lets an Agent interrupt an in-flight Exec.
+_Avoid_: agent mode, auto-switch, unlock
+
+**Port State**:
+Per-Target fact about the Hub's hold on its serial port: closed, open, or lost (the port was open and then dropped). It is independent of mode, busy, and Shell Readiness; Bridge Mode does not imply every Target is open.
+_Avoid_: accessible, connected (ambiguous with mode), online
+
+**Shell Readiness**:
+Per-Target, per-Bridge-session claim that the device shell is at its prompt, reported ready only while a fresh observation matches the Target Prompt and unknown otherwise (including when none is configured). A send, reconnect, mode change, or lost port clears it; the Hub never sends a probe to establish it.
+_Avoid_: not ready (this version never asserts it), alive, responsive
+
+**Exec Status**:
+How one Exec ended: completed (prompt or Exit Code Probe evidence; a nonzero exit code is still completed), quiet (output went idle without completion evidence), timeout (observation window expired), disconnected (the port was lost mid-Exec, partial capture kept), aborted (the Operator or a mode change cut it short), or error (internal or protocol failure). Quiet and timeout end observation only; they do not show the command finished and never justify an automatic resend.
+_Avoid_: result (alone), state (ambiguous with Port State), ended_by (the detail field behind it)
+
+**Raw Capture**:
+The first 32 KiB (counted before encoding) of the unmodified bytes received from a Target during one Exec's capture window, returned only on request as Base64 and flagged when truncated. It is independent of Grep and line limits, keeps wrapper, end marker and ANSI bytes exactly as received, and can include bytes the command did not produce.
+_Avoid_: raw log (sounds like the Session Log), output (alone, the cleaned form)
+
+**Target Prompt**:
+The Operator-configured pattern (literal or regular expression) for a Target's shell prompt, used only to judge Shell Readiness. An invalid pattern is rejected, and changing it clears that Target's readiness. An Exec's own prompt argument applies to that Exec alone and never alters it.
+_Avoid_: prompt (alone, ambiguous with the per-Exec argument), shell pattern
