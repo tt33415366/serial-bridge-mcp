@@ -2375,6 +2375,24 @@ class GroundStationExecUiTest(unittest.TestCase):
                     rf'id="{control_id}"[^>]*\brequired\b',
                 )
 
+    def test_index_has_agent_mode_switch_and_target_prompt_controls(self):
+        html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        for dom_id in (
+            "agent-mode-switch",
+            "target-prompt-target",
+            "target-prompt-input",
+            "target-prompt-save",
+            "target-prompt-note",
+        ):
+            self.assertIn(f'id="{dom_id}"', html)
+
+    def test_app_js_posts_permission_and_prompt_and_reports_open_failures(self):
+        js = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("/api/mode_switch_permission", js)
+        self.assertIn("/api/target_prompt", js)
+        self.assertIn("all_open", js)
+        self.assertIn("mode_switch", js)
+
     def test_hidden_slot_controls_are_disabled_in_crt(self):
         result = run_ui_scenario(
             """

@@ -27,6 +27,13 @@
     slot0: document.getElementById("binding-strip-slot0"),
     slot1: document.getElementById("binding-strip-slot1"),
   };
+  const agentSwitch = document.getElementById("agent-mode-switch");
+  const promptSelect = document.getElementById("target-prompt-target");
+  const promptInput = document.getElementById("target-prompt-input");
+  const promptSave = document.getElementById("target-prompt-save");
+  const promptNote = document.getElementById("target-prompt-note");
+  let lastPorts = null;
+  let promptNamesKey = null;
   const wsLamp = document.getElementById("ws-lamp");
   const bindingLiveDir = document.getElementById("binding-live-dir");
   const bindingLiveDirField = document.getElementById("binding-live-dir-field");
@@ -408,8 +415,33 @@
     setBindingEditability();
     updateTargetSlotActions();
     updateFooterLogs(s);
+    if (s.mode_switch) agentSwitch.checked = !!s.mode_switch.allowed;
+    if (s.ports) syncTargetPrompt(s.ports);
     if (s.error) setPill(s.error, "err");
     if (s.config_warning) setPill(s.config_warning, "err");
+  }
+
+  function syncTargetPrompt(ports) {
+    lastPorts = ports;
+    const names = Object.keys(ports);
+    const key = names.join("\n");
+    if (key !== promptNamesKey) {
+      const previous = promptSelect.value;
+      promptNamesKey = key;
+      promptSelect.textContent = "";
+      for (const name of names) {
+        const option = document.createElement("option");
+        option.value = name;
+        option.textContent = (ports[name] && ports[name].title) || name;
+        promptSelect.appendChild(option);
+      }
+      if (names.includes(previous)) promptSelect.value = previous;
+      else if (names.length) promptSelect.value = names[0];
+    }
+    const selected = ports[promptSelect.value];
+    if (selected && document.activeElement !== promptInput) {
+      promptInput.value = selected.target_prompt || "";
+    }
   }
 
   const LIVE_VIEW_BUDGET_KEY = "serial-bridge-live-view-budget";
@@ -1805,6 +1837,14 @@
       appendLine(slotTargets[0], "---", data.error || "mode failed", "system", "");
     }
     applyStatus(await (await fetch("/api/status")).json());
+    if (data.ok && data.all_open === false) {
+      const failed = Object.entries(data.ports || {})
+        .filter(([, port]) => !port.open)
+        .map(([name, port]) => `${name}: ${port.error}`)
+        .join("; ");
+      setPill("Bridge Mode: some ports not open", "warn");
+      appendLine(slotTargets[0], "---", `Not open - ${failed}`, "system", "");
+    }
     await refreshPorts();
   }
 
@@ -1844,6 +1884,31 @@
 
   btnBridge.addEventListener("click", () => setMode("bridge"));
   btnCrt.addEventListener("click", () => setMode("crt"));
+  agentSwitch.addEventListener("change", async () => {
+    const res = await fetch("/api/mode_switch_permission", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ allowed: agentSwitch.checked }),
+    });
+    const data = await res.json();
+    if (data.ok) applyStatus(data);
+    else agentSwitch.checked = !agentSwitch.checked;
+  });
+  promptSelect.addEventListener("change", () => {
+    const selected = lastPorts && lastPorts[promptSelect.value];
+    promptInput.value = (selected && selected.target_prompt) || "";
+    promptNote.textContent = "";
+  });
+  promptSave.addEventListener("click", async () => {
+    const res = await fetch("/api/target_prompt", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target: promptSelect.value, pattern: promptInput.value }),
+    });
+    const data = await res.json();
+    promptNote.textContent = data.ok ? "saved" : data.error || data.detail || "save failed";
+    if (data.ok) applyStatus(data);
+  });
   for (const budget of LIVE_VIEW_BUDGETS) {
     liveDepthStops[budget].addEventListener("click", () => setLiveViewBudget(budget));
   }
