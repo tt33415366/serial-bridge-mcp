@@ -145,5 +145,5 @@ The first 32 KiB (counted before encoding) of the unmodified bytes received from
 _Avoid_: raw log (sounds like the Session Log), output (alone, the cleaned form)
 
 **Target Prompt**:
-The Operator-configured pattern (literal or regular expression) for a Target's shell prompt, used only to judge Shell Readiness. An invalid pattern is rejected, and changing it clears that Target's readiness. An Exec's own prompt argument applies to that Exec alone and never alters it.
+The Operator-configured pattern (a regular expression) for a Target's shell prompt, used only to judge Shell Readiness. An invalid pattern is rejected, and changing it clears that Target's readiness. An Exec's own prompt argument applies to that Exec alone and never alters it.
 _Avoid_: prompt (alone, ambiguous with the per-Exec argument), shell pattern

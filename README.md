@@ -72,7 +72,20 @@ Use `/mcp` exactly; the Web UI is at `/`. The MCP Server exposes:
   path on the Hub host; `log_url` is a relative Bearer GET of that file from
   the same origin as `/mcp`). Empty `log` / `log_url` means none assigned.
   Last N lines are `serial_tail`, not Exec output. Do not pull the Session Log
-  into `serial_exec` output.
+  into `serial_exec` output. Each Target also reports `port_state` (`closed`,
+  `open`, `lost`), `open_error` when the last open failed, and `shell`
+  (`ready` or `unknown`) with `shell_observed_at`. `shell` is judged from the
+  Operator-set Target Prompt (a regular expression) and is `unknown` without
+  fresh evidence; the Hub never sends a probe. `mode_switch` reports whether
+  the Operator has granted Mode Switch Permission.
+- `serial_set_mode(mode)`: switch the Hub to `crt` or `bridge`. Refused unless
+  the Operator granted Mode Switch Permission in the Web UI (off by default,
+  kept in memory only, so it is off again after every Hub restart), and
+  refused while any Target is busy (the result lists `busy_targets` and
+  nothing is queued). A `bridge` result is `{ok, mode, all_open, ports}`; a
+  failed port open is reported per port and never rolls back to CRT Mode.
+  Port discovery and Port Binding editing stay with the Operator; there is no
+  MCP tool for them.
 - `serial_exec`: send one text command and capture output until an idle gap,
   an optional prompt match, or the 60-second timeout. The device's Echo of the
   command and the matched prompt text are removed from `output`; the Session
@@ -92,6 +105,13 @@ Use `/mcp` exactly; the Web UI is at `/`. The MCP Server exposes:
     `grep_context` are mutually exclusive.
   - `max_lines`: keep only the last N lines after Grep; `lines_dropped`
     reports how many were cut.
+  - `raw: true`: Raw Capture. Adds `raw_base64` (the first 32 KiB of the
+    unmodified capture window) and `raw_truncated`, independent of Grep and
+    `max_lines`.
+  - Result `status` is one of `completed` (prompt or exit-code token arrived;
+    a nonzero `exit_code` is still `completed`), `quiet`, `timeout`,
+    `disconnected`, `aborted`, `error`. `quiet` and `timeout` only end
+    observation; they do not prove the command finished.
 - `serial_send`: send a text line or Raw Payload without waiting for output.
 - `serial_tail`: read one Target's last `n` lines of the current Session Log
   (default 40, max 200); result `{ok, target, tail, n}`. Each line is reduced
