@@ -1907,6 +1907,7 @@
     });
     const data = await res.json();
     promptNote.textContent = data.ok ? "saved" : data.error || data.detail || "save failed";
+    promptNote.classList.toggle("err", !data.ok);
     if (data.ok) applyStatus(data);
   });
   for (const budget of LIVE_VIEW_BUDGETS) {

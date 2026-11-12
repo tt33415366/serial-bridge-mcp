@@ -39,19 +39,24 @@
         <a class="setup-link" href="/setup">Setup</a>
       </header>
 
-      <section class="banner" id="banner" aria-live="polite">
+      <section class="banner" id="banner">
         <strong id="mode-label">—</strong>
-        <span id="mode-hint">Select a mode. Bridge owns the ports; CRT releases them.</span>
-        <label class="agent-mode-switch">
+        <span id="mode-hint" aria-live="polite">Select a mode. Bridge owns the ports; CRT releases them.</span>
+      <section class="agent-access" aria-label="Agent access">
+        <label class="agent-gate">
+          <strong>Agent</strong>
           <input type="checkbox" id="agent-mode-switch" />
-          Allow Agent to switch mode
+          <span class="gate-label">May switch mode</span>
         </label>
-        <span class="target-prompt">
+        <div class="agent-prompt">
+          <strong>Prompt</strong>
           <select id="target-prompt-target" aria-label="Target"></select>
-          <input type="text" id="target-prompt-input" placeholder="Target prompt (regex), e.g. # $" />
-          <button type="button" id="target-prompt-save">Save prompt</button>
-          <span id="target-prompt-note"></span>
-        </span>
+          <input type="text" id="target-prompt-input" placeholder="regex, e.g. # $" aria-label="Target prompt (regex)" />
+          <button type="button" id="target-prompt-save" class="ghost">Save</button>
+          <span id="target-prompt-note" class="field-note" aria-live="polite"></span>
+        </div>
+      </section>
+
       </section>
 
       <section class="binding-strip" id="binding-strip" aria-label="Current bindings" hidden>

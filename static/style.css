@@ -276,7 +276,8 @@ body::after {
 
 .banner {
   display: flex;
-  align-items: baseline;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 10px;
   padding: 6px 10px;
   border-left: 2px solid var(--system);
@@ -292,6 +293,85 @@ body::after {
   letter-spacing: 0.2em;
   text-transform: uppercase;
 }
+
+.agent-access {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px 22px;
+  margin-left: auto;
+  font-size: 10px;
+}
+
+.agent-access strong {
+  flex: none;
+  color: var(--text);
+  font: 8px var(--display);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+.agent-gate,
+.agent-prompt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.agent-gate { cursor: pointer; }
+
+.gate-label {
+  color: var(--dim);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.agent-gate:has(input:checked) .gate-label { color: var(--agent); }
+
+/* Square toggle: the same hard-edged, glowing-knob idiom as the Bridge/CRT switch. */
+.agent-gate input {
+  appearance: none;
+  position: relative;
+  flex: none;
+  width: 30px;
+  height: 14px;
+  margin: 0;
+  border: 1px solid var(--rule-hot);
+  background: var(--deep);
+  cursor: pointer;
+  transition: border-color 160ms ease, background 160ms ease;
+}
+
+.agent-gate input::after {
+  content: "";
+  position: absolute;
+  inset: 2px auto 2px 2px;
+  width: 8px;
+  background: var(--faint);
+  transition: transform 160ms ease, background 160ms ease, box-shadow 160ms ease;
+}
+
+.agent-gate input:checked {
+  border-color: var(--agent);
+  background: rgba(169, 139, 255, 0.12);
+}
+
+.agent-gate input:checked::after {
+  transform: translateX(16px);
+  background: var(--agent);
+  box-shadow: 0 0 10px rgba(169, 139, 255, 0.6);
+}
+
+.agent-gate input:focus-visible { outline: 1px solid var(--agent); outline-offset: 2px; }
+
+.agent-prompt { flex: 0 1 auto; justify-content: flex-end; }
+.agent-access .agent-prompt select { flex: none; width: auto; min-width: 84px; }
+.agent-access .agent-prompt input { flex: 1 1 140px; width: auto; max-width: 320px; }
+.agent-access .agent-prompt .ghost { flex: none; }
+.agent-access .agent-prompt .field-note { grid-column: auto; min-width: 0; }
 
 .binding-strip {
   display: flex;
@@ -531,7 +611,9 @@ body::after {
 
 .field-note.err { color: var(--alarm); }
 .binding-panel input,
-.binding-panel select {
+.binding-panel select,
+.agent-prompt input,
+.agent-prompt select {
   width: 100%;
   min-width: 0;
   padding: 7px 8px;
@@ -543,7 +625,9 @@ body::after {
 }
 
 .binding-panel input:focus,
-.binding-panel select:focus { border-color: var(--rtos); }
+.binding-panel select:focus,
+.agent-prompt input:focus,
+.agent-prompt select:focus { border-color: var(--rtos); }
 .binding-panel input:disabled,
 .binding-panel select:disabled,
 .binding-panel button:disabled { opacity: 0.35; cursor: not-allowed; }
