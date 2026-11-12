@@ -47,6 +47,8 @@ class Hub:
         self._state_lock = threading.Lock()
         self._transition_lock = threading.RLock()
         self._readiness = ShellReadiness()
+        self._mode_switch_allowed = False
+        self._switching = False
         self.workers: dict[str, Any] = {}
         self.open_errors: dict[str, str] = {}
         self._mode_transition = ModeTransition(
@@ -203,12 +205,14 @@ class Hub:
             mode = self.mode
             workers = dict(self.workers)
             open_errors = dict(self.open_errors)
+            mode_switch = self._mode_switch_info(workers, self._mode_switch_allowed)
         shell = {
             k: self._readiness.evaluate(k, self.config.target_prompts.get(k))
             for k in self.ports
         }
         status = {
             "mode": mode,
+            "mode_switch": mode_switch,
             "live_dir": str(self.config.live_dir.resolve()),
             "ports": {
                 k: {
@@ -238,6 +242,58 @@ class Hub:
         if len(self.config.slots) < MAX_SLOT_COUNT:
             status["add_defaults"] = unused_default_slot(self.config.slots)
         return status
+
+    @staticmethod
+    def _mode_switch_info(workers: dict[str, Any], allowed: bool) -> dict[str, Any]:
+        busy_targets = sorted(k for k, w in workers.items() if w.is_busy)
+        if not allowed:
+            next_action = "ask_operator_to_enable_mode_switch"
+        elif busy_targets:
+            next_action = "wait_for_exec_to_finish"
+        else:
+            next_action = "call serial_set_mode"
+        return {
+            "allowed": allowed,
+            "busy": bool(busy_targets),
+            "busy_targets": busy_targets,
+            "next_action": next_action,
+        }
+
+    def set_mode_switch_permission(self, allowed: bool) -> dict[str, Any]:
+        with self._state_lock:
+            self._mode_switch_allowed = bool(allowed)
+        status = self.status()
+        self.emit({"type": "status", **status})
+        return {"ok": True, **status}
+
+    def set_mode_agent(self, mode: object) -> dict[str, Any]:
+        requested = mode.lower().strip() if isinstance(mode, str) else ""
+        if requested not in ("bridge", "crt"):
+            return {"ok": False, "error": "mode must be bridge or crt"}
+        with self._transition_lock:
+            with self._state_lock:
+                info = self._mode_switch_info(
+                    dict(self.workers), self._mode_switch_allowed
+                )
+                if not info["allowed"]:
+                    return {
+                        "ok": False,
+                        "error": "Mode switching by Agents is not permitted",
+                        "mode_switch": info,
+                    }
+                if info["busy"]:
+                    return {
+                        "ok": False,
+                        "error": "Exec in flight; mode not changed",
+                        "busy_targets": info["busy_targets"],
+                        "mode_switch": info,
+                    }
+                self._switching = True
+            try:
+                return self.start_bridge() if requested == "bridge" else self.stop_bridge()
+            finally:
+                with self._state_lock:
+                    self._switching = False
 
     @staticmethod
     def _port_state(key: str, workers: dict[str, Any]) -> str:
@@ -405,6 +461,8 @@ class Hub:
         assert target_name is not None
         target = target_name
         with self._state_lock:
+            if self._switching:
+                return {"ok": False, "error": "mode switch in progress; retry"}
             if self.mode != "bridge":
                 return {
                     "ok": False,
@@ -442,6 +500,10 @@ class Hub:
         assert target_name is not None
         target = target_name
         with self._state_lock:
+            if self._switching:
+                return exec_result(
+                    target, ok=False, error="mode switch in progress; retry"
+                )
             if self.mode != "bridge":
                 return exec_result(
                     target,

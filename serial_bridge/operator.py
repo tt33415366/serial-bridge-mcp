@@ -81,6 +81,10 @@ class BindingsBody(BaseModel):
     live_dir: str | None = Field(default=None, min_length=1)
 
 
+class PermissionBody(BaseModel):
+    allowed: bool
+
+
 class TargetPromptBody(BaseModel):
     target: str = Field(min_length=1)
     pattern: str = ""
@@ -178,6 +182,13 @@ def register_operator_routes(
         hub = _get_hub()
         slots = [slot.model_dump() for slot in body.slots]
         return await offload(hub.update_slots, slots, body.live_dir)
+
+    @app.post(
+        "/api/mode_switch_permission",
+        dependencies=[Depends(_require_operator_access)],
+    )
+    async def api_mode_switch_permission(body: PermissionBody) -> dict[str, Any]:
+        return await offload(_get_hub().set_mode_switch_permission, body.allowed)
 
     @app.post("/api/target_prompt", dependencies=[Depends(_require_operator_access)])
     async def api_target_prompt(body: TargetPromptBody) -> dict[str, Any]:

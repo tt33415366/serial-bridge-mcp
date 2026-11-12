@@ -14,6 +14,7 @@ import serial_bridge.hub as hub_module
 from serial_bridge.config import Config, DEFAULT_LIVE_DIR, SlotDecision, SlotPolicy
 from serial_bridge.constants import TAIL_DEFAULT_N, TAIL_MAX_N
 from serial_bridge.hub import Hub
+from serial_bridge.hub.queue import ExecSpec
 
 
 def make_config(path=Path("serial_bridge.json"), live_dir=None):
@@ -1005,6 +1006,126 @@ class HubTest(unittest.TestCase):
             self.assertEqual(r"# $", hub.status()["ports"]["linux"]["target_prompt"])
             saved = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual({"linux": r"# $"}, saved["target_prompts"])
+
+    def _perm_hub(self, temp_dir):
+        live = Path(temp_dir)
+        return Hub(make_config(live / "serial_bridge.json", live_dir=live))
+
+    def test_agent_bridge_retry_leaves_healthy_worker_untouched(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.object(hub_module, "PortWorker", FakePortWorker):
+                hub = self._bridge_hub(temp_dir)
+                self._first_start_with_rtos_failing(hub)
+                linux = hub.workers["linux"]
+                hub.set_mode_switch_permission(True)
+                result = hub.set_mode_agent("bridge")
+            self.assertTrue(result["ok"])
+            self.assertIs(linux, hub.workers["linux"])
+            self.assertFalse(linux.closed)
+            self.assertEqual([], linux.events)
+            self.assertTrue(hub.workers["rtos"].is_open)
+
+    def test_permission_defaults_off_and_agent_switch_is_refused(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.object(hub_module, "PortWorker", FakePortWorker):
+                hub = self._perm_hub(temp_dir)
+                status = hub.status()["mode_switch"]
+                self.assertFalse(status["allowed"])
+                self.assertEqual("ask_operator_to_enable_mode_switch", status["next_action"])
+                result = hub.set_mode_agent("bridge")
+            self.assertFalse(result["ok"])
+            self.assertEqual("crt", hub.mode)
+
+    def test_granted_permission_switches_both_directions(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.object(hub_module, "PortWorker", FakePortWorker):
+                hub = self._perm_hub(temp_dir)
+                hub.set_mode_switch_permission(True)
+                self.assertEqual("bridge", hub.set_mode_agent("bridge")["mode"])
+                self.assertEqual("crt", hub.set_mode_agent("crt")["mode"])
+
+    def test_invalid_mode_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            hub = self._perm_hub(temp_dir)
+            hub.set_mode_switch_permission(True)
+            result = hub.set_mode_agent("nope")
+        self.assertEqual(
+            {"ok": False, "error": "mode must be bridge or crt"}, result
+        )
+
+    def test_busy_target_refuses_without_queueing_or_aborting(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.object(hub_module, "PortWorker", FakePortWorker):
+                hub = self._perm_hub(temp_dir)
+                hub.set_mode_switch_permission(True)
+                hub.start_bridge()
+                hub.workers["linux"].is_busy = True
+                result = hub.set_mode_agent("crt")
+                self.assertFalse(result["ok"])
+                self.assertEqual(["linux"], result["busy_targets"])
+                self.assertEqual("wait_for_exec_to_finish", result["mode_switch"]["next_action"])
+                self.assertEqual("bridge", hub.mode)
+                self.assertNotIn(("abort", "bridge"), hub.workers["linux"].events)
+
+    def test_revoking_permission_affects_only_later_requests(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.object(hub_module, "PortWorker", FakePortWorker):
+                hub = self._perm_hub(temp_dir)
+                hub.set_mode_switch_permission(True)
+                self.assertTrue(hub.set_mode_agent("bridge")["ok"])
+                hub.set_mode_switch_permission(False)
+                self.assertEqual("bridge", hub.mode)
+                self.assertFalse(hub.set_mode_agent("crt")["ok"])
+
+    def test_agent_switch_reports_partial_open_failure_without_revert(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            FakePortWorker.fail_ports = {"COM6"}
+            self.addCleanup(setattr, FakePortWorker, "fail_ports", set())
+            with patch.object(hub_module, "PortWorker", FakePortWorker):
+                hub = self._perm_hub(temp_dir)
+                hub.set_mode_switch_permission(True)
+                result = hub.set_mode_agent("bridge")
+            self.assertEqual("bridge", result["mode"])
+            self.assertFalse(result["ports"]["rtos"]["open"])
+
+    def test_exec_is_refused_while_switch_is_starting(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.object(hub_module, "PortWorker", FakePortWorker):
+                hub = self._perm_hub(temp_dir)
+                hub.start_bridge()
+                hub._switching = True
+                result = hub.exec(ExecSpec(target="linux", cmd="ls"))
+            self.assertFalse(result["ok"])
+            self.assertEqual("error", result["status"])
+            self.assertIn("switch in progress", result["error"])
+
+    def test_exec_and_send_are_refused_during_accepted_switch(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.object(hub_module, "PortWorker", FakePortWorker):
+                hub = self._perm_hub(temp_dir)
+                hub.start_bridge()
+                hub.set_mode_switch_permission(True)
+                seen = {}
+
+                def fake_stop(*_args, **_kwargs):
+                    seen["exec"] = hub.exec(ExecSpec(target="linux", cmd="ls"))
+                    seen["send"] = hub.send("linux", "ls")
+                    return {"ok": True, "mode": "crt"}
+
+                with patch.object(hub, "stop_bridge", fake_stop):
+                    result = hub.set_mode_agent("crt")
+                after = hub.send("linux", "ls")
+            self.assertTrue(result["ok"])
+            for key in ("exec", "send"):
+                self.assertFalse(seen[key]["ok"])
+                self.assertIn("switch in progress", seen[key]["error"])
+            self.assertNotIn("switch in progress", after.get("error", ""))
+
+    def test_permission_is_memory_only(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            hub = self._perm_hub(temp_dir)
+            hub.set_mode_switch_permission(True)
+            self.assertFalse(Hub(hub.config).status()["mode_switch"]["allowed"])
 
 
 class HubTailTest(unittest.TestCase):

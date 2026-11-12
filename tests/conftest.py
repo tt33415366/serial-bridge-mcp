@@ -86,6 +86,10 @@ class FakeHub:
         self.calls.append(("target_prompt", target, pattern))
         return {"ok": True}
 
+    def set_mode_switch_permission(self, allowed):
+        self.calls.append(("permission", allowed))
+        return {"ok": True}
+
     def start_bridge(self):
         self.calls.append(("mode", "bridge"))
         return {"ok": True, "mode": "bridge"}

@@ -975,6 +975,19 @@ class AppHttpAuthorizationTest(unittest.TestCase):
         self.assertEqual([("target_prompt", "linux", "# $")], fake_hub.calls)
         self.assertEqual(403, denied.status_code)
 
+    def test_mode_switch_permission_endpoint_is_operator_only(self):
+        fake_hub = FakeHub()
+        body = {"allowed": True}
+        local_client = TestClient(app_module.app, client=("127.0.0.1", 50000))
+        remote_client = TestClient(app_module.app, client=("192.0.2.10", 50000))
+        with patch.object(app_module, "hub", fake_hub):
+            ok = local_client.post("/api/mode_switch_permission", json=body)
+            denied = remote_client.post("/api/mode_switch_permission", json=body)
+
+        self.assertEqual(200, ok.status_code)
+        self.assertEqual([("permission", True)], fake_hub.calls)
+        self.assertEqual(403, denied.status_code)
+
 
 if __name__ == "__main__":
     unittest.main()
