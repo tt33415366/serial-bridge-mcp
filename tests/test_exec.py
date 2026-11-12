@@ -368,6 +368,31 @@ class ExecEngineTest(unittest.TestCase):
         result, _, _ = execute(grep="")
         self.assertEqual("error", result["status"])
 
+    def test_serial_exception_mid_exec_is_disconnected_with_partial_output(self):
+        from serial import SerialException
+
+        state = {"n": 0}
+
+        def read_then_fail():
+            state["n"] += 1
+            if state["n"] == 1:
+                return b"show\r\npartial line\r\n"
+            raise SerialException("device removed")
+
+        result, _, _ = execute(
+            serial_factory=lambda clock: ScriptedSerial(clock, on_read=read_then_fail)
+        )
+        self.assertFalse(result["ok"])
+        self.assertEqual("disconnected", result["status"])
+        self.assertIn("partial line", result["output"])
+        self.assertIn("device removed", result["error"])
+
+    def test_queued_exec_finishes_disconnected(self):
+        queue = TargetQueue()
+        queued = queue.enqueue_exec(target="linux", cmd="a")
+        queue.abort_agents(disconnected=True)
+        self.assertEqual("disconnected", queued.result["status"])
+
     def test_on_done_reports_idle_once(self):
         calls = []
 

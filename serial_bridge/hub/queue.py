@@ -62,8 +62,13 @@ class ExecRequest(WriteRequest):
     started: threading.Event = field(default_factory=threading.Event)
     result: dict[str, Any] | None = None
 
-    def finish_queued_abort(self) -> None:
-        self.result = exec_result(self.target, ok=False, aborted=True)
+    def finish_queued_abort(self, disconnected: bool = False) -> None:
+        if disconnected:
+            self.result = exec_result(
+                self.target, ok=False, status="disconnected", error="port lost"
+            )
+        else:
+            self.result = exec_result(self.target, ok=False, aborted=True)
         self.done.set()
 
 
@@ -188,7 +193,7 @@ class TargetQueue:
             write()
             return True
 
-    def abort_agents(self) -> None:
+    def abort_agents(self, disconnected: bool = False) -> None:
         with self._lock:
             if self._active_agent is not None:
                 self._active_agent.aborted.set()
@@ -196,7 +201,7 @@ class TargetQueue:
             for request in self._agent:
                 request.aborted.set()
                 if isinstance(request, ExecRequest):
-                    request.finish_queued_abort()
+                    request.finish_queued_abort(disconnected)
             self._agent.clear()
 
     @property

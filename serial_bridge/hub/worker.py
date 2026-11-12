@@ -26,6 +26,7 @@ class PortWorker:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self.is_open = False
+        self.lost = False
         self.line_ending = b"\n"
         self._rx_buf = bytearray()
         self._exec_engine = ExecEngine()
@@ -165,6 +166,10 @@ class PortWorker:
                                     on_rx=self._log_rx_chunk,
                                     service_operator=self._service_operator_write,
                                 )
+                                if request.result.get("status") == "disconnected":
+                                    raise SerialException(
+                                        request.result.get("error") or "port lost"
+                                    )
                             finally:
                                 if request.result is None:
                                     request.result = exec_result(
@@ -186,6 +191,9 @@ class PortWorker:
             except SerialException as e:
                 self.hub.append_log(self.name, "---", f"SerialException: {e}", who="system")
                 self.is_open = False
+                self.lost = True
+                self._tx.abort_agents(disconnected=True)
+                self.hub.port_lost(self.name)
                 break
             except Exception as e:
                 self.hub.append_log(self.name, "---", f"error: {e}", who="system")

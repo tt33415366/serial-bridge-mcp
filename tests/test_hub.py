@@ -7,6 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from serial import SerialException
+
 import serial_bridge.hub as hub_module
 from serial_bridge.config import Config, DEFAULT_LIVE_DIR, SlotDecision, SlotPolicy
 from serial_bridge.constants import TAIL_DEFAULT_N, TAIL_MAX_N
@@ -39,6 +41,7 @@ def make_one_slot_config(path=Path("serial_bridge.json"), live_dir=None):
 
 class FakePortWorker:
     instances = []
+    fail_ports: set[str] = set()
 
     def __init__(self, name, port, baud, hub_ref):
         self.name = name
@@ -46,6 +49,7 @@ class FakePortWorker:
         self.baud = baud
         self.hub = hub_ref
         self.is_open = False
+        self.lost = False
         self.sent = []
         self.closed = False
         self.events = []
@@ -53,6 +57,8 @@ class FakePortWorker:
         self.__class__.instances.append(self)
 
     def open(self):
+        if self.port in self.fail_ports:
+            raise SerialException(f"{self.port} busy")
         self.is_open = True
 
     def start(self):
@@ -78,6 +84,9 @@ class WorkerHub:
         if direction == ">>>" and self.fail_tx_log:
             self.fail_tx_log = False
             raise RuntimeError("TX log failed")
+
+    def port_lost(self, target):
+        pass
 
 
 class FakeSerial:
@@ -367,6 +376,154 @@ class HubTest(unittest.TestCase):
 
         self.assertEqual(config.warning, status["config_warning"])
 
+    def test_port_lost_broadcasts_status_and_keeps_bridge_mode(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            live = Path(temp_dir)
+            with patch.object(hub_module, "PortWorker", FakePortWorker):
+                hub = Hub(make_config(live / "serial_bridge.json", live_dir=live))
+                hub.start_bridge()
+                events = []
+                hub.emit = events.append
+                hub.workers["linux"].is_open = False
+                hub.workers["linux"].lost = True
+                hub.port_lost("linux")
+            self.assertEqual("bridge", hub.mode)
+            self.assertEqual("status", events[-1]["type"])
+
+    def test_port_lost_survives_status_file_write_failure(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            live = Path(temp_dir)
+            with patch.object(hub_module, "PortWorker", FakePortWorker):
+                hub = Hub(make_config(live / "serial_bridge.json", live_dir=live))
+                hub.start_bridge()
+                events = []
+                hub.emit = events.append
+                with patch.object(
+                    hub._mode_transition,
+                    "write_bridge_status",
+                    side_effect=OSError("disk full"),
+                ):
+                    hub.port_lost("linux")
+            self.assertEqual("status", events[-1]["type"])
+
+    def _bridge_hub(self, temp_dir):
+        live = Path(temp_dir)
+        return Hub(make_config(live / "serial_bridge.json", live_dir=live))
+
+    def test_partial_open_failure_stays_in_bridge_and_reports_each_target(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            FakePortWorker.fail_ports = {"COM6"}
+            self.addCleanup(setattr, FakePortWorker, "fail_ports", set())
+            with patch.object(hub_module, "PortWorker", FakePortWorker):
+                hub = self._bridge_hub(temp_dir)
+                result = hub.start_bridge()
+                status = hub.status()
+            self.assertTrue(result["ok"])
+            self.assertEqual("bridge", result["mode"])
+            self.assertFalse(result["all_open"])
+            self.assertTrue(result["ports"]["linux"]["open"])
+            self.assertFalse(result["ports"]["rtos"]["open"])
+            self.assertIn("COM6", result["ports"]["rtos"]["error"])
+            self.assertEqual("bridge", hub.mode)
+            self.assertEqual("open", status["ports"]["linux"]["port_state"])
+            self.assertEqual("closed", status["ports"]["rtos"]["port_state"])
+            self.assertIn("COM6", status["ports"]["rtos"]["open_error"])
+
+    def test_all_ports_failing_still_reports_bridge_mode_with_all_closed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            FakePortWorker.fail_ports = {"COM3", "COM6"}
+            self.addCleanup(setattr, FakePortWorker, "fail_ports", set())
+            with patch.object(hub_module, "PortWorker", FakePortWorker):
+                hub = self._bridge_hub(temp_dir)
+                result = hub.start_bridge()
+            self.assertEqual("bridge", result["mode"])
+            self.assertFalse(any(p["open"] for p in result["ports"].values()))
+            self.assertEqual("bridge", hub.mode)
+
+    def _first_start_with_rtos_failing(self, hub):
+        FakePortWorker.fail_ports = {"COM6"}
+        self.addCleanup(setattr, FakePortWorker, "fail_ports", set())
+        hub.start_bridge()
+        FakePortWorker.fail_ports = set()
+
+    def test_repeat_bridge_request_reopens_only_missing_targets(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.object(hub_module, "PortWorker", FakePortWorker):
+                hub = self._bridge_hub(temp_dir)
+                self._first_start_with_rtos_failing(hub)
+                linux = hub.workers["linux"]
+                log = hub.ports["linux"]["log"]
+                result = hub.start_bridge()
+                status = hub.status()
+            self.assertIs(linux, hub.workers["linux"])
+            self.assertEqual([], linux.events)
+            self.assertFalse(linux.closed)
+            self.assertEqual(log, hub.ports["linux"]["log"])
+            self.assertTrue(hub.workers["rtos"].is_open)
+            self.assertTrue(result["all_open"])
+            self.assertEqual(
+                {"linux": {"open": True}, "rtos": {"open": True}}, result["ports"]
+            )
+            self.assertEqual({}, hub.open_errors)
+            self.assertNotIn("open_error", status["ports"]["rtos"])
+
+    def test_repeat_bridge_request_replaces_lost_worker_only(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.object(hub_module, "PortWorker", FakePortWorker):
+                hub = self._bridge_hub(temp_dir)
+                hub.start_bridge()
+                old_linux = hub.workers["linux"]
+                rtos = hub.workers["rtos"]
+                old_linux.is_open = False
+                old_linux.lost = True
+                result = hub.start_bridge()
+            self.assertIsNot(old_linux, hub.workers["linux"])
+            self.assertTrue(hub.workers["linux"].is_open)
+            self.assertTrue(old_linux.closed)
+            self.assertIs(rtos, hub.workers["rtos"])
+            self.assertEqual([], rtos.events)
+            self.assertTrue(result["all_open"])
+
+    def test_repeat_bridge_request_failing_again_keeps_error_and_healthy_targets(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.object(hub_module, "PortWorker", FakePortWorker):
+                hub = self._bridge_hub(temp_dir)
+                self._first_start_with_rtos_failing(hub)
+                FakePortWorker.fail_ports = {"COM6"}
+                linux = hub.workers["linux"]
+                result = hub.start_bridge()
+                status = hub.status()
+            self.assertIs(linux, hub.workers["linux"])
+            self.assertEqual([], linux.events)
+            self.assertFalse(result["all_open"])
+            self.assertEqual({"open": True}, result["ports"]["linux"])
+            self.assertFalse(result["ports"]["rtos"]["open"])
+            self.assertIn("COM6", status["ports"]["rtos"]["open_error"])
+            self.assertEqual("bridge", hub.mode)
+
+    def test_stop_bridge_after_retry_releases_everything(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.object(hub_module, "PortWorker", FakePortWorker):
+                hub = self._bridge_hub(temp_dir)
+                self._first_start_with_rtos_failing(hub)
+                hub.start_bridge()
+                workers = list(hub.workers.values())
+                hub.stop_bridge()
+            self.assertEqual("crt", hub.mode)
+            self.assertEqual({}, hub.workers)
+            self.assertTrue(all(w.closed for w in workers))
+
+    def test_lost_port_state(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.object(hub_module, "PortWorker", FakePortWorker):
+                hub = self._bridge_hub(temp_dir)
+                hub.start_bridge()
+                hub.workers["linux"].is_open = False
+                hub.workers["linux"].lost = True
+                self.assertEqual("lost", hub.status()["ports"]["linux"]["port_state"])
+                hub.stop_bridge()
+                self.assertEqual("closed", hub.status()["ports"]["linux"]["port_state"])
+
     def test_bridge_mode_opens_sends_and_releases_both_targets(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             live = Path(temp_dir)
@@ -374,7 +531,12 @@ class HubTest(unittest.TestCase):
                 hub = Hub(make_config(live / "serial_bridge.json", live_dir=live))
 
                 self.assertEqual(
-                    {"ok": True, "mode": "bridge"},
+                    {
+                        "ok": True,
+                        "mode": "bridge",
+                        "all_open": True,
+                        "ports": {"linux": {"open": True}, "rtos": {"open": True}},
+                    },
                     hub.start_bridge(),
                 )
                 self.assertEqual(

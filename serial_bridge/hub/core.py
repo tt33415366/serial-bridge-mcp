@@ -44,6 +44,7 @@ class Hub:
         self._state_lock = threading.Lock()
         self._transition_lock = threading.RLock()
         self.workers: dict[str, Any] = {}
+        self.open_errors: dict[str, str] = {}
         self._mode_transition = ModeTransition(
             self,
             self._transcript,
@@ -197,6 +198,7 @@ class Hub:
         with self._state_lock:
             mode = self.mode
             workers = dict(self.workers)
+            open_errors = dict(self.open_errors)
         status = {
             "mode": mode,
             "live_dir": str(self.config.live_dir.resolve()),
@@ -208,6 +210,7 @@ class Hub:
                     "baud": v["baud"],
                     "open": k in workers and workers[k].is_open,
                     "busy": k in workers and workers[k].is_busy,
+                    "port_state": self._port_state(k, workers),
                     "log": str(v["log"]) if v.get("log") else "",
                     "log_url": (
                         f"{SESSION_LOG_ROUTE}?target={k}" if v.get("log") else ""
@@ -216,11 +219,23 @@ class Hub:
                 for k, v in self.ports.items()
             },
         }
+        for k, message in open_errors.items():
+            if k in status["ports"]:
+                status["ports"][k]["open_error"] = message
         if self.config.warning:
             status["config_warning"] = self.config.warning
         if len(self.config.slots) < MAX_SLOT_COUNT:
             status["add_defaults"] = unused_default_slot(self.config.slots)
         return status
+
+    @staticmethod
+    def _port_state(key: str, workers: dict[str, Any]) -> str:
+        worker = workers.get(key)
+        if worker is None:
+            return "closed"
+        if getattr(worker, "lost", False):
+            return "lost"
+        return "open" if worker.is_open else "closed"
 
     def get_tail(self, target: str = "both", n: int = 80) -> dict[str, str]:
         return self._transcript.get_tail(target, n)
@@ -294,6 +309,14 @@ class Hub:
 
     def stop_bridge(self, quiet: bool = False) -> dict[str, Any]:
         return self._mode_transition.stop_bridge(quiet)
+
+    def port_lost(self, target: str) -> None:
+        """A worker's port dropped: tell clients; Bridge Mode and ports stay as they are."""
+        self.emit({"type": "status", **self.status()})
+        try:
+            self._mode_transition.write_bridge_status()
+        except OSError:
+            pass  # runs on the worker thread; the status file is best-effort here
 
     def send(
         self,

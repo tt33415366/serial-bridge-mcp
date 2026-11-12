@@ -43,8 +43,12 @@ class ModeTransition:
                         "ok": True,
                         "mode": "bridge",
                         "msg": "Already in Bridge Mode",
+                        "all_open": True,
+                        "ports": {k: {"open": True} for k in self._hub.ports},
                     }
-            errors: list[str] = []
+                already_bridge = self._hub.mode == "bridge"
+            if already_bridge:
+                return self._retry_bridge()
             self.stop_bridge(quiet=True)
             try:
                 self._hub.config.live_dir.mkdir(parents=True, exist_ok=True)
@@ -62,33 +66,9 @@ class ModeTransition:
                     "error": f"Could not create Live Directory: {exc}",
                 }
             self._transcript.assign_session_logs()
+            results: dict[str, dict[str, Any]] = {}
             for key, config in self._hub.ports.items():
-                worker = self._worker_factory(key, config["com"], config["baud"])
-                try:
-                    worker.open()
-                    worker.start()
-                    with self._hub._state_lock:
-                        self._hub.workers[key] = worker
-                except SerialException as exc:
-                    errors.append(f"{config['com']}: {exc}")
-            if errors:
-                self.stop_bridge(quiet=True)
-                self._hub.emit(
-                    {
-                        "type": "status",
-                        **self._hub.status(),
-                        "error": "; ".join(errors),
-                    }
-                )
-                return {
-                    "ok": False,
-                    "mode": "crt",
-                    "error": (
-                        "Failed to open serial ports "
-                        "(confirm SecureCRT has disconnected the configured ports): "
-                        + "; ".join(errors)
-                    ),
-                }
+                results[key] = self._open_target(key, config)
             with self._hub._state_lock:
                 self._hub.mode = "bridge"
             self._hub.emit({"type": "status", **self._hub.status()})
@@ -106,13 +86,88 @@ class ModeTransition:
                     ),
                 }
             )
+            failed = [k for k, r in results.items() if not r["open"]]
+            if failed:
+                self._hub.emit(
+                    {
+                        "type": "system",
+                        "text": "Bridge Mode: not open - "
+                        + "; ".join(f"{k}: {results[k]['error']}" for k in failed),
+                    }
+                )
             self.write_bridge_status()
-            return {"ok": True, "mode": "bridge"}
+            return {
+                "ok": True,
+                "mode": "bridge",
+                "all_open": not failed,
+                "ports": results,
+            }
+
+    def _open_target(self, key: str, config: dict[str, Any]) -> dict[str, Any]:
+        worker = self._worker_factory(key, config["com"], config["baud"])
+        try:
+            worker.open()
+            worker.start()
+            with self._hub._state_lock:
+                self._hub.workers[key] = worker
+            return {"open": True}
+        except SerialException as exc:
+            message = f"{config['com']}: {exc}"
+            worker.close()
+            with self._hub._state_lock:
+                self._hub.open_errors[key] = message
+            return {"open": False, "error": message}
+
+    def _retry_bridge(self) -> dict[str, Any]:
+        """Repeat Bridge request: reopen only Targets that are not open.
+
+        Open Targets keep their worker, Session Log, readiness and queued work.
+        Session Logs were assigned on entry; a retried Target appends to its log.
+        Caller holds the transition lock.
+        """
+        with self._hub._state_lock:
+            retry = [
+                key
+                for key in self._hub.ports
+                if key not in self._hub.workers or not self._hub.workers[key].is_open
+            ]
+            dead = [
+                self._hub.workers.pop(key)
+                for key in retry
+                if key in self._hub.workers
+            ]
+            for key in retry:
+                self._hub.open_errors.pop(key, None)
+        for worker in dead:
+            worker.close()
+        results: dict[str, dict[str, Any]] = {
+            key: {"open": True} for key in self._hub.ports
+        }
+        for key in retry:
+            results[key] = self._open_target(key, self._hub.ports[key])
+        self._hub.emit({"type": "status", **self._hub.status()})
+        failed = [k for k in retry if not results[k]["open"]]
+        if failed:
+            self._hub.emit(
+                {
+                    "type": "system",
+                    "text": "Bridge Mode: not open - "
+                    + "; ".join(f"{k}: {results[k]['error']}" for k in failed),
+                }
+            )
+        self.write_bridge_status()
+        return {
+            "ok": True,
+            "mode": "bridge",
+            "all_open": not failed,
+            "ports": results,
+        }
 
     def stop_bridge(self, quiet: bool = False) -> dict[str, Any]:
         with self._hub._transition_lock:
             with self._hub._state_lock:
                 self._hub.mode = "crt"
+                self._hub.open_errors.clear()
                 workers = list(self._hub.workers.values())
                 for worker in workers:
                     worker.abort_agent_work()

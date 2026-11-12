@@ -8,6 +8,8 @@ import time
 from functools import partial
 from typing import Any, Callable
 
+from serial import SerialException
+
 from serial_bridge.hub.queue import ExecRequest, TargetQueue, exec_result
 from serial_bridge.hub.text import strip_ansi
 from serial_bridge.hub.trace import payload_bytes
@@ -337,65 +339,70 @@ class ExecEngine:
         )
 
         raw_command = sent_cmd.encode("utf-8", errors="replace") + line_ending
-        wrote = queue.write_if_allowed(request, lambda: serial_port.write(raw_command))
-        if not wrote:
+        try:
+            wrote = queue.write_if_allowed(request, lambda: serial_port.write(raw_command))
+            if not wrote:
+                return self._finish(
+                    on_done,
+                    "abort",
+                    exec_result(request.target, ok=False, aborted=True),
+                )
+            serial_port.flush()
+            if on_tx is not None:
+                on_tx(sent_cmd)
+
+            started = self._clock()
+            last_rx = started
+            settle_seconds = request.prompt_settle_ms / 1000.0
+            prompt_matched = False
+
+            while True:
+                if request.aborted.is_set():
+                    return self._finish(
+                        on_done, "abort", present(ok=False, aborted=True)
+                    )
+
+                if service_operator is not None:
+                    service_operator()
+
+                chunk = serial_port.read(4096)
+                if chunk:
+                    captured.extend(chunk)
+                    last_rx = self._clock()
+                    if on_rx is not None:
+                        on_rx(chunk)
+
+                now = self._clock()
+                if now - started >= self.TOTAL_SECONDS:
+                    return self._finish(
+                        on_done, "timeout", present(ok=False, timed_out=True)
+                    )
+
+                if chunk and effective_prompt is not None and not prompt_matched:
+                    full_output = self._strip_output(captured)
+                    prompt_matched = (
+                        prompt_regex.search(full_output) is not None
+                        if prompt_regex is not None
+                        else effective_prompt in full_output
+                    )
+
+                # Settle Window: after the prompt, keep capturing until the device
+                # has been quiet for settle_seconds (zero ends on the match itself).
+                if prompt_matched and (
+                    settle_seconds <= 0 or now - last_rx >= settle_seconds
+                ):
+                    return self._finish(
+                        on_done, "prompt", present(ok=True, prompt_matched=True)
+                    )
+
+                if now - last_rx >= self.IDLE_SECONDS:
+                    return self._finish(on_done, "idle", present(ok=True))
+                if not chunk:
+                    self._sleep(self.POLL_SECONDS)
+        except SerialException as exc:
             return self._finish(
-                on_done,
-                "abort",
-                exec_result(request.target, ok=False, aborted=True),
+                on_done, "disconnect", present(ok=False, error=str(exc))
             )
-        serial_port.flush()
-        if on_tx is not None:
-            on_tx(sent_cmd)
-
-        started = self._clock()
-        last_rx = started
-        settle_seconds = request.prompt_settle_ms / 1000.0
-        prompt_matched = False
-
-        while True:
-            if request.aborted.is_set():
-                return self._finish(
-                    on_done, "abort", present(ok=False, aborted=True)
-                )
-
-            if service_operator is not None:
-                service_operator()
-
-            chunk = serial_port.read(4096)
-            if chunk:
-                captured.extend(chunk)
-                last_rx = self._clock()
-                if on_rx is not None:
-                    on_rx(chunk)
-
-            now = self._clock()
-            if now - started >= self.TOTAL_SECONDS:
-                return self._finish(
-                    on_done, "timeout", present(ok=False, timed_out=True)
-                )
-
-            if chunk and effective_prompt is not None and not prompt_matched:
-                full_output = self._strip_output(captured)
-                prompt_matched = (
-                    prompt_regex.search(full_output) is not None
-                    if prompt_regex is not None
-                    else effective_prompt in full_output
-                )
-
-            # Settle Window: after the prompt, keep capturing until the device
-            # has been quiet for settle_seconds (zero ends on the match itself).
-            if prompt_matched and (
-                settle_seconds <= 0 or now - last_rx >= settle_seconds
-            ):
-                return self._finish(
-                    on_done, "prompt", present(ok=True, prompt_matched=True)
-                )
-
-            if now - last_rx >= self.IDLE_SECONDS:
-                return self._finish(on_done, "idle", present(ok=True))
-            if not chunk:
-                self._sleep(self.POLL_SECONDS)
 
 
 class ExecSession:
