@@ -1,6 +1,7 @@
 """Blocking Exec engine: prompt match, idle completion, and output caps."""
 from __future__ import annotations
 
+import base64
 import re
 import secrets
 import time
@@ -16,6 +17,16 @@ EXIT_CODE_TOKEN_PREFIX = "SBX_"
 
 def _new_exit_code_token() -> str:
     return EXIT_CODE_TOKEN_PREFIX + secrets.token_hex(4)
+
+
+_STATUS_BY_ENDED_BY = {
+    "prompt": "completed",
+    "idle": "quiet",
+    "timeout": "timeout",
+    "abort": "aborted",
+    "error": "error",
+    "disconnect": "disconnected",
+}
 
 
 class ExecEngine:
@@ -212,6 +223,10 @@ class ExecEngine:
             sent_cmd=sent_cmd,
             exit_token=exit_token,
         )
+        if request.raw_capture:
+            raw = bytes(captured[: self.OUTPUT_CAP_BYTES])
+            extras["raw_base64"] = base64.b64encode(raw).decode("ascii")
+            extras["raw_truncated"] = len(captured) > self.OUTPUT_CAP_BYTES
         return exec_result(
             request.target,
             ok=ok,
@@ -272,6 +287,7 @@ class ExecEngine:
         ended_by: str,
         result: dict[str, Any],
     ) -> dict[str, Any]:
+        result["status"] = _STATUS_BY_ENDED_BY[ended_by]
         if on_done is not None:
             on_done(ended_by)
         return result

@@ -431,6 +431,7 @@ class McpHttpTest(unittest.TestCase):
                 "grep_invert": False,
                 "max_lines": None,
                 "exit_code": False,
+                "raw": False,
             },
             options,
         )

@@ -26,6 +26,7 @@ class ExecSpec:
     grep_invert: bool = False
     max_lines: int | None = None
     exit_code: bool = False
+    raw: bool = False
 
     def as_exec_options(self) -> dict[str, Any]:
         return {
@@ -55,6 +56,8 @@ class ExecRequest(WriteRequest):
     grep_invert: bool = False
     max_lines: int | None = None
     exit_code: bool = False
+    # Named raw_capture because WriteRequest.raw already holds raw TX bytes.
+    raw_capture: bool = False
     done: threading.Event = field(default_factory=threading.Event)
     started: threading.Event = field(default_factory=threading.Event)
     result: dict[str, Any] | None = None
@@ -75,6 +78,7 @@ def exec_result(
     error: str | None = None,
     grepped: bool | None = None,
     match_count: int | None = None,
+    status: str | None = None,
     **extras: Any,
 ) -> dict[str, Any]:
     """Build the compact Exec envelope: flags appear only when true.
@@ -82,9 +86,20 @@ def exec_result(
     ``target`` is accepted for call-site symmetry but not echoed back; the
     caller already knows which Target it addressed. ``extras`` are presentation
     fields (``lines_dropped``, ``exit_code``) copied verbatim, so an explicit
-    ``exit_code=None`` is reported as null rather than omitted.
+    ``exit_code=None`` is reported as null rather than omitted. ``status`` is
+    the Exec Status; when omitted it is derived from the flags, and a bare ok
+    result is ``quiet`` because that claims the least.
     """
-    result: dict[str, Any] = {"ok": ok, "output": output}
+    if status is None:
+        if aborted:
+            status = "aborted"
+        elif timed_out:
+            status = "timeout"
+        elif error is not None:
+            status = "error"
+        else:
+            status = "quiet" if ok else "error"
+    result: dict[str, Any] = {"ok": ok, "status": status, "output": output}
     if truncated:
         result["truncated"] = True
     if timed_out:
@@ -128,6 +143,7 @@ class TargetQueue:
         grep_invert: bool = False,
         max_lines: int | None = None,
         exit_code: bool = False,
+        raw: bool = False,
     ) -> ExecRequest:
         request = ExecRequest(
             cmd=cmd,
@@ -142,6 +158,7 @@ class TargetQueue:
             grep_invert=grep_invert,
             max_lines=max_lines,
             exit_code=exit_code,
+            raw_capture=raw,
         )
         with self._lock:
             self._agent.append(request)

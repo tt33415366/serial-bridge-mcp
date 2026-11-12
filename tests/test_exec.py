@@ -57,6 +57,7 @@ def execute(
     grep_invert=False,
     max_lines=None,
     exit_code=False,
+    raw=False,
     serial_factory=None,
     on_done=None,
     abort_before_execute=False,
@@ -80,6 +81,7 @@ def execute(
         grep_invert=grep_invert,
         max_lines=max_lines,
         exit_code=exit_code,
+        raw=raw,
     )
     assert queue.next_write() is request
     if abort_before_execute:
@@ -191,7 +193,7 @@ class ExecSessionTest(unittest.TestCase):
             hub.ends,
         )
         self.assertEqual([payload_bytes(result)], hub.returned)
-        self.assertEqual(len('{"ok": true, "output": "answer\\r\\n"}'), hub.returned[0])
+        self.assertEqual(len('{"ok": true, "status": "quiet", "output": "answer\\r\\n"}'), hub.returned[0])
 
     def test_prompt_result_and_supervision_come_from_session(self):
         result, hub = execute_session(
@@ -331,6 +333,41 @@ class ExecSessionTest(unittest.TestCase):
 
 
 class ExecEngineTest(unittest.TestCase):
+    def test_status_completed_on_prompt_match(self):
+        result, _, _ = execute([(0.0, b"show\r\nok\r\nrouter# ")], prompt="router#")
+        self.assertEqual("completed", result["status"])
+
+    def test_nonzero_exit_code_is_still_completed(self):
+        out = f"x\r\n3\r\n{TOKEN}\r\n".encode()
+        result, _, _ = execute([(0.0, out)], exit_code=True)
+        self.assertEqual("completed", result["status"])
+        self.assertEqual(3, result["exit_code"])
+
+    def test_status_quiet_when_output_goes_idle(self):
+        result, _, _ = execute([(0.0, b"show\r\npartial")])
+        self.assertTrue(result["ok"])
+        self.assertEqual("quiet", result["status"])
+
+    def test_status_timeout_when_window_expires(self):
+        def serial_factory(clock):
+            def chatter():
+                clock.sleep(0.5)
+                return b"x"
+
+            return ScriptedSerial(clock, on_read=chatter)
+
+        result, _, _ = execute(serial_factory=serial_factory)
+        self.assertEqual("timeout", result["status"])
+        self.assertFalse(result["ok"])
+
+    def test_status_aborted(self):
+        result, _, _ = execute(abort_before_execute=True)
+        self.assertEqual("aborted", result["status"])
+
+    def test_status_error_on_invalid_option(self):
+        result, _, _ = execute(grep="")
+        self.assertEqual("error", result["status"])
+
     def test_on_done_reports_idle_once(self):
         calls = []
 
@@ -724,7 +761,7 @@ class ExecEngineTest(unittest.TestCase):
 
     def test_plain_success_result_has_only_ok_and_output(self):
         result, _, _ = execute([(0.0, b"show\r\n")])
-        self.assertEqual({"ok", "output"}, set(result))
+        self.assertEqual({"ok", "status", "output"}, set(result))
 
     def test_grep_runs_on_timeout_capture(self):
         def serial_factory(clock):
@@ -896,6 +933,37 @@ class ExecEngineTest(unittest.TestCase):
         self.assertEqual(1, result["match_count"])
 
 
+class RawCaptureTest(unittest.TestCase):
+    def test_raw_capture_keeps_echo_ansi_and_wrapper_bytes(self):
+        import base64
+
+        out = b"\x1b[1mshow\x1b[0m\r\nok\r\nrouter# "
+        result, _, _ = execute([(0.0, out)], prompt="router#", raw=True)
+        self.assertEqual(out, base64.b64decode(result["raw_base64"]))
+        self.assertFalse(result["raw_truncated"])
+        self.assertNotIn("\x1b", result["output"])
+
+    def test_raw_capture_ignores_grep_and_max_lines(self):
+        import base64
+
+        out = b"show\r\na\r\nb\r\nc\r\n"
+        result, _, _ = execute([(0.0, out)], grep="b", max_lines=1, raw=True)
+        self.assertEqual(out, base64.b64decode(result["raw_base64"]))
+
+    def test_raw_capture_truncates_to_first_32_kib_before_encoding(self):
+        import base64
+
+        out = b"A" * (32 * 1024 + 10)
+        result, _, _ = execute([(0.0, out)], raw=True)
+        raw = base64.b64decode(result["raw_base64"])
+        self.assertEqual(32 * 1024, len(raw))
+        self.assertTrue(result["raw_truncated"])
+
+    def test_raw_fields_absent_by_default(self):
+        result, _, _ = execute([(0.0, b"show\r\nok\r\n")])
+        self.assertNotIn("raw_base64", result)
+
+
 class ExitCodeProbeTest(unittest.TestCase):
     WIRE = "cat /etc/default/motor; printf '%s\\n' \"$?\"; printf '%s%s\\n' \"SBX_\" \"cafefeed\""
 
@@ -922,7 +990,7 @@ class ExitCodeProbeTest(unittest.TestCase):
             on_done=calls.append,
         )
         self.assertEqual(["prompt"], calls)
-        self.assertEqual({"ok": True, "output": "# MOTOR_ENABLE=1\r\n", "exit_code": 2}, result)
+        self.assertEqual({"ok": True, "status": "completed", "output": "# MOTOR_ENABLE=1\r\n", "exit_code": 2}, result)
         self.assertLess(clock.now, 1.0)
 
     def test_status_line_is_kept_when_token_arrives_in_a_later_chunk(self):
@@ -1149,6 +1217,7 @@ class HubExecTest(unittest.TestCase):
         self.assertEqual(
             {
                 "ok": False,
+                "status": "error",
                 "output": "",
                 "error": "CRT Mode is active; switch to Bridge Mode before Exec",
             },
