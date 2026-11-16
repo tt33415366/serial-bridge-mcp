@@ -72,6 +72,7 @@
   };
   const spineBody = document.getElementById("spine-body");
   const spineTally = document.getElementById("spine-tally");
+  const spineTip = document.getElementById("spine-tip");
   const dots = {
     slot0: document.getElementById("dot-slot0"),
     slot1: document.getElementById("dot-slot1"),
@@ -1526,12 +1527,40 @@
     flashCaptureRow(row);
   }
 
+  function showSpineTip(node, text) {
+    spineTip.textContent = text;
+    spineTip.hidden = false;
+    const rect = node.getBoundingClientRect();
+    spineTip.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 368))}px`;
+    // Open upward when the card sits near the bottom edge, so the popup stays on screen.
+    if (rect.bottom + 120 > window.innerHeight) {
+      spineTip.style.top = "auto";
+      spineTip.style.bottom = `${window.innerHeight - rect.top + 6}px`;
+    } else {
+      spineTip.style.bottom = "auto";
+      spineTip.style.top = `${rect.bottom + 6}px`;
+    }
+  }
+
+  function hideSpineTip() {
+    spineTip.hidden = true;
+  }
+
+  function attachCommandTip(node, text) {
+    if (!text) return;
+    node.addEventListener("mouseenter", () => showSpineTip(node, text));
+    node.addEventListener("mouseleave", hideSpineTip);
+  }
+
   function renderSpine() {
+    // Rebuilding the list detaches the hovered node without firing mouseleave.
+    hideSpineTip();
     spineBody.textContent = "";
     for (const entry of spineEntries) {
       const node = document.createElement("article");
       if (entry.kind === "send") {
         node.className = `spine-node send${entry.ok === false ? " failed" : ""}`;
+        attachCommandTip(node, entry.cmd);
         appendSpineText(node, "spine-kicker", `SEND · ${entry.target} · ${entry.ts || "now"}`);
         appendSpineText(node, "spine-command", entry.cmd);
         appendSpineText(
@@ -1566,7 +1595,7 @@
         ].filter(Boolean);
         node.className = flags.join(" ");
         node.dataset.execId = String(entry.id);
-        node.title = "Jump to capture";
+        attachCommandTip(node, entry.cmd);
         node.addEventListener("click", () => traceJump(entry.id, node, entry.target));
         appendSpineText(node, "spine-kicker", `EXEC · ${entry.target} · #${entry.id}`);
         appendSpineText(node, "spine-command", entry.cmd || "—");

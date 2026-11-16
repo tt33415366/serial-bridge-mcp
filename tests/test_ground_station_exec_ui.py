@@ -2094,9 +2094,11 @@ class GroundStationExecUiTest(unittest.TestCase):
   const execNode = body.children[0];
   const capture = term("slot1").children[1];
   const pillBefore = document.getElementById("status-pill").textContent;
+  execNode.dispatch("mouseenter");
+  const tipText = document.getElementById("spine-tip").textContent;
   execNode.dispatch("click");
   return {
-    title: execNode.title,
+    title: tipText,
     className: execNode.className,
     scrolled: !!capture.scrolledIntoView,
     scrollOptions: capture.scrollIntoViewOptions,
@@ -2107,7 +2109,7 @@ class GroundStationExecUiTest(unittest.TestCase):
 """
         )
 
-        self.assertEqual("Jump to capture", result["title"])
+        self.assertEqual("svc_rec fstop 0x3f", result["title"])
         self.assertIn("exec", result["className"])
         self.assertTrue(result["scrolled"])
         self.assertIn("jump-flash", result["captureClass"])
@@ -2226,18 +2228,41 @@ class GroundStationExecUiTest(unittest.TestCase):
     returned_bytes: 44, returned_total: 44,
   });
   const sendNode = document.getElementById("spine-body").children[0];
+  sendNode.dispatch("mouseenter");
+  const tipText = document.getElementById("spine-tip").textContent;
   sendNode.dispatch("click");
   return {
-    title: sendNode.title || "",
+    title: tipText,
     className: sendNode.className,
     pill: document.getElementById("status-pill").textContent,
   };
 """
         )
 
-        self.assertEqual("", result["title"])
+        self.assertEqual("reboot", result["title"])
         self.assertEqual("spine-node send", result["className"])
         self.assertNotEqual("not in view", result["pill"])
+
+    def test_spine_command_tip_shows_on_hover_and_hides_on_leave(self):
+        result = run_ui_scenario(
+            """
+  await nextTurn();
+  send({
+    type: "trace", kind: "send", id: 2, phase: "end", target: "linux",
+    cmd: "reboot", ts: "10:00:00.000", ok: true,
+    returned_bytes: 44, returned_total: 44,
+  });
+  const sendNode = document.getElementById("spine-body").children[0];
+  const tip = document.getElementById("spine-tip");
+  sendNode.dispatch("mouseenter");
+  const shown = { text: tip.textContent, hidden: tip.hidden };
+  sendNode.dispatch("mouseleave");
+  return { shown, hiddenAfterLeave: tip.hidden };
+"""
+        )
+
+        self.assertEqual({"text": "reboot", "hidden": False}, result["shown"])
+        self.assertTrue(result["hiddenAfterLeave"])
 
     def test_footer_session_log_basename_posts_reveal(self):
         result = run_ui_scenario(
