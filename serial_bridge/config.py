@@ -63,6 +63,13 @@ class Config:
     live_dir: Path = DEFAULT_LIVE_DIR
     warning: str | None = None
     target_prompts: dict[str, str] = field(default_factory=dict)
+    duts: list[dict[str, object]] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.duts:
+            self.slots = self.duts[0]["slots"]  # type: ignore[index]
+        else:
+            self.duts = [{"name": "dut", "title": "DUT", "slots": self.slots}]
 
 
 @dataclass(frozen=True)
@@ -84,6 +91,7 @@ class SlotPolicy:
         live_dir: str | None,
         mode: str,
         has_workers: bool,
+        current: list[Mapping[str, object]] | None = None,
     ) -> SlotDecision:
         if not MIN_SLOT_COUNT <= len(slots) <= MAX_SLOT_COUNT:
             return SlotDecision(
@@ -91,7 +99,7 @@ class SlotPolicy:
                 False,
                 error="A Hub has one or two Target Slots",
             )
-        title_only = self._title_only(slots)
+        title_only = self._title_only(slots, current)
         new_live_dir: Path | None = None
         if live_dir is not None:
             try:
@@ -103,17 +111,7 @@ class SlotPolicy:
                     error=f"Invalid Live Directory: {exc}",
                 )
 
-        live_dir_changing = (
-            new_live_dir is not None
-            and new_live_dir.resolve() != self._config.live_dir.resolve()
-        )
         bindings_locked = mode != "crt" or has_workers
-        if live_dir_changing and bindings_locked:
-            return SlotDecision(
-                False,
-                title_only,
-                error="Live Directory can only be changed in CRT Mode",
-            )
         if bindings_locked and not title_only:
             return SlotDecision(
                 False,
@@ -122,11 +120,16 @@ class SlotPolicy:
             )
         return SlotDecision(True, title_only, live_dir=new_live_dir)
 
-    def _title_only(self, slots: list[Mapping[str, object]]) -> bool:
-        if len(slots) != len(self._config.slots):
+    def _title_only(
+        self,
+        slots: list[Mapping[str, object]],
+        current_slots: list[Mapping[str, object]] | None = None,
+    ) -> bool:
+        existing = self._config.slots if current_slots is None else current_slots
+        if len(slots) != len(existing):
             return False
         for index, incoming in enumerate(slots):
-            current = self._config.slots[index]
+            current = existing[index]
             for field in ("name", "com", "baud"):
                 if str(incoming.get(field, current[field])) != str(current[field]):
                     return False
@@ -258,6 +261,71 @@ def _assert_unique_target_names(slots: list[dict[str, str | int]]) -> None:
         raise ValueError("Target Names must be unique across slots")
 
 
+def _assert_unique_coms(duts: Sequence[Mapping[str, object]]) -> None:
+    coms: list[str] = []
+    for dut in duts:
+        for slot in dut["slots"]:  # type: ignore[index]
+            coms.append(str(slot["com"]))
+    if len(set(coms)) != len(coms):
+        raise ValueError("A COM port belongs to at most one Target")
+
+
+def _default_dut(slots: list[dict[str, str | int]]) -> dict[str, object]:
+    return {"name": "dut", "title": "DUT", "slots": slots}
+
+
+def _merge_saved_slots(
+    base: Sequence[Mapping[str, object]],
+    saved: Sequence[Mapping[str, object]],
+) -> list[dict[str, str | int]]:
+    candidate = [dict(slot) for slot in base[: len(saved)]]
+    for index, values in enumerate(saved):
+        candidate[index].update(values)
+    _assert_unique_target_names(candidate)
+    return candidate
+
+
+def _parse_saved_duts(data: Mapping[str, object]) -> list[dict[str, object]]:
+    """Load DUT bodies. A legacy slots/ports file is one DUT named dut."""
+    if "duts" in data:
+        raw_duts = data["duts"]
+        if not isinstance(raw_duts, list) or not raw_duts:
+            raise ValueError("duts must be an array of one or more entries")
+        duts: list[dict[str, object]] = []
+        names: list[str] = []
+        for index, values in enumerate(raw_duts):
+            if not isinstance(values, dict):
+                raise ValueError(f"duts[{index}] must be an object")
+            name = _validated_name(values.get("name"), f"duts[{index}].name")
+            title = _validated_title(values.get("title"), f"duts[{index}].title")
+            raw_slots = values.get("slots")
+            if not isinstance(raw_slots, list) or not (
+                MIN_SLOT_COUNT <= len(raw_slots) <= MAX_SLOT_COUNT
+            ):
+                raise ValueError(
+                    f"duts[{index}].slots must be an array of 1 or 2 entries"
+                )
+            slots: list[dict[str, str | int]] = []
+            for slot_index, slot in enumerate(raw_slots):
+                if not isinstance(slot, dict):
+                    raise ValueError(
+                        f"duts[{index}].slots[{slot_index}] must be an object"
+                    )
+                slots.append(
+                    _partial_slot(
+                        slot_index,
+                        slot,
+                        source_prefix=f"duts[{index}].slots[{slot_index}]",
+                    )
+                )
+            names.append(name)
+            duts.append({"name": name, "title": title, "slots": slots})
+        if len(set(names)) != len(names):
+            raise ValueError("DUT Names must be unique")
+        return duts
+    return [_default_dut(_parse_saved_slots(data))]
+
+
 def _parse_saved_slots(data: object) -> list[dict[str, str | int]]:
     """Load persisted config; partial slot fields merge over env/defaults."""
     if not isinstance(data, dict):
@@ -344,9 +412,16 @@ def _parse_saved_target_prompts(data: object) -> dict[str, str]:
 def persist_slots(
     config: Config,
     slots: list[Mapping[str, object]],
+    dut_index: int = 0,
 ) -> list[dict[str, str | int]]:
-    """Validate and save complete Target Slots to the configured path."""
+    """Validate and save complete Target Slots of one DUT to the configured path."""
     validated = _validated_slots({"slots": list(slots)})
+    if config.duts:
+        config.duts[dut_index]["slots"] = validated
+    else:
+        config.duts = [_default_dut(validated)]
+    if dut_index == 0:
+        config.slots = validated
 
     config.path.parent.mkdir(parents=True, exist_ok=True)
     temp_path: Path | None = None
@@ -364,11 +439,17 @@ def persist_slots(
                 json.dumps(
                     {
                         "live_dir": str(config.live_dir.resolve()),
-                        "slots": validated,
+                        "slots": config.duts[0]["slots"],
+                        "duts": config.duts,
                         "target_prompts": {
                             name: pattern
                             for name, pattern in config.target_prompts.items()
-                            if name in {str(slot["name"]) for slot in validated}
+                            if name
+                            in {
+                                str(slot["name"])
+                                for dut in config.duts
+                                for slot in dut["slots"]  # type: ignore[index]
+                            }
                         },
                     },
                     ensure_ascii=False,
@@ -475,15 +556,24 @@ def load_config(
     path = config_path or Path(env.get("SERIAL_BRIDGE_CONFIG", DEFAULT_CONFIG_PATH))
     warning = None
     target_prompts: dict[str, str] = {}
+    duts = [_default_dut(slots)]
     if path.is_file():
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
-            saved = _parse_saved_slots(raw)
-            candidate = deepcopy(slots[: len(saved)])
-            for index, values in enumerate(saved):
-                candidate[index].update(values)
-            _assert_unique_target_names(candidate)
-            slots = candidate
+            saved = _parse_saved_duts(raw)
+            merged: list[dict[str, object]] = []
+            for index, dut in enumerate(saved):
+                base = slots if index == 0 else deepcopy(DEFAULT_SLOTS)
+                merged.append(
+                    {
+                        "name": dut["name"],
+                        "title": dut["title"],
+                        "slots": _merge_saved_slots(base, dut["slots"]),  # type: ignore[arg-type]
+                    }
+                )
+            _assert_unique_coms(merged)
+            duts = merged
+            slots = duts[0]["slots"]  # type: ignore[assignment]
             try:
                 saved_live_dir = _parse_saved_live_dir(raw)
                 if saved_live_dir is not None:
@@ -497,7 +587,7 @@ def load_config(
         except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
             warning = f"Could not load config {path}: {exc}"
 
-    if len(slots) == 1:
+    if len(duts[0]["slots"]) == 1:  # type: ignore[arg-type]
         source = _slot1_override_source(env, cli_overrides)
         if source is not None:
             raise ValueError(
@@ -505,11 +595,12 @@ def load_config(
             )
 
     return Config(
-        slots=slots,
+        slots=duts[0]["slots"],  # type: ignore[arg-type]
         path=path,
         live_dir=live_dir,
         warning=warning,
         target_prompts=target_prompts,
+        duts=duts,
     )
 
 

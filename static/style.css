@@ -148,19 +148,137 @@ body::after {
 .lamp.err { background: var(--alarm); }
 
 .main {
-  display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   min-height: 0;
   gap: 10px;
   padding: 12px 14px 10px;
 }
 
+/* Only the console stage grows; every other row keeps its own height, however many are visible. */
+.main > * { flex: none; }
+.main > main { flex: 1 1 0; min-height: 0; }
+
 .head {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto auto;
   align-items: center;
   gap: 16px;
+}
+
+.dut-strip {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--rule);
+  background: var(--deep);
+}
+
+.dut-key {
+  align-self: center;
+  color: var(--faint);
+  font: 8px var(--display);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+.dut-list {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  gap: 2px;
+  overflow-x: auto;
+}
+
+.dut-chip {
+  appearance: none;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--dim);
+  background: transparent;
+  cursor: pointer;
+  font: 10px var(--mono);
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
+.dut-chip:hover { color: var(--text); background: rgba(255, 255, 255, 0.02); }
+
+.dut-chip.is-focused {
+  color: var(--text);
+  border-bottom-color: var(--linux);
+  background: linear-gradient(180deg, transparent, rgba(47, 240, 214, 0.07));
+}
+
+.dut-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--rtos);
+  box-shadow: 0 0 8px rgba(255, 154, 60, 0.45);
+}
+
+.dut-chip[data-mode="bridge"] .dut-dot {
+  background: var(--linux);
+  box-shadow: 0 0 8px rgba(47, 240, 214, 0.55);
+}
+
+.dut-mode {
+  color: var(--faint);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.dut-flag {
+  padding: 1px 5px;
+  border: 1px solid var(--alarm);
+  color: var(--alarm);
+  font-size: 8px;
+  text-transform: uppercase;
+}
+
+.dut-flag.busy { border-color: var(--agent); color: var(--agent); }
+
+.dut-add {
+  appearance: none;
+  align-self: center;
+  flex: none;
+  padding: 5px 10px;
+  border: 1px dashed var(--rule-hot);
+  color: var(--dim);
+  background: transparent;
+  cursor: pointer;
+  font: 8px var(--display);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.dut-add:hover,
+.dut-add[aria-expanded="true"] { border-color: var(--linux); color: var(--linux); }
+
+.add-dut-panel[hidden] { display: none; }
+
+.add-dut-target { grid-template-columns: minmax(0, 1.6fr) minmax(0, 0.8fr); }
+
+.add-dut-panel .binding-intro span { text-transform: none; letter-spacing: 0.02em; }
+
+#btn-add-dut-confirm {
+  border-color: color-mix(in srgb, var(--linux) 55%, var(--rule-hot));
+  color: var(--void);
+  background: linear-gradient(180deg, var(--linux), #12ae9f);
+}
+
+#btn-add-dut-confirm:hover:not(:disabled) {
+  color: var(--void);
+  border-color: var(--linux);
 }
 
 .title-block { min-width: 0; }
@@ -1379,7 +1497,8 @@ body::after {
   .rail-word,
   .rail-mini { writing-mode: horizontal-tb; }
   .rail-spacer { flex: 1; }
-  .main { min-height: 0; grid-template-rows: auto auto auto auto auto; }
+  .main { min-height: 0; }
+  .main > main { flex: none; }
   .head { grid-template-columns: minmax(0, 1fr) auto auto; }
   .readout { grid-column: 1 / -1; grid-row: 2; }
   .status-pill { max-width: none; }
@@ -1401,4 +1520,43 @@ body::after {
   .spine-node.exec.jump-hit,
   .spine-node.exec.jump-miss,
   .spine-node.running::after { animation: none; }
+}
+
+.dut-tab { display: flex; align-items: stretch; }
+
+.dut-close {
+  appearance: none;
+  align-self: center;
+  width: 18px;
+  height: 18px;
+  margin-left: -6px;
+  padding: 0;
+  border: 0;
+  color: var(--faint);
+  background: transparent;
+  cursor: pointer;
+  font: 13px/1 var(--mono);
+  opacity: 0.6;
+}
+
+.dut-tab:hover .dut-close,
+.dut-tab.is-focused .dut-close { opacity: 1; }
+.dut-close:hover { color: #e5484d; }
+
+/* While a new DUT is being drafted its tab owns the page: same header, the form in place of
+   Bindings, and the console stage held open as an empty placeholder so nothing jumps. */
+.main.is-adding > :not(.dut-strip):not(.head):not(.add-dut-panel):not(main) { display: none; }
+.main.is-adding > main { position: relative; pointer-events: none; }
+.main.is-adding > main > * { visibility: hidden; }
+.main.is-adding > main::after {
+  content: "Add the DUT to open its consoles";
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border: 1px dashed var(--rule-hot);
+  color: var(--faint);
+  font: 9px var(--display);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
 }

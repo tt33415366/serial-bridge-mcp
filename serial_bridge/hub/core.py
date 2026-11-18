@@ -1,4 +1,4 @@
-"""Serial ownership, mode, transcript, and WebSocket broadcast authority."""
+﻿"""Serial ownership, mode, transcript, and WebSocket broadcast authority."""
 from __future__ import annotations
 
 import asyncio
@@ -13,6 +13,10 @@ from serial_bridge.config import (
     MAX_SLOT_COUNT,
     Config,
     SlotPolicy,
+    _assert_unique_target_names,
+    _validated_name,
+    _validated_slots,
+    _validated_title,
     load_config,
     persist_slots,
     unused_default_slot,
@@ -31,8 +35,14 @@ class Hub:
         self.config = config or load_config()
         self._slot_policy = SlotPolicy(self.config)
         self.ports: dict[str, dict[str, Any]] = {}
-        for slot in self.config.slots:
-            self._register_slot(slot)
+        self._dut_mode: dict[str, str] = {}
+        self._port_dut: dict[str, str] = {}
+        seen_targets: set[str] = set()
+        for dut in self.config.duts:
+            dut_name = str(dut["name"])
+            self._dut_mode[dut_name] = "crt"
+            for slot in dut["slots"]:  # type: ignore[union-attr]
+                self._register_slot(dut_name, slot, seen_targets)
         self.mode = "crt"  # crt | bridge — start released so we can open on demand
         self.clients: set[Any] = set()
         self._agent_trace = AgentTrace(lambda event: self.emit(event))
@@ -59,15 +69,51 @@ class Hub:
         self.loop: asyncio.AbstractEventLoop | None = None
         self._line_coalescer = LineCoalescer(self._dispatch)
 
-    def _register_slot(self, slot: Mapping[str, str | int]) -> None:
-        name = str(slot["name"])
-        self.ports[name] = {
-            "name": name,
+    @property
+    def mode(self) -> str:
+        values = set(self._dut_mode.values())
+        if len(values) == 1:
+            return next(iter(values))
+        return "mixed"
+
+    @mode.setter
+    def mode(self, value: str) -> None:
+        for name in self._dut_mode:
+            self._dut_mode[name] = value
+
+    def port_keys(self, dut: str | None = None) -> list[str]:
+        if dut is None:
+            return list(self.ports)
+        return [key for key in self.ports if self._owner(key) == dut]
+
+    def _owner(self, key: str) -> str:
+        return self._port_dut.get(key) or self._first_dut_name()
+
+    def set_dut_mode(self, dut: str | None, value: str) -> None:
+        if dut is None:
+            self.mode = value
+            return
+        self._dut_mode[dut] = value
+
+    def _register_slot(
+        self,
+        dut: str,
+        slot: Mapping[str, str | int],
+        seen_targets: set[str],
+    ) -> str:
+        target = str(slot["name"])
+        key = target if target not in seen_targets else f"{dut}/{target}"
+        seen_targets.add(target)
+        self._port_dut[key] = dut
+        self.ports[key] = {
+            "name": target,
             "title": str(slot["title"]),
             "com": str(slot["com"]),
             "baud": int(slot["baud"]),
             "log": None,
+            "dut": dut,
         }
+        return key
 
     def _session_log_path(self, name: str, session_time) -> Path:
         return self._transcript.session_log_path(name, session_time)
@@ -78,34 +124,31 @@ class Hub:
     def _write_bridge_status(self) -> None:
         self._mode_transition.write_bridge_status()
 
-    def _apply_slot_updates(self, slots: list[dict[str, str | int]]) -> None:
-        new_ports: dict[str, dict[str, Any]] = {}
-        for index, slot in enumerate(slots):
-            new_name = str(slot["name"])
-            old_name = (
-                str(self.config.slots[index]["name"])
-                if index < len(self.config.slots)
-                else None
-            )
-            if new_name in self.ports:
-                entry = dict(self.ports[new_name])
-            elif old_name is not None and old_name in self.ports and old_name == new_name:
-                entry = dict(self.ports[old_name])
-            else:
-                entry = {"log": None}
-            entry.update(
-                {
-                    "name": new_name,
-                    "title": str(slot["title"]),
-                    "com": str(slot["com"]),
-                    "baud": int(slot["baud"]),
-                }
-            )
-            new_ports[new_name] = entry
-        self.ports = new_ports
-        self.config.slots = slots
+    def _apply_slot_updates(
+        self, slots: list[dict[str, str | int]], dut: str | None = None
+    ) -> None:
+        dut_name = dut or self._first_dut_name()
+        old_by_name: dict[str, dict[str, Any]] = {}
+        for key in self.port_keys(dut_name):
+            entry = self.ports.pop(key)
+            old_by_name[str(entry["name"])] = entry
+            self._port_dut.pop(key, None)
+        seen = {str(port["name"]) for port in self.ports.values()}
+        for slot in slots:
+            key = self._register_slot(dut_name, slot, seen)
+            prior = old_by_name.get(str(slot["name"]))
+            if prior is not None:
+                fresh = {k: v for k, v in self.ports[key].items() if k != "log"}
+                self.ports[key] = {**prior, **fresh}
+        order = {str(d["name"]): i for i, d in enumerate(self.config.duts)}
+        self.ports = dict(
+            sorted(self.ports.items(), key=lambda kv: order[self._owner(kv[0])])
+        )
+        index = order[dut_name]
+        self.config.duts[index]["slots"] = slots
+        if index == 0:
+            self.config.slots = slots
         self.config.warning = None
-
     def _unknown_target_error(self, target: str) -> str:
         known = ", ".join(sorted(self.ports))
         return f"unknown target {target!r}; known targets: {known}"
@@ -203,6 +246,8 @@ class Hub:
     def status(self) -> dict[str, Any]:
         with self._state_lock:
             mode = self.mode
+            dut_modes = dict(self._dut_mode)
+            port_dut = dict(self._port_dut)
             workers = dict(self.workers)
             open_errors = dict(self.open_errors)
             mode_switch = self._mode_switch_info(workers, self._mode_switch_allowed)
@@ -241,6 +286,19 @@ class Hub:
             status["config_warning"] = self.config.warning
         if len(self.config.slots) < MAX_SLOT_COUNT:
             status["add_defaults"] = unused_default_slot(self.config.slots)
+        status["duts"] = [
+            {
+                "name": str(dut["name"]),
+                "title": str(dut["title"]),
+                "mode": dut_modes.get(str(dut["name"]), "crt"),
+                "ports": {
+                    key: status["ports"][key]
+                    for key, owner in port_dut.items()
+                    if owner == dut["name"] and key in status["ports"]
+                },
+            }
+            for dut in self.config.duts
+        ]
         return status
 
     @staticmethod
@@ -326,28 +384,50 @@ class Hub:
         self,
         slots: list[dict[str, str | int | object]],
         live_dir: str | None = None,
+        dut: str | None = None,
     ) -> dict[str, Any]:
         with self._transition_lock:
             with self._state_lock:
+                dut_name = dut or self._first_dut_name()
+                index = self._dut_index(dut_name)
+                if index is None:
+                    return {"ok": False, "error": f"unknown DUT {dut_name!r}"}
+                current = self.config.duts[index]["slots"]
+                policy_args: dict[str, Any] = {}
+                if index != 0:
+                    policy_args["current"] = current
                 decision = self._slot_policy.decide(
                     slots,
                     live_dir=live_dir,
-                    mode=self.mode,
-                    has_workers=bool(self.workers),
+                    mode=self._dut_mode[dut_name],
+                    has_workers=any(k in self.workers for k in self.port_keys(dut_name)),
+                    **policy_args,
                 )
                 if not decision.allowed:
                     return {"ok": False, "error": decision.error}
+
+                taken = {
+                    str(slot["com"])
+                    for i, d in enumerate(self.config.duts)
+                    if i != index
+                    for slot in d["slots"]  # type: ignore[union-attr]
+                }
+                if any(str(slot.get("com")) in taken for slot in slots):
+                    return {
+                        "ok": False,
+                        "error": "A COM port belongs to at most one Target",
+                    }
 
                 old_live_dir = self.config.live_dir
                 try:
                     if decision.live_dir is not None:
                         self.config.live_dir = decision.live_dir
-                    validated = persist_slots(self.config, slots)
+                    validated = persist_slots(self.config, slots, index)
                 except (OSError, UnicodeError, ValueError) as exc:
                     self.config.live_dir = old_live_dir
                     return {"ok": False, "error": f"Could not save Port Bindings: {exc}"}
 
-                self._apply_slot_updates(validated)
+                self._apply_slot_updates(validated, dut_name)
 
         status = self.status()
         self.emit({"type": "status", **status})
@@ -415,11 +495,143 @@ class Hub:
             )
         return self.update_slots(slots)
 
-    def start_bridge(self) -> dict[str, Any]:
-        return self._mode_transition.start_bridge()
+    def start_bridge(self, dut: str | None = None) -> dict[str, Any]:
+        if dut is not None and dut not in self._dut_mode:
+            return {
+                "ok": False,
+                "error": f"unknown DUT {dut!r}",
+                "mode": self.mode,
+            }
+        if dut is None:
+            return self._mode_transition.start_bridge()
+        return self._mode_transition.start_bridge(dut)
 
-    def stop_bridge(self, quiet: bool = False) -> dict[str, Any]:
-        return self._mode_transition.stop_bridge(quiet)
+    def stop_bridge(self, quiet: bool = False, dut: str | None = None) -> dict[str, Any]:
+        if dut is not None and dut not in self._dut_mode:
+            return {
+                "ok": False,
+                "error": f"unknown DUT {dut!r}",
+                "mode": self.mode,
+            }
+        if dut is None:
+            return self._mode_transition.stop_bridge(quiet)
+        return self._mode_transition.stop_bridge(quiet, dut)
+
+    def _first_dut_name(self) -> str:
+        return str(self.config.duts[0]["name"])
+
+    def _dut_index(self, name: str) -> int | None:
+        return next(
+            (i for i, d in enumerate(self.config.duts) if str(d["name"]) == name),
+            None,
+        )
+
+    def _persist_duts(self) -> None:
+        persist_slots(self.config, list(self.config.duts[0]["slots"]))  # type: ignore[arg-type]
+
+    def _drop_dut_ports(self, dut: str) -> None:
+        for key in self.port_keys(dut):
+            self.ports.pop(key, None)
+            self._port_dut.pop(key, None)
+
+    def _publish_status(self) -> dict[str, Any]:
+        status = self.status()
+        self.emit({"type": "status", **status})
+        return {"ok": True, **status}
+
+    def add_dut(
+        self,
+        name: str,
+        title: str,
+        slots: list[dict[str, str | int]],
+    ) -> dict[str, Any]:
+        try:
+            dut_name = _validated_name(name, "name")
+            dut_title = _validated_title(title, "title")
+            validated = _validated_slots({"slots": list(slots)})
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        if self._dut_index(dut_name) is not None:
+            return {"ok": False, "error": "DUT Names must be unique"}
+        taken = {
+            str(slot["com"])
+            for dut in self.config.duts
+            for slot in dut["slots"]  # type: ignore[union-attr]
+        }
+        for slot in validated:
+            if str(slot["com"]) in taken:
+                return {"ok": False, "error": "A COM port belongs to at most one Target"}
+            taken.add(str(slot["com"]))
+        try:
+            _assert_unique_target_names(validated)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        self.config.duts.append(
+            {"name": dut_name, "title": dut_title, "slots": validated}
+        )
+        self._dut_mode[dut_name] = "crt"
+        seen = {str(port["name"]) for port in self.ports.values()}
+        try:
+            for slot in validated:
+                self._register_slot(dut_name, slot, seen)
+            self._persist_duts()
+        except (OSError, UnicodeError, ValueError) as exc:
+            self.config.duts.pop()
+            self._drop_dut_ports(dut_name)
+            self._dut_mode.pop(dut_name, None)
+            return {"ok": False, "error": f"Could not save DUT: {exc}"}
+        return self._publish_status()
+
+    def remove_dut(self, name: str) -> dict[str, Any]:
+        with self._transition_lock:
+            index = self._dut_index(name)
+            if index is None:
+                return {"ok": False, "error": f"unknown DUT {name!r}"}
+            if len(self.config.duts) == 1:
+                return {"ok": False, "error": "The last DUT cannot be removed"}
+            if self._dut_mode[name] != "crt":
+                stopped = self.stop_bridge(True, name)
+                if not stopped.get("ok", True):
+                    return {"ok": False, "error": stopped.get("error", "could not stop DUT")}
+            with self._state_lock:
+                keys = self.port_keys(name)
+                if self._dut_mode[name] != "crt" or any(k in self.workers for k in keys):
+                    return {"ok": False, "error": "DUT is still holding its ports"}
+                removed = self.config.duts.pop(index)
+                old_slots = self.config.slots
+                try:
+                    self._persist_duts()
+                except (OSError, UnicodeError, ValueError) as exc:
+                    self.config.duts.insert(index, removed)
+                    self.config.slots = old_slots
+                    return {"ok": False, "error": f"Could not save DUT: {exc}"}
+                self._drop_dut_ports(name)
+                self._dut_mode.pop(name, None)
+        return self._publish_status()
+
+    def rename_dut(self, name: str, title: str) -> dict[str, Any]:
+        try:
+            new_title = _validated_title(title, "title")
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        index = self._dut_index(name)
+        if index is None:
+            return {"ok": False, "error": f"Unknown DUT: {name}"}
+        dut = self.config.duts[index]
+        old_title = dut["title"]
+        dut["title"] = new_title
+        try:
+            self._persist_duts()
+        except (OSError, UnicodeError, ValueError) as exc:
+            dut["title"] = old_title
+            return {"ok": False, "error": f"Could not save DUT: {exc}"}
+        return self._publish_status()
+
+    def _dut_is_bridge(self, target: str) -> bool:
+        dut = self._port_dut.get(target)
+        if dut is None:
+            return self.mode == "bridge"
+        return self._dut_mode.get(dut) == "bridge"
 
     def port_lost(self, target: str) -> None:
         """A worker's port dropped: tell clients; Bridge Mode and ports stay as they are."""
@@ -463,7 +675,7 @@ class Hub:
         with self._state_lock:
             if self._switching:
                 return {"ok": False, "error": "mode switch in progress; retry"}
-            if self.mode != "bridge":
+            if not self._dut_is_bridge(target):
                 return {
                     "ok": False,
                     "error": "CRT Mode is active; switch to Bridge Mode before Send",
@@ -504,7 +716,7 @@ class Hub:
                 return exec_result(
                     target, ok=False, error="mode switch in progress; retry"
                 )
-            if self.mode != "bridge":
+            if not self._dut_is_bridge(target):
                 return exec_result(
                     target,
                     ok=False,

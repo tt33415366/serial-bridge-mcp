@@ -94,12 +94,18 @@ class FakeHub:
         self.calls.append(("agent_mode", mode))
         return {"ok": True, "mode": mode, "ports": {}}
 
-    def start_bridge(self):
-        self.calls.append(("mode", "bridge"))
+    def start_bridge(self, dut=None):
+        if dut is None:
+            self.calls.append(("mode", "bridge"))
+        else:
+            self.calls.append(("mode", "bridge", dut))
         return {"ok": True, "mode": "bridge"}
 
-    def stop_bridge(self):
-        self.calls.append(("mode", "crt"))
+    def stop_bridge(self, quiet=False, dut=None):
+        if dut is None:
+            self.calls.append(("mode", "crt"))
+        else:
+            self.calls.append(("mode", "crt", dut))
         return {"ok": True, "mode": "crt"}
 
     def get_tail(self, target: str = "both", n: int = 80) -> dict[str, str]:

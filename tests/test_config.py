@@ -85,7 +85,7 @@ class ConfigTest(unittest.TestCase):
         self.assertTrue(decision.allowed)
         self.assertEqual(new_live.resolve(), decision.live_dir)
 
-    def test_slot_policy_rejects_live_dir_change_in_bridge_mode(self):
+    def test_slot_policy_allows_live_dir_change_while_a_dut_is_in_bridge(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             old_live = Path(temp_dir) / "old"
             new_live = Path(temp_dir) / "new"
@@ -102,10 +102,8 @@ class ConfigTest(unittest.TestCase):
                 has_workers=True,
             )
 
-        self.assertFalse(decision.allowed)
-        self.assertEqual(
-            "Live Directory can only be changed in CRT Mode", decision.error
-        )
+        self.assertTrue(decision.allowed)
+        self.assertEqual(new_live.resolve(), decision.live_dir)
 
     def test_slot_policy_treats_same_live_dir_as_unchanged_in_bridge_mode(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -320,7 +318,7 @@ class ConfigTest(unittest.TestCase):
             self.assertEqual(config_path.parent, observed["source"].parent)
             self.assertEqual(config_path, observed["destination"])
             saved = json.loads(observed["content"])
-            self.assertEqual({"live_dir", "slots", "target_prompts"}, set(saved.keys()))
+            self.assertEqual({"live_dir", "slots", "duts", "target_prompts"}, set(saved.keys()))
             self.assertEqual("COM8", saved["slots"][0]["com"])
             self.assertEqual(230400, saved["slots"][1]["baud"])
             self.assertFalse(observed["source"].exists())
@@ -382,7 +380,7 @@ class ConfigTest(unittest.TestCase):
             persist_slots(config, config.slots)
             saved = json.loads(config_path.read_text(encoding="utf-8"))
 
-        self.assertEqual({"live_dir", "slots", "target_prompts"}, set(saved.keys()))
+        self.assertEqual({"live_dir", "slots", "duts", "target_prompts"}, set(saved.keys()))
         self.assertEqual("COM60", saved["slots"][1]["com"])
 
     def test_target_name_validation_and_lowercase_storage(self):

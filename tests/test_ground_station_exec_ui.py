@@ -2391,7 +2391,8 @@ class GroundStationExecUiTest(unittest.TestCase):
 
     def test_binding_form_does_not_require_hidden_add_target_fields(self):
         html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
-        form = html[html.index('id="binding-form"') : html.index("</form>")]
+        start = html.index('id="binding-form"')
+        form = html[start : html.index("</form>", start)]
         for control_id in ("add-target-title", "add-target-com", "add-target-baud"):
             with self.subTest(control_id=control_id):
                 self.assertRegex(form, rf'id="{control_id}"')

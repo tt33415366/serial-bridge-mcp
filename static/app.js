@@ -5,6 +5,24 @@
   const modeHint = document.getElementById("mode-hint");
   const btnBridge = document.getElementById("btn-bridge");
   const btnCrt = document.getElementById("btn-crt");
+  const dutList = document.getElementById("dut-list");
+  const btnAddDut = document.getElementById("btn-add-dut");
+  const addDutPanel = document.getElementById("add-dut-panel");
+  const addDutTitle = document.getElementById("add-dut-title");
+  const addDutLinux = document.getElementById("add-dut-linux");
+  const addDutRtos = document.getElementById("add-dut-rtos");
+  const addDutLinuxBaud = document.getElementById("add-dut-linux-baud");
+  const addDutLinuxTitle = document.getElementById("add-dut-linux-title");
+  const addDutRtosTitle = document.getElementById("add-dut-rtos-title");
+  const addDutRtosCard = document.getElementById("add-dut-rtos-card");
+  const btnAddDutSecond = document.getElementById("btn-add-dut-second");
+  const btnAddDutSecondRemove = document.getElementById("btn-add-dut-second-remove");
+  const addDutRtosBaud = document.getElementById("add-dut-rtos-baud");
+  const addDutNote = document.getElementById("note-add-dut");
+  const btnAddDutCancel = document.getElementById("btn-add-dut-cancel");
+  const btnAddDutScan = document.getElementById("btn-add-dut-scan");
+  const addDutHint = document.getElementById("add-dut-hint");
+  const btnAddDutConfirm = document.getElementById("btn-add-dut-confirm");
   const bindingStrip = document.getElementById("binding-strip");
   const bindingForm = document.getElementById("binding-form");
   const bindingHint = document.getElementById("binding-hint");
@@ -85,6 +103,12 @@
 
   let ws;
   let mode = "crt";
+  let focusedDut = localStorage.getItem("serial-bridge.focused-dut") || "";
+  const mainCol = document.getElementById("main-col");
+  let addDutOpen = false;
+  let addDutSecond = false;
+  let lastDutCount = 0;
+  let lastStatus = null;
   let bindingsDirty = false;
   let knownPorts = [];
   let slotTargets = ["linux", "rtos"];
@@ -174,6 +198,7 @@
     for (const slot of SLOT_KEYS) {
       fillPortOptions(bindingInputs[slot].com, bindingInputs[slot].com.value);
     }
+    if (addDutOpen) refreshAddDutForm();
   }
 
   function setPill(text, cls) {
@@ -257,6 +282,7 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         live_dir: bindingLiveDir.value.trim(),
+        dut: focusedDut || null,
         slots,
       }),
     });
@@ -351,8 +377,210 @@
     });
   }
 
+  function dutFlag(text, extraClass = "") {
+    const flag = document.createElement("span");
+    flag.className = ("dut-flag " + extraClass).trim();
+    flag.textContent = text;
+    return flag;
+  }
+
+  function dutCloseButton(label, title, onClick) {
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "dut-close";
+    close.textContent = "×";
+    close.setAttribute("aria-label", label);
+    close.title = title;
+    close.addEventListener("click", onClick);
+    return close;
+  }
+
+  function dutTab(chip, focused, closeButton) {
+    const tab = document.createElement("div");
+    tab.className = "dut-tab" + (focused ? " is-focused" : "");
+    tab.appendChild(chip);
+    if (closeButton) tab.appendChild(closeButton);
+    return tab;
+  }
+
+  function focusDut(name) {
+    focusedDut = name;
+    localStorage.setItem("serial-bridge.focused-dut", focusedDut);
+  }
+
+  function dutChip(dut) {
+    const ports = Object.values(dut.ports || {});
+    const focused = dut.name === focusedDut && !addDutOpen;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.setAttribute("role", "tab");
+    button.setAttribute("aria-selected", focused ? "true" : "false");
+    button.dataset.mode = dut.mode;
+    button.className = "dut-chip" + (focused ? " is-focused" : "");
+    const dot = document.createElement("span");
+    dot.className = "dut-dot";
+    const name = document.createElement("span");
+    name.className = "dut-name";
+    name.textContent = dut.title;
+    const modeText = document.createElement("span");
+    modeText.className = "dut-mode";
+    modeText.textContent = dut.mode;
+    button.append(dot, name, modeText);
+    if (ports.some((port) => port.port_state === "lost")) button.appendChild(dutFlag("lost"));
+    if (ports.some((port) => port.busy)) button.appendChild(dutFlag("busy", "busy"));
+    button.title = "Double-click to rename";
+    button.addEventListener("click", () => {
+      closeAddDut();
+      focusDut(dut.name);
+      if (lastStatus) applyStatus(lastStatus);
+    });
+    button.addEventListener("dblclick", () => renameDut(dut));
+    const close =
+      lastDutCount > 1
+        ? dutCloseButton(`Remove DUT ${dut.title}`, "Remove DUT", () => removeDut(dut))
+        : null;
+    return dutTab(button, focused, close);
+  }
+
+  async function dutRequest(url, method, body) {
+    const options = { method };
+    if (body !== undefined) {
+      options.headers = { "Content-Type": "application/json" };
+      options.body = JSON.stringify(body);
+    }
+    const res = await fetch(url, options);
+    return res.json();
+  }
+
+  async function renameDut(dut) {
+    const title = window.prompt("DUT title", dut.title);
+    if (title === null || !title.trim() || title.trim() === dut.title) return;
+    const data = await dutRequest(`/api/duts/${encodeURIComponent(dut.name)}/title`, "POST", {
+      title: title.trim(),
+    });
+    if (data.ok) applyStatus(data);
+    else window.alert(data.error || "could not rename DUT");
+  }
+
+  async function removeDut(dut) {
+    const stopNote = dut.mode === "crt" ? "" : " Its bridge will be stopped first.";
+    if (!window.confirm(`Remove DUT "${dut.title}" and its Target bindings?${stopNote}`)) return;
+    const data = await dutRequest(`/api/duts/${encodeURIComponent(dut.name)}`, "DELETE");
+    if (data.ok) applyStatus(data);
+    else window.alert(data.error || "could not remove DUT");
+  }
+
+  function renderDutBar(duts) {
+    lastDutCount = duts.length;
+    dutList.textContent = "";
+    duts.forEach((dut) => dutList.appendChild(dutChip(dut)));
+    if (addDutOpen) dutList.appendChild(draftDutTab());
+  }
+
+  // The tab a new DUT occupies while its form is open; closing it abandons the draft.
+  function draftDutTab() {
+    const label = document.createElement("button");
+    label.type = "button";
+    label.setAttribute("role", "tab");
+    label.setAttribute("aria-selected", "true");
+    label.className = "dut-chip is-focused";
+    label.textContent = "New DUT";
+    return dutTab(label, true, dutCloseButton("Discard new DUT", "Discard", closeAddDut));
+  }
+
+  function comsInUse() {
+    const used = new Set();
+    const duts = lastStatus && Array.isArray(lastStatus.duts) ? lastStatus.duts : [];
+    duts.forEach((dut) =>
+      Object.values(dut.ports || {}).forEach((port) => used.add(port.com)),
+    );
+    return used;
+  }
+
+  // Lists only detected ports not in `exclude`; keeps the current pick when it is still free.
+  function fillFreePorts(select, exclude) {
+    const keep = select.value;
+    const free = knownPorts.filter((port) => !exclude.has(port.com));
+    select.textContent = "";
+    for (const port of free) {
+      const option = document.createElement("option");
+      option.value = port.com;
+      option.textContent = port.label ? `${port.com} — ${port.label}` : port.com;
+      select.appendChild(option);
+    }
+    const stillFree = free.some((port) => port.com === keep);
+    select.value = stillFree ? keep : free[0] ? free[0].com : "";
+  }
+
+  function setAddDutSecond(on) {
+    addDutSecond = on;
+    addDutRtosCard.hidden = !on;
+    btnAddDutSecond.hidden = on;
+  }
+
+  function refreshAddDutForm() {
+    const used = comsInUse();
+    fillFreePorts(addDutLinux, used);
+    if (addDutSecond) fillFreePorts(addDutRtos, new Set([...used, addDutLinux.value]));
+    const title = addDutTitle.value.trim();
+    const name = deriveTargetName(title);
+    const duts = lastStatus && Array.isArray(lastStatus.duts) ? lastStatus.duts : [];
+    const slots = [
+      {
+        name: deriveTargetName(addDutLinuxTitle.value),
+        title: addDutLinuxTitle.value.trim(),
+        com: addDutLinux.value,
+        baud: Number(addDutLinuxBaud.value),
+      },
+    ];
+    if (addDutSecond) {
+      slots.push({
+        name: deriveTargetName(addDutRtosTitle.value),
+        title: addDutRtosTitle.value.trim(),
+        com: addDutRtos.value,
+        baud: Number(addDutRtosBaud.value),
+      });
+    }
+    let error = "";
+    if (!title) error = "enter a title";
+    else if (!TARGET_NAME_RE.test(name)) error = "title needs a letter a–z to name the DUT";
+    else if (duts.some((dut) => dut.name === name)) error = `DUT ${name} already exists`;
+    else if (!slots[0].com) error = "no free COM port detected — plug in a device and Scan";
+    else if (slots.some((slot) => !slot.title || !TARGET_NAME_RE.test(slot.name))) {
+      error = "each Target title needs a letter a–z";
+    } else if (slots.length === 2 && slots[0].name === slots[1].name) {
+      error = "Target names must differ";
+    } else if (slots.length === 2 && !slots[1].com) {
+      error = "no second free COM port — Scan or remove the second Target";
+    }
+    addDutNote.textContent = error || `DUT name ${name}`;
+    addDutNote.classList.toggle("err", !!error && !!title);
+    btnAddDutConfirm.disabled = !!error;
+    return { name, title, slots, error };
+  }
+
+  function showDraftHeader() {
+    bindingsSummary.textContent = "New DUT · not added yet";
+    setPill("New DUT · starts in CRT", "warn");
+    btnBridge.disabled = true;
+    btnCrt.disabled = true;
+  }
+
+  function focusedView(s) {
+    const duts = Array.isArray(s.duts) ? s.duts : [];
+    if (duts.length && !duts.some((dut) => dut.name === focusedDut)) {
+      focusedDut = duts[0].name;
+    }
+    renderDutBar(duts);
+    const dut = duts.find((item) => item.name === focusedDut);
+    if (!dut) return { mode: s.mode || "crt", ports: s.ports, dut: null };
+    return { mode: dut.mode || "crt", ports: dut.ports || {}, dut };
+  }
+
   function applyStatus(s) {
-    mode = s.mode || "crt";
+    lastStatus = s;
+    const view = focusedView(s);
+    mode = view.mode || "crt";
     btnBridge.classList.toggle("active-bridge", mode === "bridge");
     btnCrt.classList.toggle("active-crt", mode === "crt");
     bindingStrip.hidden = mode !== "bridge";
@@ -366,9 +594,9 @@
       modeHint.textContent = "Ports released for SecureCRT. Disconnect CRT before Bridge.";
       setPill("CRT · ports free", "warn");
     }
-    if (s.ports) {
-      syncTargetMaps(s.ports);
-      const entries = portEntries(s.ports);
+    if (view.ports) {
+      syncTargetMaps(view.ports);
+      const entries = portEntries(view.ports);
       lastPortCount = entries.length;
       SLOT_KEYS.forEach((slot, index) => {
         const hidden = index >= entries.length;
@@ -397,12 +625,14 @@
       refreshBindingNotes();
       if (entries.length === 1) {
         const only = entries[0][1];
-        bindingsSummary.textContent = `${only.title} (${only.name}) @ ${only.baud}`;
+        const dutLabel = view.dut ? `${view.dut.title} · ` : "";
+        bindingsSummary.textContent = `${dutLabel}${only.title} (${only.name}) @ ${only.baud}`;
       } else if (entries.length >= 2) {
         const first = entries[0][1];
         const second = entries[1][1];
+        const dutLabel = view.dut ? `${view.dut.title} · ` : "";
         bindingsSummary.textContent =
-          `${first.title} (${first.name}) · ${second.title} (${second.name}) @ ${first.baud}/${second.baud}`;
+          `${dutLabel}${first.title} (${first.name}) · ${second.title} (${second.name}) @ ${first.baud}/${second.baud}`;
       }
       if (!portsLoaded) {
         portsLoaded = true;
@@ -415,11 +645,12 @@
     if (s.add_defaults) lastAddDefaults = s.add_defaults;
     setBindingEditability();
     updateTargetSlotActions();
-    updateFooterLogs(s);
+    updateFooterLogs({ ...s, ports: view.ports || s.ports });
     if (s.mode_switch) agentSwitch.checked = !!s.mode_switch.allowed;
-    if (s.ports) syncTargetPrompt(s.ports);
+    if (view.ports) syncTargetPrompt(view.ports);
     if (s.error) setPill(s.error, "err");
     if (s.config_warning) setPill(s.config_warning, "err");
+    if (addDutOpen) showDraftHeader();
   }
 
   function syncTargetPrompt(ports) {
@@ -1858,7 +2089,7 @@
     const res = await fetch("/api/mode", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: modeName }),
+      body: JSON.stringify({ mode: modeName, dut: focusedDut || null }),
     });
     const data = await res.json();
     if (!data.ok) {
@@ -1913,6 +2144,76 @@
 
   btnBridge.addEventListener("click", () => setMode("bridge"));
   btnCrt.addEventListener("click", () => setMode("crt"));
+  const ADD_DUT_HINT = "Starts in CRT. Only free COM ports are listed.";
+
+  function closeAddDut() {
+    if (!addDutOpen) return;
+    addDutOpen = false;
+    addDutPanel.hidden = true;
+    mainCol.classList.remove("is-adding");
+    btnAddDut.setAttribute("aria-expanded", "false");
+    btnBridge.disabled = false;
+    btnCrt.disabled = false;
+    if (lastStatus) applyStatus(lastStatus);
+  }
+  btnAddDut.addEventListener("click", async () => {
+    if (addDutOpen) {
+      addDutTitle.focus();
+      return;
+    }
+    addDutOpen = true;
+    addDutPanel.hidden = false;
+    mainCol.classList.add("is-adding");
+    btnAddDut.setAttribute("aria-expanded", "true");
+    setAddDutSecond(false);
+    if (lastStatus) renderDutBar(lastStatus.duts || []);
+    showDraftHeader();
+    addDutHint.textContent = ADD_DUT_HINT;
+    await refreshPorts();
+    refreshAddDutForm();
+    addDutTitle.focus();
+  });
+  btnAddDutScan.addEventListener("click", async () => {
+    btnAddDutScan.disabled = true;
+    addDutHint.textContent = "scanning…";
+    await refreshPorts();
+    addDutHint.textContent = knownPorts.length
+      ? `${knownPorts.length} port(s) detected.`
+      : "No ports detected.";
+    btnAddDutScan.disabled = false;
+  });
+  btnAddDutCancel.addEventListener("click", closeAddDut);
+  [
+    addDutTitle,
+    addDutLinux,
+    addDutRtos,
+    addDutLinuxTitle,
+    addDutRtosTitle,
+    addDutLinuxBaud,
+    addDutRtosBaud,
+  ].forEach((control) => control.addEventListener("input", refreshAddDutForm));
+  btnAddDutSecond.addEventListener("click", () => {
+    setAddDutSecond(true);
+    refreshAddDutForm();
+  });
+  btnAddDutSecondRemove.addEventListener("click", () => {
+    setAddDutSecond(false);
+    refreshAddDutForm();
+  });
+  addDutPanel.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const { name, title, slots, error } = refreshAddDutForm();
+    if (error) return;
+    const data = await dutRequest("/api/duts", "POST", { name, title, slots });
+    if (!data.ok) {
+      addDutNote.textContent = data.error || "could not add DUT";
+      return;
+    }
+    focusDut(name);
+    lastStatus = data;
+    closeAddDut();
+    applyStatus(data);
+  });
   agentSwitch.addEventListener("change", async () => {
     const res = await fetch("/api/mode_switch_permission", {
       method: "POST",

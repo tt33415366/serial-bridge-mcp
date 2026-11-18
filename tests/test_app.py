@@ -526,7 +526,7 @@ class AppHttpAuthorizationTest(unittest.TestCase):
         self.assertEqual(57600, restarted.status()["ports"]["linux"]["baud"])
         self.assertEqual("COM9", restarted.status()["ports"]["rtos"]["com"])
         self.assertEqual(230400, restarted.status()["ports"]["rtos"]["baud"])
-        self.assertEqual({"live_dir", "slots", "target_prompts"}, set(saved.keys()))
+        self.assertEqual({"live_dir", "slots", "duts", "target_prompts"}, set(saved.keys()))
 
     def test_binding_update_persists_live_dir(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -594,34 +594,32 @@ class AppHttpAuthorizationTest(unittest.TestCase):
         self.assertFalse(saved_exists)
         self.assertIsNone(saved_live)
 
-    def test_binding_update_rejects_live_dir_change_in_bridge_mode(self):
+    def test_binding_update_allows_live_dir_change_while_bridge_mode(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "serial_bridge.json"
             old_live = Path(temp_dir) / "old-live"
             new_live = Path(temp_dir) / "new-live"
+            slots = [
+                {"name": "linux", "title": "Linux", "com": "COM3", "baud": 115200},
+                {"name": "rtos", "title": "RTOS", "com": "COM6", "baud": 115200},
+            ]
             active_hub = Hub(
-                Config(
-                    slots=[
-                        {"name": "linux", "title": "Linux", "com": "COM3", "baud": 115200},
-                        {"name": "rtos", "title": "RTOS", "com": "COM6", "baud": 115200},
-                    ],
-                    path=config_path,
-                    live_dir=old_live,
-                )
+                Config(slots=slots, path=config_path, live_dir=old_live)
             )
             active_hub.mode = "bridge"
             client = TestClient(app_module.app, client=("127.0.0.1", 50000))
             with patch.object(app_module, "hub", active_hub):
                 response = client.post(
                     "/api/bindings",
-                    json=_binding_slots(live_dir=str(new_live)),
+                    json={"slots": slots, "live_dir": str(new_live)},
                 )
 
+            saved = json.loads(config_path.read_text(encoding="utf-8"))
+
         self.assertEqual(200, response.status_code)
-        self.assertFalse(response.json()["ok"])
-        self.assertIn("Live Directory", response.json()["error"])
-        self.assertEqual(str(old_live.resolve()), active_hub.status()["live_dir"])
-        self.assertFalse(config_path.exists())
+        self.assertTrue(response.json()["ok"])
+        self.assertEqual(str(new_live.resolve()), active_hub.status()["live_dir"])
+        self.assertEqual(str(new_live.resolve()), saved["live_dir"])
 
     def test_binding_update_is_rejected_while_bridge_mode_owns_ports(self):
         with tempfile.TemporaryDirectory() as temp_dir:

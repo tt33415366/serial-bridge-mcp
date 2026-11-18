@@ -101,11 +101,19 @@ class Transcript:
 
     def session_log_path(self, name: str, session_time: datetime) -> Path:
         stamp = session_time.strftime("%Y-%m-%d-%H%M%S")
-        return self._live_dir() / f"{name}-{stamp}.log"
+        safe = name.replace("/", "-").replace("\\", "-")
+        return self._live_dir() / f"{safe}-{stamp}.log"
 
-    def assign_session_logs(self, session_time: datetime | None = None) -> None:
+    def assign_session_logs(
+        self,
+        session_time: datetime | None = None,
+        keys: list[str] | None = None,
+    ) -> None:
         session_time = session_time or self._now()
-        for name, port in self._ports().items():
+        ports = self._ports()
+        names = list(ports) if keys is None else list(keys)
+        for name in names:
+            port = ports[name]
             path = self.session_log_path(name, session_time)
             port["log"] = path
             path.touch(exist_ok=True)

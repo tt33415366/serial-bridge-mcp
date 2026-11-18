@@ -19,7 +19,13 @@
       <div class="lamp" id="ws-lamp" aria-hidden="true"></div>
     </aside>
 
-    <div class="main">
+    <div class="main" id="main-col">
+      <nav class="dut-strip" id="dut-bar" aria-label="DUTs">
+        <span class="dut-key">DUT</span>
+        <div id="dut-list" class="dut-list" role="tablist"></div>
+        <button type="button" id="btn-add-dut" class="dut-add">+ Add DUT</button>
+      </nav>
+
       <header class="head">
         <div class="title-block">
           <h1>Ground Station</h1>
@@ -38,6 +44,72 @@
         </div>
         <a class="setup-link" href="/setup">Setup</a>
       </header>
+
+      <form class="binding-panel add-dut-panel" id="add-dut-panel" hidden>
+        <div class="binding-bar">
+          <div class="binding-intro">
+            <strong>New DUT</strong>
+            <span id="add-dut-hint">Starts in CRT. Only free COM ports are listed.</span>
+          </div>
+          <div class="binding-actions">
+            <button type="button" id="btn-add-dut-scan" class="ghost">Scan</button>
+            <button type="button" id="btn-add-dut-cancel" class="ghost">Cancel</button>
+            <button type="submit" id="btn-add-dut-confirm">Add DUT</button>
+          </div>
+        </div>
+
+        <label class="field">
+          <span>DUT title</span>
+          <input id="add-dut-title" type="text" maxlength="64" placeholder="Board 2" autocomplete="off" required />
+        </label>
+
+        <div class="binding-slots">
+          <div class="binding-slot slot0">
+            <header class="binding-slot-head">
+              <span class="binding-tag">Slot 0</span>
+            </header>
+            <label class="field">
+              <span>Title</span>
+              <input id="add-dut-linux-title" type="text" maxlength="64" value="Linux" required />
+            </label>
+            <label class="field">
+              <span>COM</span>
+              <select id="add-dut-linux" required></select>
+            </label>
+            <label class="field">
+              <span>Baud</span>
+              <input id="add-dut-linux-baud" type="number" min="1" step="1" value="115200" required />
+            </label>
+          </div>
+
+          <div class="binding-slot slot1" id="add-dut-rtos-card" hidden>
+            <header class="binding-slot-head">
+              <span class="binding-tag">Slot 1</span>
+              <button type="button" id="btn-add-dut-second-remove" class="ghost binding-remove">Remove</button>
+            </header>
+            <label class="field">
+              <span>Title</span>
+              <input id="add-dut-rtos-title" type="text" maxlength="64" value="RTOS" />
+            </label>
+            <label class="field">
+              <span>COM</span>
+              <select id="add-dut-rtos"></select>
+            </label>
+            <label class="field">
+              <span>Baud</span>
+              <input id="add-dut-rtos-baud" type="number" min="1" step="1" value="115200" />
+            </label>
+          </div>
+
+          <button type="button" id="btn-add-dut-second" class="binding-empty-bay">
+            <span class="binding-tag">Open bay</span>
+            <strong>Add Target</strong>
+            <span>Commission the second console</span>
+          </button>
+        </div>
+
+        <p class="field-note" id="note-add-dut" aria-live="polite">—</p>
+      </form>
 
       <section class="banner" id="banner">
         <strong id="mode-label">—</strong>

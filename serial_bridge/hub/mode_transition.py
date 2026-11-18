@@ -32,25 +32,31 @@ class ModeTransition:
             encoding="utf-8",
         )
 
-    def start_bridge(self) -> dict[str, Any]:
+    def start_bridge(self, dut: str | None = None) -> dict[str, Any]:
+        keys = self._hub.port_keys(dut)
         with self._hub._transition_lock:
             with self._hub._state_lock:
-                if self._hub.mode == "bridge" and all(
+                owners = {self._hub._port_dut.get(key) for key in keys}
+                selected_bridge = bool(keys) and all(
+                    self._hub._dut_mode.get(owner) == "bridge" for owner in owners
+                )
+                if selected_bridge and all(
                     key in self._hub.workers and self._hub.workers[key].is_open
-                    for key in self._hub.ports
+                    for key in keys
                 ):
                     return {
                         "ok": True,
                         "mode": "bridge",
                         "msg": "Already in Bridge Mode",
                         "all_open": True,
-                        "ports": {k: {"open": True} for k in self._hub.ports},
+                        "ports": {key: {"open": True} for key in keys},
                     }
-                already_bridge = self._hub.mode == "bridge"
+                already_bridge = selected_bridge
             if already_bridge:
-                return self._retry_bridge()
-            self._hub.clear_all_readiness()
-            self.stop_bridge(quiet=True)
+                return self._retry_bridge(keys)
+            for key in keys:
+                self._hub.clear_readiness(key)
+            self.stop_bridge(quiet=True, dut=dut)
             try:
                 self._hub.config.live_dir.mkdir(parents=True, exist_ok=True)
             except OSError as exc:
@@ -66,18 +72,16 @@ class ModeTransition:
                     "mode": "crt",
                     "error": f"Could not create Live Directory: {exc}",
                 }
-            self._transcript.assign_session_logs()
+            self._transcript.assign_session_logs(keys=keys)
             results: dict[str, dict[str, Any]] = {}
-            for key, config in self._hub.ports.items():
-                results[key] = self._open_target(key, config)
+            for key in keys:
+                results[key] = self._open_target(key, self._hub.ports[key])
             with self._hub._state_lock:
-                self._hub.mode = "bridge"
+                for owner in {self._hub._port_dut.get(key) for key in keys}:
+                    if owner is not None:
+                        self._hub.set_dut_mode(owner, "bridge")
             self._hub.emit({"type": "status", **self._hub.status()})
-            streams = (
-                "both streams"
-                if len(self._hub.ports) > 1
-                else "the stream"
-            )
+            streams = "both streams" if len(keys) > 1 else "the stream"
             self._hub.emit(
                 {
                     "type": "system",
@@ -87,13 +91,13 @@ class ModeTransition:
                     ),
                 }
             )
-            failed = [k for k, r in results.items() if not r["open"]]
+            failed = [key for key, result in results.items() if not result["open"]]
             if failed:
                 self._hub.emit(
                     {
                         "type": "system",
                         "text": "Bridge Mode: not open - "
-                        + "; ".join(f"{k}: {results[k]['error']}" for k in failed),
+                        + "; ".join(f"{key}: {results[key]['error']}" for key in failed),
                     }
                 )
             self.write_bridge_status()
@@ -119,7 +123,7 @@ class ModeTransition:
                 self._hub.open_errors[key] = message
             return {"open": False, "error": message}
 
-    def _retry_bridge(self) -> dict[str, Any]:
+    def _retry_bridge(self, keys: list[str]) -> dict[str, Any]:
         """Repeat Bridge request: reopen only Targets that are not open.
 
         Open Targets keep their worker, Session Log, readiness and queued work.
@@ -129,7 +133,7 @@ class ModeTransition:
         with self._hub._state_lock:
             retry = [
                 key
-                for key in self._hub.ports
+                for key in keys
                 if key not in self._hub.workers or not self._hub.workers[key].is_open
             ]
             dead = [
@@ -141,20 +145,18 @@ class ModeTransition:
                 self._hub.open_errors.pop(key, None)
         for worker in dead:
             worker.close()
-        results: dict[str, dict[str, Any]] = {
-            key: {"open": True} for key in self._hub.ports
-        }
+        results: dict[str, dict[str, Any]] = {key: {"open": True} for key in keys}
         for key in retry:
             self._hub.clear_readiness(key)
             results[key] = self._open_target(key, self._hub.ports[key])
         self._hub.emit({"type": "status", **self._hub.status()})
-        failed = [k for k in retry if not results[k]["open"]]
+        failed = [key for key in retry if not results[key]["open"]]
         if failed:
             self._hub.emit(
                 {
                     "type": "system",
                     "text": "Bridge Mode: not open - "
-                    + "; ".join(f"{k}: {results[k]['error']}" for k in failed),
+                    + "; ".join(f"{key}: {results[key]['error']}" for key in failed),
                 }
             )
         self.write_bridge_status()
@@ -165,22 +167,30 @@ class ModeTransition:
             "ports": results,
         }
 
-    def stop_bridge(self, quiet: bool = False) -> dict[str, Any]:
+    def stop_bridge(self, quiet: bool = False, dut: str | None = None) -> dict[str, Any]:
+        keys = self._hub.port_keys(dut)
         with self._hub._transition_lock:
             with self._hub._state_lock:
-                self._hub.mode = "crt"
-                self._hub.open_errors.clear()
-                workers = list(self._hub.workers.values())
+                for owner in {self._hub._port_dut.get(key) for key in keys}:
+                    if owner is not None:
+                        self._hub.set_dut_mode(owner, "crt")
+                for key in keys:
+                    self._hub.open_errors.pop(key, None)
+                workers = [
+                    self._hub.workers.pop(key)
+                    for key in keys
+                    if key in self._hub.workers
+                ]
                 for worker in workers:
                     worker.abort_agent_work()
-                self._hub.workers.clear()
             for worker in workers:
                 worker.close()
-            self._hub.clear_all_readiness()
+            for key in keys:
+                self._hub.clear_readiness(key)
             if not quiet:
                 self._hub.emit({"type": "status", **self._hub.status()})
                 ports = "/".join(
-                    str(config["com"]) for config in self._hub.ports.values()
+                    str(self._hub.ports[key]["com"]) for key in keys if key in self._hub.ports
                 )
                 self._hub.emit(
                     {

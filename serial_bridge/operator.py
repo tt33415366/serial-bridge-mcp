@@ -67,6 +67,7 @@ def reveal_session_log(path: Path) -> None:
 
 class ModeBody(BaseModel):
     mode: str = Field(description="bridge or crt")
+    dut: str | None = None
 
 
 class SlotBindingBody(BaseModel):
@@ -76,9 +77,20 @@ class SlotBindingBody(BaseModel):
     baud: int = Field(gt=0, strict=True)
 
 
+class DutBody(BaseModel):
+    name: str = Field(min_length=1, max_length=32, pattern=r"^[a-z][a-z0-9_]{0,31}$")
+    title: str = Field(min_length=1, max_length=64)
+    slots: list[SlotBindingBody] = Field(min_length=1, max_length=2)
+
+
+class DutTitleBody(BaseModel):
+    title: str = Field(min_length=1, max_length=64)
+
+
 class BindingsBody(BaseModel):
     slots: list[SlotBindingBody] = Field(min_length=1, max_length=2)
     live_dir: str | None = Field(default=None, min_length=1)
+    dut: str | None = None
 
 
 class PermissionBody(BaseModel):
@@ -172,16 +184,31 @@ def register_operator_routes(
         hub = _get_hub()
         mode = body.mode.lower().strip()
         if mode == "bridge":
-            return await offload(hub.start_bridge)
+            return await offload(hub.start_bridge, body.dut)
         if mode in ("crt", "securecrt"):
-            return await offload(hub.stop_bridge)
+            return await offload(hub.stop_bridge, False, body.dut)
         return {"ok": False, "error": "mode must be bridge or crt"}
+
+    @app.post("/api/duts", dependencies=[Depends(_require_operator_access)])
+    async def api_add_dut(body: DutBody) -> dict[str, Any]:
+        slots = [slot.model_dump() for slot in body.slots]
+        return await offload(_get_hub().add_dut, body.name, body.title, slots)
+
+    @app.delete("/api/duts/{name}", dependencies=[Depends(_require_operator_access)])
+    async def api_remove_dut(name: str) -> dict[str, Any]:
+        return await offload(_get_hub().remove_dut, name)
+
+    @app.post("/api/duts/{name}/title", dependencies=[Depends(_require_operator_access)])
+    async def api_rename_dut(name: str, body: DutTitleBody) -> dict[str, Any]:
+        return await offload(_get_hub().rename_dut, name, body.title)
 
     @app.post("/api/bindings", dependencies=[Depends(_require_operator_access)])
     async def api_bindings(body: BindingsBody) -> dict[str, Any]:
         hub = _get_hub()
         slots = [slot.model_dump() for slot in body.slots]
-        return await offload(hub.update_slots, slots, body.live_dir)
+        if body.dut is None:
+            return await offload(hub.update_slots, slots, body.live_dir)
+        return await offload(hub.update_slots, slots, body.live_dir, body.dut)
 
     @app.post(
         "/api/mode_switch_permission",
