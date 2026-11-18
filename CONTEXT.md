@@ -5,35 +5,43 @@ Local Windows service that owns device console serial ports so a human Operator 
 ## Language
 
 **Hub**:
-The single in-process authority that owns serial ports, mode, and the live console transcript.
+The single in-process authority that owns every DUT, the serial ports, and the live console transcript.
 _Avoid_: bridge process, backend, server (ambiguous with MCP Server)
 
+**DUT**:
+One unit under test on the Hub. It owns one or two Targets and its own Bridge or CRT Mode; a Target belongs to exactly one DUT, a Hub has one or more, and a new DUT enters existence in CRT Mode, a DUT is removed only while it is in CRT Mode, and the last DUT cannot be removed.
+_Avoid_: pair, device, board
+
+**DUT Name**:
+The Agent-facing identifier string for a DUT (`^[a-z][a-z0-9_]{0,31}$`, unique among the Hub's DUTs, stored lowercase). The Web UI derives it from that DUT's Display Title instead of showing its own field, so it changes only while that DUT is in CRT Mode. The Hub's initial DUT is named `dut`.
+_Avoid_: name (alone), id (too generic), target
+
 **Target**:
-A console endpoint identified by a configurable Agent-facing **Target Name** (defaults `linux` and `rtos`), bound to a COM port and baud. A Hub has one or two Targets; Agents address a Target by Target Name, not by COM number.
-_Avoid_: port (alone), device, channel, interface, COM3/COM6 as primary names in Agent APIs
+A console endpoint of one DUT, identified by a configurable Agent-facing **Target Name** (defaults `linux` and `rtos`), bound to a COM port and baud. Agents address it by its DUT Name and Target Name, not by COM number.
+_Avoid_: port (alone), device, channel, interface, DUT, COM3/COM6 as primary names in Agent APIs
 
 **Target Name**:
-The Agent-facing identifier string for a Target (`^[a-z][a-z0-9_]{0,31}$`, unique across Target Slots, stored lowercase). The Web UI derives it from the Display Title instead of showing its own field, so it changes only in CRT Mode.
+The Agent-facing identifier string for a Target (`^[a-z][a-z0-9_]{0,31}$`, unique among that DUT's Target Slots, stored lowercase). The Web UI derives it from the Display Title instead of showing its own field, so it changes only while its DUT is in CRT Mode.
 _Avoid_: name (alone), id (too generic), key (implementation jargon)
 
 **Display Title**:
-The Operator-facing label for a Target in the Web UI (defaults “Linux” / “RTOS”), distinct from Target Name; trim length 1–64; editable only in CRT Mode because the Target Name follows it, and rejected when two Slots would derive the same Target Name.
-_Avoid_: name (alone — ambiguous with Target Name), label (vague), title (alone)
+The Operator-facing label for a DUT or a Target, distinct from DUT Name and Target Name. The initial DUT's title is “DUT”; Target defaults are “Linux” and “RTOS”. Trim length 1–64, editable only while that DUT is in CRT Mode because the derived name follows it. A DUT title is rejected when the derived DUT Name belongs to another DUT; a Target title is rejected when that DUT's Slots would derive the same Target Name.
+_Avoid_: name (alone — ambiguous with DUT Name and Target Name), label (vague), title (alone)
 
 **Target Slot**:
-A Hub position that holds one Target’s name, Display Title, and Port Binding. A Hub has one or two Slots; the Operator adds the second or removes one only in CRT Mode, and the new Target exists only after that add is confirmed.
+A position on a DUT that holds one Target’s name, Display Title, and Port Binding. A DUT has one or two Slots; the Operator adds or removes the second only while that DUT is in CRT Mode, and the new Target exists only after that add is confirmed.
 _Avoid_: channel index, port index (sounds like COM), serial interface
 
 **Port Binding**:
-The Operator-facing assignment of a Target to a COM port and baud, loaded from environment/CLI and editable in the Web UI with persistence to a config file.
+The Operator-facing assignment of a Target to a COM port and baud, persisted in the config file. Environment and CLI overlay only the first DUT in that file's order, and only Slots that already exist. The Web UI can change a DUT's bindings only while that DUT is in CRT Mode. A COM port belongs to at most one Target on the Hub.
 _Avoid_: port config (vague), device map
 
 **Live Directory**:
-The single directory where the Hub writes Bridge-session Target log files and `bridge_status.json`, defaulting beside the Hub app (`<app-dir>\live\`), configurable like Port Binding, and applied on the next entry into Bridge Mode.
+The single directory where the Hub writes Bridge-session Target log files and `bridge_status.json`, defaulting beside the Hub app (`<app-dir>\live\`). Changing it is allowed while a DUT is in Bridge Mode; each DUT uses the new directory on its next entry into Bridge Mode, and a DUT already in Bridge Mode keeps writing its current Session Log.
 _Avoid_: log path (alone — ambiguous with a single file), CRT_LOG, transcript root (jargon)
 
 **Session Log**:
-The complete on-disk record of one Target for one entry into Bridge Mode, written under the Live Directory as `<TargetName>-YYYY-MM-DD-HHMMSS.log`. The live transcript view and Exec output are bounded subsets of it, not replacements.
+The complete on-disk record of one Target for one entry of its DUT into Bridge Mode, written under the Live Directory as `<DutName>-<TargetName>-YYYY-MM-DD-HHMMSS.log`. The live transcript view and Exec output are bounded subsets of it, not replacements.
 _Avoid_: saved logs file, log file (alone), transcript (the live view)
 
 **Tail**:
@@ -41,19 +49,23 @@ A bounded snapshot of the last N lines of the current Session Log, each reduced 
 _Avoid_: Follow (the Operator pane pin), session log (the whole file), transcript (the live view), live tail (English in Follow, not this term)
 
 **Bridge Mode**:
-Hub holds the serial ports open; Operator and Agent may both send and observe the same streams.
+A DUT's mode in which the Hub holds that DUT's serial ports open. Operator and Agent may both send and observe those streams. Other DUTs are unaffected.
 _Avoid_: agent mode, connected mode
 
 **CRT Mode**:
-Hub has released the serial ports so SecureCRT (or another exclusive client) can own them.
+A DUT's mode in which the Hub has released that DUT's serial ports so SecureCRT (or another exclusive client) can own them. Other DUTs are unaffected, every DUT is in CRT Mode when the Hub starts, and mode is not persisted.
 _Avoid_: disconnected, idle, released (as the mode name)
 
 **Operator**:
 The human at the local Web UI.
 _Avoid_: user (ambiguous with OS user), human (as an API who-value when `operator` is clearer)
 
+**Focused DUT**:
+The DUT a browser page is showing: its Target panes and its Agent Trace. Each page remembers its own. The Hub has no single focused DUT.
+_Avoid_: current DUT (sounds like Hub state), selected device
+
 **Command History**:
-Per-pane recall of text the Operator submitted from that pane’s composer (not Agent Exec/Send). Prefix of the current input selects newer-to-older matches; empty input walks the full list; Down restores the draft. Persists in the browser for that Operator.
+Per-DUT, per-Target recall of text the Operator submitted from that pane’s composer (not Agent Exec/Send). Prefix of the current input selects newer-to-older matches; empty input walks the full list; Down restores the draft. Persists in the browser for that Operator, including while another DUT is on screen.
 _Avoid_: transcript (that is the live console log), shell history (implies a local OS shell)
 
 **Agent**:
@@ -85,11 +97,11 @@ One Agent request that writes a command to a Target and returns immediately with
 _Avoid_: fire-and-forget (jargon), exec (implies waiting)
 
 **Agent Trace**:
-The Operator-facing list, in the Bridge console, of this Hub session’s Agent activity — Exec, Send, Tail, and status reads — with the bytes each returned to the Agent and the session’s running total, used for at-a-glance supervision.
-_Avoid_: spine (layout jargon), activity feed, agent history (sounds durable across Hub restarts), exec log (Tail and status reads belong too)
+The Operator-facing list belonging to one DUT for this Hub session: that DUT's Agent Exec, Send, and Tail, the bytes each returned, and that DUT's running total. The screen shows the focused DUT's list. A status read that names no DUT is not an entry. Each DUT's list remains while another DUT is on screen, and is dropped when the Hub restarts.
+_Avoid_: hub-wide feed, spine (layout jargon), activity feed, agent history (sounds durable across Hub restarts), exec log
 
 **Trace Jump**:
-The Operator action of selecting an Agent Trace Exec entry to scroll to and briefly highlight that Exec’s capture in the Target’s live transcript. The pane materializes the capture if needed; the jump succeeds while at least one of its lines remains retained, and misses only after all capture lines leave retention (or none existed).
+The Operator action of selecting an Exec entry in the focused DUT's Agent Trace to scroll to and briefly highlight that Exec’s capture in that same DUT's live transcript. The pane materializes the capture if needed; the jump succeeds while at least one of its lines remains retained, and misses only after all capture lines leave retention (or none existed).
 _Avoid_: clickable trace (UI-only phrasing), jump to log (ambiguous with session log files), replay (implies re-running)
 
 **Transcript Gap**:
@@ -97,11 +109,11 @@ A placeholder in a Target’s live pane for consecutive transcript lines that ex
 _Avoid_: omitted lines (as the concept name), skipped logs, ellipsis (UI chrome)
 
 **Follow**:
-Whether that Target pane is pinned to the live tail; leaving the tail pauses materializing new lines into the view.
+Whether an on-screen Target pane is pinned to the live tail; leaving the tail pauses materializing new lines into the view. When that browser leaves the DUT, those panes are dropped, and showing the DUT again starts pinned to the tail.
 _Avoid_: auto-scroll (implementation), stick (vague), tail mode (jargon)
 
 **Live View Budget**:
-The Operator-chosen cap, shared by the Target panes, on retained transcript entries available to virtual history, including Transcript Gap markers. Tightening it drops the oldest retained entries; it does not change the complete session log. DOM materialization is a separate bounded virtual window that limits how many entries render at once.
+The Operator-chosen cap, shared by the on-screen Target panes of the focused DUT, on retained transcript entries available to virtual history, including Transcript Gap markers. Tightening it drops the oldest retained entries. Leaving the DUT in that browser drops the retained entries. Neither changes the complete session log. DOM materialization is a separate bounded virtual window that limits how many entries render at once.
 _Avoid_: max term lines, scrollback (alone — sounds like the session log), buffer size
 
 **Raw Payload**:
@@ -125,7 +137,7 @@ Whether the Hub launches the Operator’s browser to the local console (`http://
 _Avoid_: auto-open (vague), startup page (sounds like Setup Page)
 
 **Mode Switch Permission**:
-The Operator-controlled Web UI setting, off by default, that lets an Agent switch Bridge/CRT Mode through MCP. Agent-facing status reports whether it is granted and what the Agent should do next. It never covers Port Binding or port discovery, and it never lets an Agent interrupt an in-flight Exec.
+The Operator-controlled Web UI setting, one per Hub and off by default, that lets an Agent switch a named DUT's Bridge or CRT Mode through MCP. Agent-facing status reports whether it is granted and what the Agent should do next. It never covers Port Binding or port discovery. An in-flight Exec on the named DUT refuses the switch; another DUT's Exec does not. It never lets an Agent interrupt an in-flight Exec.
 _Avoid_: agent mode, auto-switch, unlock
 
 **Port State**:
@@ -133,7 +145,7 @@ Per-Target fact about the Hub's hold on its serial port: closed, open, or lost (
 _Avoid_: accessible, connected (ambiguous with mode), online
 
 **Shell Readiness**:
-Per-Target, per-Bridge-session claim that the device shell is at its prompt, reported ready only while a fresh observation matches the Target Prompt and unknown otherwise (including when none is configured). A send, reconnect, mode change, or lost port clears it; the Hub never sends a probe to establish it.
+Per-Target, per-Bridge-session claim that the device shell is at its prompt, reported ready only while a fresh observation matches the Target Prompt and unknown otherwise (including when none is configured). A send, reconnect, a change of its DUT's mode, or a lost port clears it; the Hub never sends a probe to establish it.
 _Avoid_: not ready (this version never asserts it), alive, responsive
 
 **Exec Status**:
