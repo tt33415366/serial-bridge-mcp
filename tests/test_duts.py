@@ -1,4 +1,4 @@
-﻿import json
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -810,6 +810,37 @@ class DutAddressingTest(unittest.TestCase):
             self.assertEqual("linux", result["target"], result)
             self.assertEqual("beta", result["dut"], result)
         self.assertTrue(again["ok"], again)
+
+    def test_exec_echoes_target_and_dut_when_the_dut_is_removed_mid_wait(self):
+        from serial_bridge.hub.queue import ExecSpec
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            hub = self._hub(Path(temp_dir))
+
+            def remove_while_waiting(key, _spec):
+                hub.remove_dut("beta")
+                return {"ok": False, "aborted": True, "output": ""}
+
+            with mock.patch.object(hub, "_exec", side_effect=remove_while_waiting):
+                result = hub.exec(ExecSpec(dut="beta", target="linux", cmd="ls"))
+
+        self.assertEqual("linux", result["target"])
+        self.assertEqual("beta", result["dut"])
+        self.assertTrue(result["aborted"])
+
+    def test_exec_trace_after_remove_dut_does_not_touch_the_first_duts_trace(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            hub = self._hub(Path(temp_dir))
+            with mock.patch.object(hub, "emit") as emit:
+                exec_id = hub.record_exec_start("beta/linux", "b-exec", None)
+                self.assertTrue(hub.remove_dut("beta")["ok"])
+                emit.reset_mock()
+                hub.record_exec_end(exec_id, "beta/linux", "abort", 1, 0, False, False)
+                late_start = hub.record_exec_start("beta/linux", "late", None)
+
+            self.assertEqual([], hub.get_agent_log("alpha"))
+            self.assertEqual(0, late_start)
+            emit.assert_not_called()
 
     def test_status_log_url_is_url_encoded(self):
         with tempfile.TemporaryDirectory() as temp_dir:

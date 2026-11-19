@@ -764,7 +764,7 @@ class HubTest(unittest.TestCase):
                 with patch.object(hub_module, "datetime") as mock_dt:
                     mock_dt.now.return_value = session_time
                     hub.start_bridge()
-                old_log = live / "linux-2026-08-18-150405.log"
+                old_log = live / "dut-linux-2026-08-18-150405.log"
                 hub.append_log("linux", "<<<", "before rename")
                 self.assertTrue(old_log.is_file())
                 hub.stop_bridge()
@@ -795,7 +795,7 @@ class HubTest(unittest.TestCase):
                 with patch.object(hub_module, "datetime") as mock_dt:
                     mock_dt.now.return_value = datetime(2026, 8, 18, 16, 0, 0)
                     hub.start_bridge()
-                new_log = live / "embedded-2026-08-18-160000.log"
+                new_log = live / "dut-embedded-2026-08-18-160000.log"
                 hub.append_log("embedded", "<<<", "after rename")
                 self.assertTrue(new_log.is_file())
                 self.assertIn("after rename", new_log.read_text(encoding="utf-8"))
@@ -1331,8 +1331,8 @@ class LiveDirectoryTest(unittest.TestCase):
                     mock_dt.now.return_value = session_time
                     self.assertTrue(hub.start_bridge()["ok"])
 
-                linux_log = live / "linux-2026-08-18-093045.log"
-                rtos_log = live / "rtos-2026-08-18-093045.log"
+                linux_log = live / "dut-linux-2026-08-18-093045.log"
+                rtos_log = live / "dut-rtos-2026-08-18-093045.log"
                 self.assertTrue(linux_log.is_file())
                 self.assertTrue(rtos_log.is_file())
                 status = hub.status()
@@ -1358,11 +1358,11 @@ class LiveDirectoryTest(unittest.TestCase):
                 with patch.object(hub_module, "datetime") as mock_dt:
                     mock_dt.now.return_value = first_time
                     hub.start_bridge()
-                    first_linux = live / "linux-2026-08-18-090000.log"
+                    first_linux = live / "dut-linux-2026-08-18-090000.log"
                     hub.stop_bridge()
                     mock_dt.now.return_value = second_time
                     hub.start_bridge()
-                    second_linux = live / "linux-2026-08-18-100000.log"
+                    second_linux = live / "dut-linux-2026-08-18-100000.log"
 
                 self.assertTrue(first_linux.is_file())
                 self.assertTrue(second_linux.is_file())
@@ -1377,7 +1377,7 @@ class LiveDirectoryTest(unittest.TestCase):
                 with patch.object(hub_module, "datetime") as mock_dt:
                     mock_dt.now.return_value = session_time
                     hub.start_bridge()
-                    expected = live / "linux-2026-08-18-093045.log"
+                    expected = live / "dut-linux-2026-08-18-093045.log"
                     hub.stop_bridge()
 
                 self.assertEqual(expected, hub.ports["linux"]["log"])
@@ -1397,7 +1397,7 @@ class LiveDirectoryTest(unittest.TestCase):
                 with patch.object(hub_module, "datetime") as mock_dt:
                     mock_dt.now.return_value = session_time
                     hub.start_bridge()
-                old_log = old_live / "linux-2026-08-18-110000.log"
+                old_log = old_live / "dut-linux-2026-08-18-110000.log"
                 hub.append_log("linux", "<<<", "old dir")
                 hub.stop_bridge()
 
@@ -1405,7 +1405,7 @@ class LiveDirectoryTest(unittest.TestCase):
                 with patch.object(hub_module, "datetime") as mock_dt:
                     mock_dt.now.return_value = datetime(2026, 8, 18, 12, 0, 0)
                     hub.start_bridge()
-                new_log = new_live / "linux-2026-08-18-120000.log"
+                new_log = new_live / "dut-linux-2026-08-18-120000.log"
 
                 self.assertTrue(old_log.is_file())
                 self.assertIn("old dir", old_log.read_text(encoding="utf-8"))
@@ -1442,7 +1442,7 @@ class TranscriptEscapeTest(unittest.TestCase):
                 with patch.object(hub, "emit", emitted.append):
                     hub.append_log("linux", "<<<", colored)
 
-                logged = (live / "linux-2026-08-18-140000.log").read_text(encoding="utf-8")
+                logged = (live / "dut-linux-2026-08-18-140000.log").read_text(encoding="utf-8")
 
         self.assertTrue(logged.endswith(" bin\tdata\n"), logged)
         self.assertNotIn("\x1b", logged)

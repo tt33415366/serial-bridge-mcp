@@ -32,12 +32,22 @@ class SetupPageTest(unittest.TestCase):
         reset_token_store()
         self.token_temp_dir.cleanup()
 
+    def test_agent_rule_snippet_addresses_consoles_by_dut_and_target(self):
+        snippet = bridge_setup.AGENT_RULE_SNIPPET
+        self.assertIn("dut", snippet)
+        self.assertNotIn("by Target Name", snippet)
+
     def test_setup_helpers_live_in_bridge_setup(self):
         self.assertTrue(callable(bridge_setup.detect_lan_ip))
         self.assertTrue(callable(bridge_setup.setup_payload))
         self.assertTrue(callable(bridge_setup.register_setup_routes))
         self.assertFalse(hasattr(app_module, "detect_lan_ip"))
         self.assertFalse(hasattr(app_module, "_setup_payload"))
+
+    def test_agent_rule_snippet_addresses_consoles_by_dut_and_target(self):
+        snippet = bridge_setup.AGENT_RULE_SNIPPET
+        self.assertIn("dut", snippet)
+        self.assertNotIn("by Target Name", snippet)
 
     def test_get_setup_returns_html_without_colliding_with_mcp(self):
         loopback = TestClient(app_module.app, client=("127.0.0.1", 50000))
@@ -54,14 +64,29 @@ class SetupPageTest(unittest.TestCase):
         self.assertEqual(200, remote_setup.status_code)
         self.assertIn("text/html", remote_setup.headers["content-type"])
 
+    def test_agent_rule_snippet_addresses_consoles_by_dut_and_target(self):
+        snippet = bridge_setup.AGENT_RULE_SNIPPET
+        self.assertIn("dut", snippet)
+        self.assertNotIn("by Target Name", snippet)
+
     def test_index_links_to_setup(self):
         response = TestClient(app_module.app).get("/")
         self.assertEqual(200, response.status_code)
         self.assertIn("/setup", response.text)
 
+    def test_agent_rule_snippet_addresses_consoles_by_dut_and_target(self):
+        snippet = bridge_setup.AGENT_RULE_SNIPPET
+        self.assertIn("dut", snippet)
+        self.assertNotIn("by Target Name", snippet)
+
     def test_setup_static_js_contains_no_token_placeholder(self):
         setup_js = (app_module.STATIC / "setup.js").read_text(encoding="utf-8")
         self.assertNotIn("Bearer ", setup_js)
+
+    def test_agent_rule_snippet_addresses_consoles_by_dut_and_target(self):
+        snippet = bridge_setup.AGENT_RULE_SNIPPET
+        self.assertIn("dut", snippet)
+        self.assertNotIn("by Target Name", snippet)
 
     def test_loopback_setup_api_shows_token_and_snippet(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -86,6 +111,11 @@ class SetupPageTest(unittest.TestCase):
         self.assertEqual("http://192.168.1.42:8765/mcp", server["url"])
         self.assertEqual("Bearer loopback-token", server["headers"]["Authorization"])
 
+    def test_agent_rule_snippet_addresses_consoles_by_dut_and_target(self):
+        snippet = bridge_setup.AGENT_RULE_SNIPPET
+        self.assertIn("dut", snippet)
+        self.assertNotIn("by Target Name", snippet)
+
     def test_loopback_setup_api_falls_back_to_localhost_when_no_lan_ip(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "serial_bridge.json"
@@ -103,6 +133,11 @@ class SetupPageTest(unittest.TestCase):
         self.assertIn("127.0.0.1", body["hub_url"])
         snippet = json.loads(body["cursor_snippet"])
         self.assertIn("127.0.0.1", snippet["mcpServers"]["serial-bridge"]["url"])
+
+    def test_agent_rule_snippet_addresses_consoles_by_dut_and_target(self):
+        snippet = bridge_setup.AGENT_RULE_SNIPPET
+        self.assertIn("dut", snippet)
+        self.assertNotIn("by Target Name", snippet)
 
     def test_non_loopback_setup_api_hides_secrets(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -126,6 +161,11 @@ class SetupPageTest(unittest.TestCase):
         self.assertIn("192.168.1.42", body["hub_url"])
         self.assertIn("exit_code", body["agent_rule"])
 
+    def test_agent_rule_snippet_addresses_consoles_by_dut_and_target(self):
+        snippet = bridge_setup.AGENT_RULE_SNIPPET
+        self.assertIn("dut", snippet)
+        self.assertNotIn("by Target Name", snippet)
+
     def test_setup_api_ships_the_agent_rule_without_secrets(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "serial_bridge.json"
@@ -148,10 +188,20 @@ class SetupPageTest(unittest.TestCase):
         self.assertIn('id="agent-rule"', setup_html)
         self.assertIn('id="btn-copy-rule"', setup_html)
 
+    def test_agent_rule_snippet_addresses_consoles_by_dut_and_target(self):
+        snippet = bridge_setup.AGENT_RULE_SNIPPET
+        self.assertIn("dut", snippet)
+        self.assertNotIn("by Target Name", snippet)
+
     def test_non_loopback_rotate_is_rejected(self):
         client = TestClient(app_module.app, client=("192.0.2.10", 50000))
         response = client.post("/api/setup/rotate")
         self.assertEqual(403, response.status_code)
+
+    def test_agent_rule_snippet_addresses_consoles_by_dut_and_target(self):
+        snippet = bridge_setup.AGENT_RULE_SNIPPET
+        self.assertIn("dut", snippet)
+        self.assertNotIn("by Target Name", snippet)
 
     def test_loopback_rotate_rewrites_secrets_file_without_env(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -176,6 +226,11 @@ class SetupPageTest(unittest.TestCase):
                 self.assertEqual(
                     "new-token", token_path.read_text(encoding="utf-8").strip()
                 )
+
+    def test_agent_rule_snippet_addresses_consoles_by_dut_and_target(self):
+        snippet = bridge_setup.AGENT_RULE_SNIPPET
+        self.assertIn("dut", snippet)
+        self.assertNotIn("by Target Name", snippet)
 
     def test_loopback_rotate_warns_when_env_overrides(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -206,6 +261,11 @@ class SetupPageTest(unittest.TestCase):
                 self.assertEqual(
                     "rotated-file-token", token_path.read_text(encoding="utf-8").strip()
                 )
+
+    def test_agent_rule_snippet_addresses_consoles_by_dut_and_target(self):
+        snippet = bridge_setup.AGENT_RULE_SNIPPET
+        self.assertIn("dut", snippet)
+        self.assertNotIn("by Target Name", snippet)
 
     def test_rotate_without_env_updates_mcp_auth(self):
         with tempfile.TemporaryDirectory() as temp_dir:

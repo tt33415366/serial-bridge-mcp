@@ -99,7 +99,7 @@ Use `/mcp` exactly; the Web UI is at `/`. The MCP Server exposes:
 The tools below address a console by `dut` (DUT Name) and `target` (Target
 Name). Both are always required, even when the Hub has a single DUT, and a
 Target Name is unique only within its DUT, so `linux` in two DUTs are different
-consoles. Results echo the Target Name and `dut`.
+consoles. Successful results echo the Target Name and `dut`.
 
 - `serial_exec(dut, target, cmd, ...)`: send one text command and capture output until an idle gap,
   an optional prompt match, or the 60-second timeout. The device's Echo of the

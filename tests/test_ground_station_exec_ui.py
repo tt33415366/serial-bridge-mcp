@@ -512,8 +512,8 @@ class GroundStationExecUiTest(unittest.TestCase):
     ts: "10:00:04.000", ended_by: "idle", ms: 100, bytes: 7,
     truncated: false, ok: true,
   }, {
-    id: 8, kind: "status", phase: "end", target: null, ts: "10:00:03.500",
-    ok: true, returned_bytes: 300,
+    id: 8, kind: "tail", phase: "end", target: "linux", ts: "10:00:03.500",
+    ok: true, returned_bytes: 300, n: 20,
   }];
   agentLogReturnedTotal = 5120;
   await socket.onopen();
@@ -560,7 +560,7 @@ class GroundStationExecUiTest(unittest.TestCase):
         self.assertEqual("AGENT EXEC", result["initial"]["holder0"])
         self.assertEqual("IDLE", result["initial"]["holder1"])
         self.assertEqual(
-            ["spine-node exec sealed", "spine-node read status"],
+            ["spine-node exec sealed", "spine-node read tail"],
             result["reconnectClasses"],
         )
         self.assertNotIn("temporary send", result["reconnectText"])
@@ -2370,7 +2370,7 @@ class GroundStationExecUiTest(unittest.TestCase):
         linux: { name: "linux", title: "Linux", com: "COM8", baud: 115200, open: true },
       } },
       { name: "beta", title: "Beta", mode: "bridge", ports: {
-        linux: { name: "linux", title: "Linux", com: "COM9", baud: 115200, open: true },
+        "beta/linux": { name: "linux", title: "Linux", com: "COM9", baud: 115200, open: true },
       } },
     ],
   });
@@ -2391,11 +2391,16 @@ class GroundStationExecUiTest(unittest.TestCase):
   await nextTurn();
   const switched = spine();
   send({
+    type: "exec", dut: "beta", phase: "start", id: 4, target: "linux",
+    cmd: "beta-after-switch", ts: "10:00:04.000",
+  });
+  const holderAfterSwitch = holder("slot0").textContent;
+  send({
     type: "trace", dut: "dut", kind: "send", id: 9, phase: "end", target: "linux",
     cmd: "alpha-live", ts: "10:00:03.000", ok: true, returned_bytes: 5, returned_total: 5,
   });
   return {
-    before, afterOther, holderAfterOther, switched, afterSwitchLive: spine(),
+    before, afterOther, holderAfterOther, holderAfterSwitch, switched, afterSwitchLive: spine(),
     urls: fetchCalls.filter((url) => String(url).startsWith("/api/agent_log")),
   };
 """,
@@ -2404,6 +2409,7 @@ class GroundStationExecUiTest(unittest.TestCase):
         self.assertIn("alpha-cmd", result["before"])
         self.assertEqual(result["before"], result["afterOther"])
         self.assertEqual("IDLE", result["holderAfterOther"])
+        self.assertEqual("AGENT EXEC", result["holderAfterSwitch"])
         self.assertIn("beta-cmd", result["switched"])
         self.assertNotIn("alpha-cmd", result["switched"])
         self.assertNotIn("alpha-live", result["afterSwitchLive"])
@@ -2533,6 +2539,61 @@ class GroundStationExecUiTest(unittest.TestCase):
         self.assertEqual(
             {"dut": "beta", "target": "linux", "pattern": "# $"}, result["body"]
         )
+
+    def test_prompt_save_uses_target_name_when_the_port_key_is_collided(self):
+        result = run_ui_scenario(
+            """
+  await nextTurn();
+  send({
+    type: "status", mode: "crt",
+    ports: { linux: { name: "linux", title: "Linux", com: "COM8", baud: 115200 } },
+    duts: [
+      { name: "dut", title: "DUT", mode: "crt", ports: {
+        linux: { name: "linux", title: "Linux", com: "COM8", baud: 115200 },
+      } },
+      { name: "beta", title: "Beta", mode: "crt", ports: {
+        "beta/linux": { name: "linux", title: "Linux", com: "COM9", baud: 115200 },
+      } },
+    ],
+  });
+  document.getElementById("target-prompt-input").value = "# $";
+  document.getElementById("target-prompt-save").dispatch("click");
+  await nextTurn();
+  const posted = fetchRequests.filter((item) => item.url === "/api/target_prompt").pop();
+  return { body: JSON.parse(posted.options.body) };
+""",
+            local_storage={"serial-bridge.focused-dut": "beta"},
+        )
+
+        self.assertEqual(
+            {"dut": "beta", "target": "linux", "pattern": "# $"}, result["body"]
+        )
+
+    def test_line_for_a_port_key_outside_the_focused_dut_is_dropped(self):
+        result = run_ui_scenario(
+            """
+  await nextTurn();
+  send({
+    type: "status", mode: "bridge",
+    ports: { linux: { name: "linux", title: "Linux", com: "COM8", baud: 115200 } },
+    duts: [
+      { name: "dut", title: "DUT", mode: "bridge", ports: {
+        linux: { name: "linux", title: "Linux", com: "COM8", baud: 115200 },
+      } },
+      { name: "beta", title: "Beta", mode: "bridge", ports: {
+        "beta/linux": { name: "linux", title: "Linux", com: "COM9", baud: 115200 },
+      } },
+    ],
+  });
+  send({ type: "line", target: "other-dut-line", direction: "<<<", text: "stray-output" });
+  send({ type: "line", target: "beta/linux", direction: "<<<", text: "own-output" });
+  return { text: term("slot0").textContent };
+""",
+            local_storage={"serial-bridge.focused-dut": "beta"},
+        )
+
+        self.assertNotIn("stray-output", result["text"])
+        self.assertIn("own-output", result["text"])
 
     def test_hidden_slot_controls_are_disabled_in_crt(self):
         result = run_ui_scenario(

@@ -114,7 +114,7 @@ class Transcript:
         names = list(ports) if keys is None else list(keys)
         for name in names:
             port = ports[name]
-            path = self.session_log_path(name, session_time)
+            path = self.session_log_path(f"{port['dut']}-{port['name']}", session_time)
             port["log"] = path
             path.touch(exist_ok=True)
 

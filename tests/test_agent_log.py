@@ -92,7 +92,7 @@ class AgentTraceTest(unittest.TestCase):
         )
         self.assertEqual(55, trace.returned_total)
 
-    def test_record_read_seals_send_tail_and_status_entries_with_running_total(self):
+    def test_record_read_seals_send_and_tail_entries_with_running_total(self):
         emitted = []
         trace = AgentTrace("dut", emitted.append)
 
@@ -103,11 +103,11 @@ class AgentTraceTest(unittest.TestCase):
             tail_id = trace.record_read(
                 "tail", target="linux", ok=True, returned_bytes=900, n=40
             )
-            status_id = trace.record_read(
-                "status", target=None, ok=True, returned_bytes=300
+            second_tail_id = trace.record_read(
+                "tail", target="rtos", ok=True, returned_bytes=300, n=10
             )
 
-        self.assertEqual([status_id, tail_id, send_id], [e["id"] for e in trace.get_agent_log()])
+        self.assertEqual([second_tail_id, tail_id, send_id], [e["id"] for e in trace.get_agent_log()])
         self.assertEqual(
             {
                 "id": tail_id,
@@ -126,14 +126,15 @@ class AgentTraceTest(unittest.TestCase):
         self.assertEqual(
             {
                 "type": "trace",
-                "id": status_id,
-                "kind": "status",
+                "id": second_tail_id,
+                "kind": "tail",
                 "dut": "dut",
                 "phase": "end",
-                "target": None,
+                "target": "rtos",
                 "ts": "09:31:00.000",
                 "ok": True,
                 "returned_bytes": 300,
+                "n": 10,
                 "returned_total": 1240,
             },
             emitted[-1],

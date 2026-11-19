@@ -113,6 +113,8 @@
   let knownPorts = [];
   let slotTargets = ["linux", "rtos"];
   let targetToSlot = { linux: "slot0", rtos: "slot1" };
+  // Target Name -> port key for the focused DUT: exec and trace events carry names, panes are keyed by port key.
+  let targetNameToKey = {};
   let lastPortCount = 2;
   let addDialogOpen = false;
   let lastAddDefaults = null;
@@ -164,10 +166,16 @@
     const entries = portEntries(ports);
     slotTargets = entries.map(([name]) => name);
     targetToSlot = {};
-    entries.forEach(([name], index) => {
+    targetNameToKey = {};
+    entries.forEach(([name, binding], index) => {
       targetToSlot[name] = SLOT_KEYS[index] || name;
+      targetNameToKey[(binding && binding.name) || name] = name;
     });
     restoreHydratedHolders();
+  }
+
+  function portKeyOf(targetName) {
+    return targetNameToKey[targetName] || targetName;
   }
 
   function fillPortOptions(select, current) {
@@ -1752,7 +1760,7 @@
    */
   function traceJump(execId, node, target) {
     clearCaptureFlash();
-    const slot = targetToSlot[target];
+    const slot = targetToSlot[portKeyOf(target)];
     const captureId = Number(execId);
     const range = terms[slot] ? paneModels[slot].captureRange(captureId) : null;
     const row =
@@ -1814,14 +1822,14 @@
           `fire-and-forget${entry.ok === false ? " · refused" : ""}` +
             ` · returned ${formatBytes(entry.returned_bytes || 0)}`
         );
-      } else if (entry.kind === "tail" || entry.kind === "status") {
+      } else if (entry.kind === "tail") {
         node.className = `spine-node read ${entry.kind}${entry.ok === false ? " failed" : ""}`;
         const where = entry.target ? ` · ${entry.target}` : "";
         appendSpineText(node, "spine-kicker", `${entry.kind.toUpperCase()}${where} · ${entry.ts || "now"}`);
         appendSpineText(
           node,
           "spine-command",
-          entry.kind === "tail" ? `last ${entry.n || "?"} lines` : "mode and bindings"
+          `last ${entry.n || "?"} lines`
         );
         appendSpineText(
           node,
@@ -1860,7 +1868,7 @@
 
     const execs = spineEntries.filter((entry) => entry.kind === "exec");
     const sends = spineEntries.filter((entry) => entry.kind === "send");
-    const reads = spineEntries.filter((entry) => entry.kind === "tail" || entry.kind === "status");
+    const reads = spineEntries.filter((entry) => entry.kind === "tail");
     const sealed = execs.filter((entry) => entry.phase === "end");
     const aborted = sealed.filter((entry) => entry.ended_by === "abort").length;
     const capped = sealed.filter((entry) => entry.truncated).length;
@@ -1918,7 +1926,7 @@
     for (const slot of SLOT_KEYS) setHolder(slot, false);
     for (const entry of spineEntries) {
       if (entry.kind !== "exec" || entry.phase !== "start") continue;
-      const slot = targetToSlot[entry.target];
+      const slot = targetToSlot[portKeyOf(entry.target)];
       if (slot) setHolder(slot, true);
     }
   }
@@ -1961,9 +1969,10 @@
   function onExecStart(msg) {
     if (msg.dut !== traceDut) return;
     recordExecStart(msg);
-    const slot = targetToSlot[msg.target];
+    const key = portKeyOf(msg.target);
+    const slot = targetToSlot[key];
     if (!terms[slot]) return;
-    openCaptures[msg.target] = {
+    openCaptures[key] = {
       id: Number(msg.id),
       slot,
       sealed: false,
@@ -1978,9 +1987,10 @@
   function onExecEnd(msg) {
     if (msg.dut !== traceDut) return;
     const recorded = recordExecEnd(msg);
-    const open = openCaptures[msg.target];
+    const key = portKeyOf(msg.target);
+    const open = openCaptures[key];
     if (!open || open.id !== Number(msg.id)) {
-      const slot = targetToSlot[msg.target];
+      const slot = targetToSlot[key];
       if (recorded && slot) setHolder(slot, false);
       return;
     }
@@ -1998,7 +2008,7 @@
       setCaptureRowEdges(open.lastRow, hasClass(open.lastRow, "cap-top"), true);
       materializeCaptureFoot(open);
     }
-    delete openCaptures[msg.target];
+    delete openCaptures[key];
     setHolder(open.slot, false);
   }
 
@@ -2050,7 +2060,7 @@
   }
 
   function appendLine(target, direction, text, who, tstamp, options = {}) {
-    const slot = targetToSlot[target] || SLOT_KEYS[0];
+    const slot = targetToSlot[target];
     const el = terms[slot];
     if (!el) return;
     const capture =

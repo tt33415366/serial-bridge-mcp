@@ -33,10 +33,11 @@ def _hub_mcp_url(host: str) -> str:
 AGENT_RULE_SNIPPET = """\
 # Serial Bridge (MCP) — Agent guide
 
-Address Targets by Target Name (`linux`, `rtos`), never by COM port. Call
+Address a console by `dut` (the DUT Name from `serial_status`) and `target`
+(the Target Name, e.g. `linux`, `rtos`), both required, never by COM port. Call
 `serial_status` once per task; Exec and Send require Bridge Mode.
 
-- `serial_exec` returns `{ok, output}`; `truncated`, `timed_out`, `aborted`
+- `serial_exec` returns `{ok, dut, target, output}`; `truncated`, `timed_out`, `aborted`
   appear only when true. `ok` means the capture finished, not that the remote
   command succeeded. The command Echo and the matched prompt are already
   removed from `output`.

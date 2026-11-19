@@ -309,7 +309,7 @@ class SessionLogDownloadTest(unittest.TestCase):
             environ={},
         )
         self.files = tempfile.TemporaryDirectory()
-        self.log_path = Path(self.files.name) / "linux-2026-08-18-093045.log"
+        self.log_path = Path(self.files.name) / "dut-linux-2026-08-18-093045.log"
         self.log_path.write_bytes(b"first snapshot\n")
         self.fake_hub = FakeHub()
         self.fake_hub.ports["linux"]["log"] = self.log_path
@@ -328,7 +328,7 @@ class SessionLogDownloadTest(unittest.TestCase):
         self.assertIn("text/plain", response.headers["content-type"])
         disposition = response.headers["content-disposition"]
         self.assertIn("attachment", disposition)
-        self.assertIn("linux-2026-08-18-093045.log", disposition)
+        self.assertIn("dut-linux-2026-08-18-093045.log", disposition)
 
     def test_download_is_a_snapshot_not_a_follow(self):
         client = TestClient(app_module.app, client=("127.0.0.1", 50000))
@@ -414,7 +414,7 @@ class SessionLogRevealTest(unittest.TestCase):
             environ={},
         )
         self.files = tempfile.TemporaryDirectory()
-        self.log_path = Path(self.files.name) / "linux-2026-08-18-093045.log"
+        self.log_path = Path(self.files.name) / "dut-linux-2026-08-18-093045.log"
         self.log_path.write_text("body\n", encoding="utf-8")
         self.fake_hub = FakeHub()
         self.fake_hub.ports["linux"]["log"] = self.log_path

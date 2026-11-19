@@ -1,4 +1,4 @@
-﻿"""Serial ownership, mode, transcript, and WebSocket broadcast authority."""
+"""Serial ownership, mode, transcript, and WebSocket broadcast authority."""
 from __future__ import annotations
 
 import asyncio
@@ -210,13 +210,23 @@ class Hub:
             raise ValueError(error)
         return self._agent_traces[dut_name]  # type: ignore[index]
 
-    def _trace_target(self, key: str) -> tuple[AgentTrace, str]:
-        """The Trace of the DUT owning a port key, and the Target Name to log."""
+    def _trace_target(self, key: str) -> tuple[AgentTrace, str] | None:
+        """The Trace of the DUT owning a port key, and the Target Name to log.
+
+        None once the key's DUT is gone, so a late exec event is dropped instead of
+        landing in the first DUT's Trace.
+        """
+        dut = self._port_dut.get(key)
+        if dut is None or dut not in self._agent_traces:
+            return None
         name = str(self.ports[key]["name"]) if key in self.ports else key
-        return self._agent_traces[self._owner(key)], name
+        return self._agent_traces[dut], name
 
     def record_exec_start(self, target: str, cmd: str, prompt: str | None) -> int:
-        trace, name = self._trace_target(target)
+        found = self._trace_target(target)
+        if found is None:
+            return 0
+        trace, name = found
         return trace.record_start(name, cmd, prompt)
 
     def record_exec_end(
@@ -230,7 +240,10 @@ class Hub:
         ok: bool,
         returned_bytes: int = 0,
     ) -> None:
-        trace, name = self._trace_target(target)
+        found = self._trace_target(target)
+        if found is None:
+            return
+        trace, name = found
         trace.record_end(
             id,
             name,
@@ -819,7 +832,12 @@ class Hub:
         key, error = self.resolve_target(spec.dut, spec.target)
         if error is not None:
             return exec_result(key or "", ok=False, error=error)
-        return self._echo_target(self._exec(key, spec), key)
+        # Resolved before the wait: remove_dut may drop the port while the exec is queued.
+        name, dut = self.ports[key]["name"], self._owner(key)
+        result = self._exec(key, spec)
+        result["target"] = name
+        result["dut"] = dut
+        return result
 
     def _exec(self, target_name: str | None, spec: ExecSpec) -> dict[str, Any]:
         assert target_name is not None

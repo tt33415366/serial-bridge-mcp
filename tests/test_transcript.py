@@ -11,8 +11,8 @@ from serial_bridge.hub.transcript import Transcript
 
 def make_ports():
     return {
-        "linux": {"title": "Linux", "log": None},
-        "rtos": {"title": "RTOS", "log": None},
+        "linux": {"name": "linux", "dut": "dut", "title": "Linux", "log": None},
+        "rtos": {"name": "rtos", "dut": "dut", "title": "RTOS", "log": None},
     }
 
 
@@ -44,11 +44,11 @@ class TranscriptTest(unittest.TestCase):
             transcript.assign_session_logs()
 
             self.assertEqual(
-                live_dir / "linux-2026-08-19-093045.log",
+                live_dir / "dut-linux-2026-08-19-093045.log",
                 ports["linux"]["log"],
             )
             self.assertEqual(
-                live_dir / "rtos-2026-08-19-093045.log",
+                live_dir / "dut-rtos-2026-08-19-093045.log",
                 ports["rtos"]["log"],
             )
             self.assertTrue(ports["linux"]["log"].is_file())
