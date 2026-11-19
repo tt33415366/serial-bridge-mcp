@@ -46,7 +46,10 @@ class Hub:
                 self._register_slot(dut_name, slot, seen_targets)
         self.mode = "crt"  # crt | bridge — start released so we can open on demand
         self.clients: set[Any] = set()
-        self._agent_trace = AgentTrace(lambda event: self.emit(event))
+        self._agent_traces = {
+            str(dut["name"]): self._new_trace(str(dut["name"]))
+            for dut in self.config.duts
+        }
         import serial_bridge.hub as hub
 
         self._transcript = Transcript(
@@ -198,8 +201,23 @@ class Hub:
         if self.loop and self.loop.is_running():
             asyncio.run_coroutine_threadsafe(self.broadcast(msg), self.loop)
 
+    def _new_trace(self, dut: str) -> AgentTrace:
+        return AgentTrace(dut, lambda event: self.emit(event))
+
+    def _trace(self, dut: object) -> AgentTrace:
+        dut_name, error = self._resolve_dut(dut)
+        if error is not None:
+            raise ValueError(error)
+        return self._agent_traces[dut_name]  # type: ignore[index]
+
+    def _trace_target(self, key: str) -> tuple[AgentTrace, str]:
+        """The Trace of the DUT owning a port key, and the Target Name to log."""
+        name = str(self.ports[key]["name"]) if key in self.ports else key
+        return self._agent_traces[self._owner(key)], name
+
     def record_exec_start(self, target: str, cmd: str, prompt: str | None) -> int:
-        return self._agent_trace.record_start(target, cmd, prompt)
+        trace, name = self._trace_target(target)
+        return trace.record_start(name, cmd, prompt)
 
     def record_exec_end(
         self,
@@ -212,9 +230,10 @@ class Hub:
         ok: bool,
         returned_bytes: int = 0,
     ) -> None:
-        self._agent_trace.record_end(
+        trace, name = self._trace_target(target)
+        trace.record_end(
             id,
-            target,
+            name,
             ended_by,
             ms,
             bytes,
@@ -228,16 +247,20 @@ class Hub:
         kind: str,
         result: dict[str, Any],
         *,
+        dut: object,
         target: str | None = None,
         **fields: Any,
     ) -> None:
-        """Trace a Tail or status read served to an Agent (MCP layer calls this).
+        """Trace a Tail read served to an Agent (MCP layer calls this).
 
         Exec and Send are traced inside the Hub because ``who`` identifies the
-        Agent there; status and Tail reads are shared with the Operator UI, so
-        only the MCP tools report them.
+        Agent there; Tail reads are shared with the Operator UI, so only the
+        MCP tool reports them. A read addressed to an unknown DUT has no Trace.
         """
-        self._agent_trace.record_read(
+        dut_name, error = self._resolve_dut(dut)
+        if error is not None:
+            return
+        self._agent_traces[dut_name].record_read(  # type: ignore[index]
             kind,
             target=target,
             ok=bool(result["ok"]) if "ok" in result else True,
@@ -245,12 +268,11 @@ class Hub:
             **fields,
         )
 
-    def get_agent_log(self) -> list[dict[str, Any]]:
-        return self._agent_trace.get_agent_log()
+    def get_agent_log(self, dut: object) -> list[dict[str, Any]]:
+        return self._trace(dut).get_agent_log()
 
-    @property
-    def returned_total(self) -> int:
-        return self._agent_trace.returned_total
+    def returned_total(self, dut: object) -> int:
+        return self._trace(dut).returned_total
 
     def append_log(self, target: str, direction: str, text: str, who: str = "") -> None:
         self._transcript.append_log(target, direction, text, who)
@@ -632,6 +654,7 @@ class Hub:
             {"name": dut_name, "title": dut_title, "slots": validated}
         )
         self._dut_mode[dut_name] = "crt"
+        self._agent_traces[dut_name] = self._new_trace(dut_name)
         seen = {str(port["name"]) for port in self.ports.values()}
         try:
             for slot in validated:
@@ -641,6 +664,7 @@ class Hub:
             self.config.duts.pop()
             self._drop_dut_ports(dut_name)
             self._dut_mode.pop(dut_name, None)
+            self._agent_traces.pop(dut_name, None)
             return {"ok": False, "error": f"Could not save DUT: {exc}"}
         return self._publish_status()
 
@@ -669,6 +693,7 @@ class Hub:
                     return {"ok": False, "error": f"Could not save DUT: {exc}"}
                 self._drop_dut_ports(name)
                 self._dut_mode.pop(name, None)
+                self._agent_traces.pop(name, None)
         return self._publish_status()
 
     def rename_dut(self, name: str, title: str) -> dict[str, Any]:
@@ -714,10 +739,16 @@ class Hub:
     ) -> dict[str, Any]:
         result = self._send(dut, target, cmd, who, raw_hex)
         key = result.get("target")
-        if who == "agent":
-            self._agent_trace.record_read(
+        dut_name, dut_error = self._resolve_dut(dut)
+        if who == "agent" and dut_error is None:
+            name = (
+                self.ports[key]["name"]
+                if key in self.ports
+                else (target if isinstance(target, str) else None)
+            )
+            self._agent_traces[dut_name].record_read(  # type: ignore[index]
                 "send",
-                target=result.get("target") or (target if isinstance(target, str) else None),
+                target=name,
                 ok=bool(result["ok"]),
                 returned_bytes=payload_bytes(result),
                 cmd=cmd if raw_hex is None else f"[raw] {raw_hex}",

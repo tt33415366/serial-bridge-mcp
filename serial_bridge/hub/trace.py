@@ -1,9 +1,10 @@
-"""Agent Trace: bounded record of Agent activity and its WebSocket events.
+"""Agent Trace: bounded record of one DUT's Agent activity and its WebSocket events.
 
 Exec entries are published as ``{"type": "exec", "phase": "start"|"end"}``
-messages; Send, Tail, and status reads are published as ``{"type": "trace"}``
-messages carrying the whole entry. Every end/read message also carries
-``returned_total``, the bytes this Hub session has returned to Agents so far.
+messages; Send and Tail reads are published as ``{"type": "trace"}``
+messages carrying the whole entry. Every message carries ``dut``, and every
+end/read message also carries ``returned_total``, the bytes this Hub session
+has returned to Agents for that DUT so far.
 """
 from __future__ import annotations
 
@@ -22,9 +23,10 @@ def payload_bytes(result: Any) -> int:
 
 
 class AgentTrace:
-    """Record bounded Agent activity and publish lifecycle events."""
+    """Record bounded Agent activity for one DUT and publish lifecycle events."""
 
-    def __init__(self, emit: Callable[[dict[str, Any]], None]) -> None:
+    def __init__(self, dut: str, emit: Callable[[dict[str, Any]], None]) -> None:
+        self._dut = dut
         self._emit = emit
         self._lock = threading.Lock()
         self._exec_id = 0
@@ -46,6 +48,7 @@ class AgentTrace:
             entry = {
                 "id": exec_id,
                 "kind": "exec",
+                "dut": self._dut,
                 "phase": "start",
                 "target": target,
                 "cmd": cmd,
@@ -86,6 +89,7 @@ class AgentTrace:
         self._emit(
             {
                 "type": "exec",
+                "dut": self._dut,
                 "id": id,
                 "target": target,
                 **end,
@@ -102,7 +106,7 @@ class AgentTrace:
         returned_bytes: int,
         **fields: Any,
     ) -> int:
-        """Record one Send, Tail, or status read as a sealed entry."""
+        """Record one Send or Tail read as a sealed entry."""
         with self._lock:
             entry_id = self._next_id()
             self._returned_total += returned_bytes
@@ -110,6 +114,7 @@ class AgentTrace:
             entry = {
                 "id": entry_id,
                 "kind": kind,
+                "dut": self._dut,
                 "phase": "end",
                 "target": target,
                 "ts": ts(),

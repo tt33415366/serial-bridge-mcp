@@ -19,9 +19,7 @@ _get_hub: Callable[[], Hub]
 async def serial_status() -> dict[str, Any]:
     """Return every DUT grouped: duts [{name, title, mode, mode_switch {allowed, busy, busy_targets, next_action} for that DUT's Targets, ports}]. ports holds that DUT's Targets keyed by Target Name (unique only within its DUT); pass the DUT name as `dut` and the Target Name as `target` to the other tools. Each Target has its Port Binding plus port_state (closed|open|lost), busy, shell (ready|unknown; ready only while the newest device output ends at the Operator-configured Target Prompt, otherwise unknown), shell_observed_at, target_prompt (read-only; the Operator-configured regex behind shell), open_error (only when present: why the Target is not open), and the current Session Log (`log` path on the Hub host; relative `log_url` for a Bearer GET from the same origin as /mcp). Empty log/log_url means none assigned. Use serial_tail for a Tail (last N lines). Do not pull the Session Log into serial_exec output."""
     hub = _get_hub()
-    result = await offload(hub.agent_status)
-    await offload(hub.record_agent_read, "status", result)
-    return result
+    return await offload(hub.agent_status)
 
 
 async def serial_exec(
@@ -85,6 +83,7 @@ async def serial_tail(
         hub.record_agent_read,
         "tail",
         result,
+        dut=dut,
         target=result.get("target") or None,
         n=result.get("n"),
     )

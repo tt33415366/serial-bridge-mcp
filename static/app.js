@@ -126,7 +126,9 @@
    */
   const captureIndex = new Map();
   let spineEntries = [];
-  // Bytes the Hub has returned to Agents this session; the server is the source of truth.
+  // The DUT whose Agent Trace spineEntries holds: one Trace per DUT, only the focused one shown.
+  let traceDut = "";
+  // Bytes the Hub has returned to Agents for the traced DUT; the server is the source of truth.
   let returnedTotal = 0;
   let hydrateVersion = 0;
   const windowCounts = Object.fromEntries(SLOT_KEYS.map((slot) => [slot, 0]));
@@ -591,6 +593,7 @@
   function applyStatus(s) {
     lastStatus = s;
     const view = focusedView(s);
+    if (focusedDut !== traceDut) hydrateAgentLog();
     mode = view.mode || "crt";
     btnBridge.classList.toggle("active-bridge", mode === "bridge");
     btnCrt.classList.toggle("active-crt", mode === "crt");
@@ -1896,8 +1899,9 @@
     return true;
   }
 
-  // Send, Tail, and status reads arrive sealed from the Hub's Agent Trace.
+  // Send and Tail reads arrive sealed from the Hub's Agent Trace.
   function recordTraceEntry(msg) {
+    if (msg.dut !== traceDut) return;
     if (typeof msg.returned_total === "number") returnedTotal = msg.returned_total;
     spineEntries.unshift({ ...msg });
     capSpineEntries();
@@ -1919,10 +1923,30 @@
     }
   }
 
+  /**
+   * Swapping the Trace takes the Trace Jump and Follow state of the old DUT's panes with it:
+   * exec ids restart per DUT, so an anchor or open capture kept across the swap would answer
+   * for the wrong DUT's exec.
+   */
+  function swapTraceDut(dut) {
+    if (traceDut) {
+      clearCaptureFlash();
+      for (const slot of SLOT_KEYS) forgetPaneRows(slot);
+      for (const target of Object.keys(openCaptures)) delete openCaptures[target];
+    }
+    traceDut = dut;
+    spineEntries = [];
+    returnedTotal = 0;
+    renderSpine();
+  }
+
   async function hydrateAgentLog() {
+    const dut = focusedDut;
+    if (!dut) return;
+    if (dut !== traceDut) swapTraceDut(dut);
     const version = ++hydrateVersion;
     try {
-      const response = await fetch("/api/agent_log");
+      const response = await fetch(`/api/agent_log?dut=${encodeURIComponent(dut)}`);
       const data = await response.json();
       if (version !== hydrateVersion || !response.ok || !data.ok) return;
       spineEntries = entriesFromAgentLog(data.entries);
@@ -1935,6 +1959,7 @@
   }
 
   function onExecStart(msg) {
+    if (msg.dut !== traceDut) return;
     recordExecStart(msg);
     const slot = targetToSlot[msg.target];
     if (!terms[slot]) return;
@@ -1951,6 +1976,7 @@
   }
 
   function onExecEnd(msg) {
+    if (msg.dut !== traceDut) return;
     const recorded = recordExecEnd(msg);
     const open = openCaptures[msg.target];
     if (!open || open.id !== Number(msg.id)) {

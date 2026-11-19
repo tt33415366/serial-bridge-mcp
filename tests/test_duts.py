@@ -638,6 +638,95 @@ class DutAddressingTest(unittest.TestCase):
         self.assertIn("beta-line", beta["tail"])
         self.assertNotIn("alpha-line", beta["tail"])
 
+    def test_interleaved_agent_activity_lands_in_each_duts_own_trace(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            hub = self._hub(Path(temp_dir))
+            emitted = []
+            with mock.patch.object(hub, "emit", emitted.append):
+                hub.send("alpha", "linux", "a-send", who="agent")
+                # the Exec worker reports the internal port key; the Trace names the DUT
+                b_exec = hub.record_exec_start("beta/linux", "b-exec", None)
+                hub.record_exec_end(b_exec, "beta/linux", "prompt", 1, 1, False, True, 7)
+                hub.record_agent_read(
+                    "tail", {"ok": True}, dut="alpha", target="linux", n=5
+                )
+                hub.send("beta", "rtos", "b-send", who="agent")
+                a_exec = hub.record_exec_start("linux", "a-exec", None)
+                hub.record_exec_end(a_exec, "linux", "prompt", 1, 1, False, True, 7)
+                hub.send("beta", "linux", "user-typed", who="user")
+
+            alpha = hub.get_agent_log("alpha")
+            beta = hub.get_agent_log("beta")
+
+        self.assertEqual(
+            [("exec", "a-exec"), ("tail", None), ("send", "a-send")],
+            [(e["kind"], e.get("cmd")) for e in alpha],
+        )
+        self.assertEqual(
+            [("send", "b-send"), ("exec", "b-exec")],
+            [(e["kind"], e.get("cmd")) for e in beta],
+        )
+        self.assertEqual({"alpha"}, {e["dut"] for e in alpha})
+        self.assertEqual({"beta"}, {e["dut"] for e in beta})
+        self.assertEqual("linux", [e for e in beta if e["cmd"] == "b-exec"][0]["target"])
+        self.assertEqual("rtos", beta[0]["target"])
+        trace_events = [m for m in emitted if m["type"] in ("exec", "trace")]
+        self.assertEqual(
+            {("alpha", "a-send"), ("alpha", "a-exec"), ("beta", "b-exec"), ("beta", "b-send")},
+            {(m["dut"], m["cmd"]) for m in trace_events if "cmd" in m},
+        )
+        self.assertEqual({"alpha", "beta"}, {m["dut"] for m in trace_events})
+        self.assertEqual(
+            sum(e["returned_bytes"] for e in alpha if e["phase"] == "end"),
+            hub.returned_total("alpha"),
+        )
+        self.assertNotEqual(hub.returned_total("alpha"), hub.returned_total("beta"))
+
+    def test_trace_retention_is_per_dut(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            hub = self._hub(Path(temp_dir))
+            with mock.patch.object(hub, "emit"):
+                for index in range(51):
+                    hub.send("alpha", "linux", str(index), who="agent")
+                hub.send("beta", "linux", "only", who="agent")
+
+            self.assertEqual(50, len(hub.get_agent_log("alpha")))
+            self.assertEqual(1, len(hub.get_agent_log("beta")))
+
+    def test_added_dut_gets_a_trace_and_removed_dut_loses_it(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            hub = self._hub(Path(temp_dir))
+            with mock.patch.object(hub, "emit"):
+                self.assertTrue(
+                    hub.add_dut("gamma", "Gamma", [_slot("linux", "Linux", "COM9")])["ok"]
+                )
+                self.assertEqual([], hub.get_agent_log("gamma"))
+                hub.record_agent_read("tail", {"ok": True}, dut="gamma", target="linux", n=1)
+                self.assertEqual(1, len(hub.get_agent_log("gamma")))
+                self.assertTrue(hub.remove_dut("gamma")["ok"])
+            with self.assertRaises(ValueError):
+                hub.get_agent_log("gamma")
+
+    def test_agent_log_endpoint_serves_one_duts_trace(self):
+        import serial_bridge.app as app_module
+        from fastapi.testclient import TestClient
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            hub = self._hub(Path(temp_dir))
+            with mock.patch.object(hub, "emit"):
+                hub.send("alpha", "linux", "a-send", who="agent")
+                hub.send("beta", "linux", "b-send", who="agent")
+            client = TestClient(app_module.app, client=("127.0.0.1", 50000))
+            with mock.patch.object(app_module, "hub", hub):
+                alpha = client.get("/api/agent_log?dut=alpha").json()
+                beta = client.get("/api/agent_log?dut=beta").json()
+
+        self.assertEqual(["a-send"], [e["cmd"] for e in alpha["entries"]])
+        self.assertEqual(["b-send"], [e["cmd"] for e in beta["entries"]])
+        self.assertEqual(
+            sum(e["returned_bytes"] for e in alpha["entries"]), alpha["returned_total"]
+        )
+
     def test_unknown_dut_error_lists_dut_names(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             hub = self._hub(Path(temp_dir))

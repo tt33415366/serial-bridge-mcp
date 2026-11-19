@@ -174,13 +174,16 @@ def register_operator_routes(
         return {"ok": True, "ports": await offload(available_ports)}
 
     @app.get("/api/agent_log", dependencies=[Depends(_require_operator_access)])
-    async def api_agent_log() -> dict[str, Any]:
+    async def api_agent_log(dut: str) -> dict[str, Any]:
         hub = _get_hub()
-        return {
-            "ok": True,
-            "entries": await offload(hub.get_agent_log),
-            "returned_total": await offload(lambda: hub.returned_total),
-        }
+        try:
+            return {
+                "ok": True,
+                "entries": await offload(hub.get_agent_log, dut),
+                "returned_total": await offload(hub.returned_total, dut),
+            }
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/mode", dependencies=[Depends(_require_operator_access)])
     async def api_mode(body: ModeBody) -> dict[str, Any]:

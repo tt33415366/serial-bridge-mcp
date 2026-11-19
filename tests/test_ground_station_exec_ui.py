@@ -277,15 +277,17 @@ globalThis.AnsiRender = {{
 globalThis.agentLogEntries = {json.dumps(agent_log_entries)};
 globalThis.fetchCalls = [];
 globalThis.fetchRequests = [];
+globalThis.agentLogByDut = null;
 globalThis.fetch = async (url, options) => {{
   fetchCalls.push(url);
   fetchRequests.push({{ url, options: options || {{}} }});
-  if (url === "/api/agent_log") {{
+  if (String(url).startsWith("/api/agent_log")) {{
+    const dut = new URLSearchParams(String(url).split("?")[1] || "").get("dut");
     return {{
       ok: true,
       json: async () => ({{
         ok: true,
-        entries: agentLogEntries,
+        entries: agentLogByDut ? agentLogByDut[dut] || [] : agentLogEntries,
         returned_total: globalThis.agentLogReturnedTotal || 0,
       }}),
     }};
@@ -336,7 +338,11 @@ globalThis.TranscriptView.createPane = (budget) => {{
   return spy;
 }};
 eval(fs.readFileSync({json.dumps(str(APP_JS))}, "utf8"));
-const send = (message) => socket.onmessage({{ data: JSON.stringify(message) }});
+const send = (message) => {{
+  const traced = message.type === "exec" || message.type === "trace";
+  const carried = traced && message.dut === undefined ? {{ ...message, dut: "dut" }} : message;
+  socket.onmessage({{ data: JSON.stringify(carried) }});
+}};
 const composer = (slotIndex) => document.querySelectorAll(".composer")[slotIndex];
 const submitCmd = (slotIndex, text) => {{
   const form = composer(slotIndex);
@@ -519,7 +525,7 @@ class GroundStationExecUiTest(unittest.TestCase):
     reconnectTally: document.getElementById("spine-tally").textContent,
     holder0: holder("slot0").textContent,
     holder1: holder("slot1").textContent,
-    fetchCount: fetchCalls.filter((url) => url === "/api/agent_log").length,
+    fetchCount: fetchCalls.filter((url) => String(url).startsWith("/api/agent_log")).length,
   };
 """,
             agent_log_entries=[
@@ -2345,6 +2351,64 @@ class GroundStationExecUiTest(unittest.TestCase):
                 for entry in result["fetchRequests"]
             )
         )
+
+    def test_trace_shows_only_the_focused_duts_entries_and_reloads_on_switch(self):
+        result = run_ui_scenario(
+            """
+  agentLogByDut = {
+    dut: [{ id: 1, phase: "end", target: "linux", cmd: "alpha-cmd", ended_by: "idle",
+            ms: 1, bytes: 1, truncated: false, ok: true, ts: "10:00:00.000" }],
+    beta: [{ id: 1, phase: "end", target: "linux", cmd: "beta-cmd", ended_by: "idle",
+            ms: 1, bytes: 1, truncated: false, ok: true, ts: "10:00:00.000" }],
+  };
+  await nextTurn();
+  send({
+    type: "status", mode: "bridge",
+    ports: { linux: { name: "linux", title: "Linux", com: "COM8", baud: 115200, open: true } },
+    duts: [
+      { name: "dut", title: "DUT", mode: "bridge", ports: {
+        linux: { name: "linux", title: "Linux", com: "COM8", baud: 115200, open: true },
+      } },
+      { name: "beta", title: "Beta", mode: "bridge", ports: {
+        linux: { name: "linux", title: "Linux", com: "COM9", baud: 115200, open: true },
+      } },
+    ],
+  });
+  await socket.onopen();
+  const spine = () => document.getElementById("spine-body").textContent;
+  const before = spine();
+  send({
+    type: "trace", dut: "beta", kind: "send", id: 2, phase: "end", target: "linux",
+    cmd: "beta-live", ts: "10:00:01.000", ok: true, returned_bytes: 5, returned_total: 5,
+  });
+  send({
+    type: "exec", dut: "beta", phase: "start", id: 3, target: "linux",
+    cmd: "beta-run", ts: "10:00:02.000",
+  });
+  const afterOther = spine();
+  const holderAfterOther = holder("slot0").textContent;
+  document.getElementById("dut-list").children[1].children[0].dispatch("click");
+  await nextTurn();
+  const switched = spine();
+  send({
+    type: "trace", dut: "dut", kind: "send", id: 9, phase: "end", target: "linux",
+    cmd: "alpha-live", ts: "10:00:03.000", ok: true, returned_bytes: 5, returned_total: 5,
+  });
+  return {
+    before, afterOther, holderAfterOther, switched, afterSwitchLive: spine(),
+    urls: fetchCalls.filter((url) => String(url).startsWith("/api/agent_log")),
+  };
+""",
+        )
+
+        self.assertIn("alpha-cmd", result["before"])
+        self.assertEqual(result["before"], result["afterOther"])
+        self.assertEqual("IDLE", result["holderAfterOther"])
+        self.assertIn("beta-cmd", result["switched"])
+        self.assertNotIn("alpha-cmd", result["switched"])
+        self.assertNotIn("alpha-live", result["afterSwitchLive"])
+        self.assertIn("/api/agent_log?dut=dut", result["urls"])
+        self.assertEqual("/api/agent_log?dut=beta", result["urls"][-1])
 
     def test_footer_hides_session_logs_when_unassigned(self):
         result = run_ui_scenario(

@@ -199,15 +199,15 @@ class McpHttpTest(unittest.TestCase):
         )
         self.assertEqual(("tail", "linux", 2, True, False), fake_hub.calls[-2])
         self.assertEqual(
-            ("trace", "tail", "linux", True, {"n": 2}), fake_hub.calls[-1]
+            ("trace", "tail", "dut", "linux", True, {"n": 2}), fake_hub.calls[-1]
         )
 
-    def test_serial_status_is_traced_as_an_agent_read(self):
+    def test_serial_status_is_not_an_agent_trace_entry(self):
         fake_hub = FakeHub()
         with patch.object(app_module, "hub", fake_hub):
             call_tool(self.client, "serial_status")
 
-        self.assertEqual(("trace", "status", None, None, {}), fake_hub.calls[-1])
+        self.assertEqual([], [c for c in fake_hub.calls if c[0] == "trace"])
 
     def test_serial_tail_compacts_session_log_lines_and_can_add_time(self):
         fake_hub = FakeHub()
