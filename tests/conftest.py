@@ -111,8 +111,8 @@ class FakeHub:
         self.calls.append(("permission", allowed))
         return {"ok": True}
 
-    def set_mode_agent(self, mode):
-        self.calls.append(("agent_mode", mode))
+    def set_mode_agent(self, dut, mode):
+        self.calls.append(("agent_mode", dut, mode))
         return {"ok": True, "mode": mode, "ports": {}}
 
     def start_bridge(self, dut=None):

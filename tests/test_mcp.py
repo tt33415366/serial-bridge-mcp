@@ -495,11 +495,13 @@ class McpHttpTest(unittest.TestCase):
     def test_set_mode_tool_is_listed_and_calls_hub(self):
         fake_hub = FakeHub()
         with patch.object(app_module, "hub", fake_hub):
-            response = call_tool(self.client, "serial_set_mode", {"mode": "bridge"})
+            response = call_tool(
+                self.client, "serial_set_mode", {"dut": "alpha", "mode": "bridge"}
+            )
 
         result = response.json()["result"]["structuredContent"]
         self.assertEqual("bridge", result["mode"])
-        self.assertIn(("agent_mode", "bridge"), fake_hub.calls)
+        self.assertIn(("agent_mode", "alpha", "bridge"), fake_hub.calls)
 
     def test_tool_list_has_no_port_discovery_or_binding_tools(self):
         self.assertEqual(

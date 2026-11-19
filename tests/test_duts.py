@@ -786,3 +786,119 @@ class DutAddressingTest(unittest.TestCase):
         self.assertEqual(("beta", "linux"), (sent["dut"], sent["target"]))
         self.assertEqual(("beta", "linux"), (executed["dut"], executed["target"]))
         self.assertEqual(["alpha", "beta"], [d["name"] for d in status["duts"]])
+
+
+class DutAgentSwitchTest(unittest.TestCase):
+    _hub = DutAddressingTest._hub
+    _worker = DutAddressingTest._worker
+
+    def _grant(self, hub):
+        hub.set_mode_switch_permission(True)
+
+    def test_switching_one_dut_leaves_the_other_untouched(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            hub = self._hub(Path(temp_dir))
+            self._grant(hub)
+            beta_workers = [hub.workers[k] for k in hub.port_keys("beta")]
+            result = hub.set_mode_agent("alpha", "crt")
+
+            self.assertTrue(result["ok"], result)
+            modes = {d["name"]: d["mode"] for d in hub.status()["duts"]}
+            self.assertEqual({"alpha": "crt", "beta": "bridge"}, modes)
+            self.assertTrue(all(w.is_open for w in beta_workers))
+            self.assertTrue(hub.send("beta", "linux", "uname")["ok"])
+
+    def test_exec_in_flight_refuses_that_dut_only(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            hub = self._hub(Path(temp_dir))
+            self._grant(hub)
+            self._worker(hub, "alpha", "linux").is_busy = True
+
+            refused = hub.set_mode_agent("alpha", "crt")
+            allowed = hub.set_mode_agent("beta", "crt")
+
+            self.assertFalse(refused["ok"])
+            self.assertEqual(["linux"], refused["busy_targets"])
+            self.assertEqual("wait_for_exec_to_finish", refused["mode_switch"]["next_action"])
+            self.assertTrue(allowed["ok"], allowed)
+
+    def test_busy_target_in_other_dut_does_not_block(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            hub = self._hub(Path(temp_dir))
+            self._grant(hub)
+            self._worker(hub, "beta", "rtos").is_busy = True
+
+            self.assertTrue(hub.set_mode_agent("alpha", "crt")["ok"])
+
+    def test_no_permission_refuses_every_dut(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            hub = self._hub(Path(temp_dir))
+            for name in ("alpha", "beta"):
+                result = hub.set_mode_agent(name, "crt")
+                self.assertFalse(result["ok"])
+                self.assertIn("not permitted", result["error"])
+            self.assertTrue(all(d["mode"] == "bridge" for d in hub.status()["duts"]))
+
+    def test_unknown_dut_is_rejected_with_dut_names(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            hub = self._hub(Path(temp_dir))
+            self._grant(hub)
+            result = hub.set_mode_agent("gamma", "crt")
+
+            self.assertFalse(result["ok"])
+            self.assertIn("alpha", result["error"])
+            self.assertIn("beta", result["error"])
+
+    def test_switch_of_one_dut_does_not_block_exec_on_another(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            hub = self._hub(Path(temp_dir))
+            self._grant(hub)
+            seen = {}
+
+            def fake_stop(*_args, **_kwargs):
+                seen["beta"] = hub.send("beta", "linux", "uname")
+                seen["alpha"] = hub.send("alpha", "linux", "uname")
+                return {"ok": True}
+
+            with mock.patch.object(hub, "stop_bridge", fake_stop):
+                hub.set_mode_agent("alpha", "crt")
+
+            self.assertTrue(seen["beta"]["ok"], seen["beta"])
+            self.assertIn("switch in progress", seen["alpha"]["error"])
+
+    def test_agent_status_mode_switch_is_per_dut(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            hub = self._hub(Path(temp_dir))
+            self._grant(hub)
+            self._worker(hub, "alpha", "linux").is_busy = True
+            duts = {d["name"]: d["mode_switch"] for d in hub.agent_status()["duts"]}
+
+            self.assertTrue(duts["alpha"]["busy"])
+            self.assertEqual(["linux"], duts["alpha"]["busy_targets"])
+            self.assertTrue(duts["alpha"]["allowed"])
+            self.assertFalse(duts["beta"]["busy"])
+            self.assertEqual([], duts["beta"]["busy_targets"])
+            self.assertTrue(duts["beta"]["allowed"])
+
+    def test_bridge_direction_reopens_only_the_named_dut(self):
+        import serial_bridge.hub as hub_module
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            hub = self._hub(Path(temp_dir))
+            self._grant(hub)
+            beta_workers = {k: hub.workers[k] for k in hub.port_keys("beta")}
+            alpha_keys = hub.port_keys("alpha")
+            worker_cls = type(hub.workers[alpha_keys[0]])
+
+            self.assertTrue(hub.set_mode_agent("alpha", "crt")["ok"])
+            self.assertFalse(any(k in hub.workers for k in alpha_keys))
+            with mock.patch.object(hub_module, "PortWorker", worker_cls):
+                result = hub.set_mode_agent("alpha", "bridge")
+
+            self.assertTrue(result["ok"], result)
+            modes = {d["name"]: d["mode"] for d in hub.status()["duts"]}
+            self.assertEqual({"alpha": "bridge", "beta": "bridge"}, modes)
+            self.assertTrue(all(hub.workers[k].is_open for k in alpha_keys))
+            for key, worker in beta_workers.items():
+                self.assertIs(worker, hub.workers[key])
+                self.assertTrue(worker.is_open)

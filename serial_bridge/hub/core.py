@@ -59,7 +59,7 @@ class Hub:
         self._transition_lock = threading.RLock()
         self._readiness = ShellReadiness()
         self._mode_switch_allowed = False
-        self._switching = False
+        self._switching: set[str] = set()
         self.workers: dict[str, Any] = {}
         self.open_errors: dict[str, str] = {}
         self._mode_transition = ModeTransition(
@@ -150,16 +150,23 @@ class Hub:
         if index == 0:
             self.config.slots = slots
         self.config.warning = None
-    def resolve_target(
-        self, dut: object, target: object
-    ) -> tuple[str | None, str | None]:
-        """Map (DUT Name, Target Name) to the internal port key, or an error."""
+    def _resolve_dut(self, dut: object) -> tuple[str | None, str | None]:
         if not isinstance(dut, str):
             return None, "dut must be a DUT Name string"
         dut_name = dut.strip().lower()
         if self._dut_index(dut_name) is None:
             known = ", ".join(str(d["name"]) for d in self.config.duts)
             return None, f"unknown DUT {dut_name!r}; known DUTs: {known}"
+        return dut_name, None
+
+    def resolve_target(
+        self, dut: object, target: object
+    ) -> tuple[str | None, str | None]:
+        """Map (DUT Name, Target Name) to the internal port key, or an error."""
+        dut_name, error = self._resolve_dut(dut)
+        if error is not None:
+            return None, error
+        assert dut_name is not None
         if not isinstance(target, str):
             return None, "target must be a Target Name string"
         target_name = target.strip().lower()
@@ -358,15 +365,22 @@ class Hub:
         self.emit({"type": "status", **status})
         return {"ok": True, **status}
 
-    def set_mode_agent(self, mode: object) -> dict[str, Any]:
+    def set_mode_agent(self, dut: object, mode: object) -> dict[str, Any]:
+        dut_name, error = self._resolve_dut(dut)
+        if error is not None:
+            return {"ok": False, "error": error}
+        assert dut_name is not None
         requested = mode.lower().strip() if isinstance(mode, str) else ""
         if requested not in ("bridge", "crt"):
             return {"ok": False, "error": "mode must be bridge or crt"}
         with self._transition_lock:
             with self._state_lock:
-                info = self._mode_switch_info(
-                    dict(self.workers), self._mode_switch_allowed
+                busy_targets = sorted(
+                    self.ports[k]["name"]
+                    for k in self.port_keys(dut_name)
+                    if k in self.workers and self.workers[k].is_busy
                 )
+                info = self._mode_switch_for(busy_targets, self._mode_switch_allowed)
                 if not info["allowed"]:
                     return {
                         "ok": False,
@@ -380,12 +394,14 @@ class Hub:
                         "busy_targets": info["busy_targets"],
                         "mode_switch": info,
                     }
-                self._switching = True
+                self._switching.add(dut_name)
             try:
-                return self.start_bridge() if requested == "bridge" else self.stop_bridge()
+                if requested == "bridge":
+                    return self.start_bridge(dut_name)
+                return self.stop_bridge(dut=dut_name)
             finally:
                 with self._state_lock:
-                    self._switching = False
+                    self._switching.discard(dut_name)
 
     @staticmethod
     def _port_state(key: str, workers: dict[str, Any]) -> str:
@@ -722,7 +738,7 @@ class Hub:
         assert target_name is not None
         target = target_name
         with self._state_lock:
-            if self._switching:
+            if self._owner(target) in self._switching:
                 return {"ok": False, "error": "mode switch in progress; retry"}
             if not self._dut_is_bridge(target):
                 return {
@@ -762,7 +778,7 @@ class Hub:
         assert target_name is not None
         target = target_name
         with self._state_lock:
-            if self._switching:
+            if self._owner(target) in self._switching:
                 return exec_result(
                     target, ok=False, error="mode switch in progress; retry"
                 )

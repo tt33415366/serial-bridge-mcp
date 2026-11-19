@@ -91,9 +91,9 @@ async def serial_tail(
     return result
 
 
-async def serial_set_mode(mode: str) -> dict[str, Any]:
-    """Switch the whole Hub to Bridge Mode or CRT Mode ('bridge' or 'crt'). Refused unless the Operator granted Mode Switch Permission (serial_status mode_switch.allowed) and refused while any Exec is in flight (busy_targets; nothing is queued). The result reports each Target's open outcome; Bridge Mode does not mean every port opened, so check ports and serial_status port_state. Port Bindings and port discovery stay with the Operator."""
-    return await offload(_get_hub().set_mode_agent, mode)
+async def serial_set_mode(dut: str, mode: str) -> dict[str, Any]:
+    """Switch ONE DUT to Bridge Mode or CRT Mode ('bridge' or 'crt'); other DUTs keep their mode and ports. `dut` (DUT Name) is required. Refused unless the Operator granted Mode Switch Permission (one switch for the whole Hub; serial_status duts[].mode_switch.allowed) and refused while any Exec is in flight on that DUT's Targets (duts[].mode_switch.busy / busy_targets; nothing is queued; an Exec on another DUT does not block). An unknown `dut` is rejected with the list of DUT Names. The result reports each Target's open outcome; Bridge Mode does not mean every port opened, so check ports and serial_status port_state. Port Bindings and port discovery stay with the Operator."""
+    return await offload(_get_hub().set_mode_agent, dut, mode)
 
 
 def create_mcp(get_hub: Callable[[], Hub]) -> FastMCP:

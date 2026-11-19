@@ -1019,7 +1019,7 @@ class HubTest(unittest.TestCase):
                 self._first_start_with_rtos_failing(hub)
                 linux = hub.workers["linux"]
                 hub.set_mode_switch_permission(True)
-                result = hub.set_mode_agent("bridge")
+                result = hub.set_mode_agent("dut", "bridge")
             self.assertTrue(result["ok"])
             self.assertIs(linux, hub.workers["linux"])
             self.assertFalse(linux.closed)
@@ -1033,7 +1033,7 @@ class HubTest(unittest.TestCase):
                 status = hub.status()["mode_switch"]
                 self.assertFalse(status["allowed"])
                 self.assertEqual("ask_operator_to_enable_mode_switch", status["next_action"])
-                result = hub.set_mode_agent("bridge")
+                result = hub.set_mode_agent("dut", "bridge")
             self.assertFalse(result["ok"])
             self.assertEqual("crt", hub.mode)
 
@@ -1042,14 +1042,14 @@ class HubTest(unittest.TestCase):
             with patch.object(hub_module, "PortWorker", FakePortWorker):
                 hub = self._perm_hub(temp_dir)
                 hub.set_mode_switch_permission(True)
-                self.assertEqual("bridge", hub.set_mode_agent("bridge")["mode"])
-                self.assertEqual("crt", hub.set_mode_agent("crt")["mode"])
+                self.assertEqual("bridge", hub.set_mode_agent("dut", "bridge")["mode"])
+                self.assertEqual("crt", hub.set_mode_agent("dut", "crt")["mode"])
 
     def test_invalid_mode_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             hub = self._perm_hub(temp_dir)
             hub.set_mode_switch_permission(True)
-            result = hub.set_mode_agent("nope")
+            result = hub.set_mode_agent("dut", "nope")
         self.assertEqual(
             {"ok": False, "error": "mode must be bridge or crt"}, result
         )
@@ -1061,7 +1061,7 @@ class HubTest(unittest.TestCase):
                 hub.set_mode_switch_permission(True)
                 hub.start_bridge()
                 hub.workers["linux"].is_busy = True
-                result = hub.set_mode_agent("crt")
+                result = hub.set_mode_agent("dut", "crt")
                 self.assertFalse(result["ok"])
                 self.assertEqual(["linux"], result["busy_targets"])
                 self.assertEqual("wait_for_exec_to_finish", result["mode_switch"]["next_action"])
@@ -1073,10 +1073,10 @@ class HubTest(unittest.TestCase):
             with patch.object(hub_module, "PortWorker", FakePortWorker):
                 hub = self._perm_hub(temp_dir)
                 hub.set_mode_switch_permission(True)
-                self.assertTrue(hub.set_mode_agent("bridge")["ok"])
+                self.assertTrue(hub.set_mode_agent("dut", "bridge")["ok"])
                 hub.set_mode_switch_permission(False)
                 self.assertEqual("bridge", hub.mode)
-                self.assertFalse(hub.set_mode_agent("crt")["ok"])
+                self.assertFalse(hub.set_mode_agent("dut", "crt")["ok"])
 
     def test_agent_switch_reports_partial_open_failure_without_revert(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1085,7 +1085,7 @@ class HubTest(unittest.TestCase):
             with patch.object(hub_module, "PortWorker", FakePortWorker):
                 hub = self._perm_hub(temp_dir)
                 hub.set_mode_switch_permission(True)
-                result = hub.set_mode_agent("bridge")
+                result = hub.set_mode_agent("dut", "bridge")
             self.assertEqual("bridge", result["mode"])
             self.assertFalse(result["ports"]["rtos"]["open"])
 
@@ -1094,7 +1094,7 @@ class HubTest(unittest.TestCase):
             with patch.object(hub_module, "PortWorker", FakePortWorker):
                 hub = self._perm_hub(temp_dir)
                 hub.start_bridge()
-                hub._switching = True
+                hub._switching = {"dut"}
                 result = hub.exec(ExecSpec(dut="dut", target="linux", cmd="ls"))
             self.assertFalse(result["ok"])
             self.assertEqual("error", result["status"])
@@ -1114,7 +1114,7 @@ class HubTest(unittest.TestCase):
                     return {"ok": True, "mode": "crt"}
 
                 with patch.object(hub, "stop_bridge", fake_stop):
-                    result = hub.set_mode_agent("crt")
+                    result = hub.set_mode_agent("dut", "crt")
                 after = hub.send("dut", "linux", "ls")
             self.assertTrue(result["ok"])
             for key in ("exec", "send"):
