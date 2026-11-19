@@ -938,10 +938,8 @@ class HubTest(unittest.TestCase):
             good = hub.set_target_prompt("dut", "linux", r"# $")
             self.assertTrue(good["ok"])
             self.assertEqual(r"# $", hub.status()["ports"]["linux"]["target_prompt"])
-            self.assertIn(
-                "target_prompts",
-                json.loads((live / "serial_bridge.json").read_text(encoding="utf-8")),
-            )
+            saved = json.loads((live / "serial_bridge.json").read_text(encoding="utf-8"))
+            self.assertEqual({"linux": r"# $"}, saved["duts"][0]["target_prompts"])
             self.assertFalse(hub.set_target_prompt("dut", "nope", "x")["ok"])
             self.assertTrue(hub.set_target_prompt("dut", "linux", "")["ok"])
             self.assertEqual("", hub.status()["ports"]["linux"]["target_prompt"])
@@ -1006,7 +1004,7 @@ class HubTest(unittest.TestCase):
             self.assertTrue(result["ok"])
             self.assertEqual(r"# $", hub.status()["ports"]["linux"]["target_prompt"])
             saved = json.loads(path.read_text(encoding="utf-8"))
-            self.assertEqual({"linux": r"# $"}, saved["target_prompts"])
+            self.assertEqual({"linux": r"# $"}, saved["duts"][0]["target_prompts"])
 
     def _perm_hub(self, temp_dir):
         live = Path(temp_dir)

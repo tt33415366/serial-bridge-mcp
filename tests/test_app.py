@@ -526,7 +526,7 @@ class AppHttpAuthorizationTest(unittest.TestCase):
         self.assertEqual(57600, restarted.status()["ports"]["linux"]["baud"])
         self.assertEqual("COM9", restarted.status()["ports"]["rtos"]["com"])
         self.assertEqual(230400, restarted.status()["ports"]["rtos"]["baud"])
-        self.assertEqual({"live_dir", "slots", "duts", "target_prompts"}, set(saved.keys()))
+        self.assertEqual({"live_dir", "slots", "duts"}, set(saved.keys()))
 
     def test_binding_update_persists_live_dir(self):
         with tempfile.TemporaryDirectory() as temp_dir:

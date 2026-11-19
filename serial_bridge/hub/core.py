@@ -286,7 +286,7 @@ class Hub:
             open_errors = dict(self.open_errors)
             mode_switch = self._mode_switch_info(workers, self._mode_switch_allowed)
         shell = {
-            k: self._readiness.evaluate(k, self.config.target_prompts.get(k))
+            k: self._readiness.evaluate(k, self._target_prompt(k))
             for k in self.ports
         }
         status = {
@@ -302,7 +302,7 @@ class Hub:
                     "open": k in workers and workers[k].is_open,
                     "busy": k in workers and workers[k].is_busy,
                     "port_state": self._port_state(k, workers),
-                    "target_prompt": self.config.target_prompts.get(k, ""),
+                    "target_prompt": self._target_prompt(k),
                     "shell": shell[k][0],
                     "shell_observed_at": shell[k][1],
                     "log": str(v["log"]) if v.get("log") else "",
@@ -528,11 +528,24 @@ class Hub:
     def clear_all_readiness(self) -> None:
         self._readiness.clear()
 
+    def _dut_config(self, key: str) -> dict[str, object]:
+        """The config entry of the DUT owning a port key."""
+        owner = self._owner(key)
+        index = self._dut_index(owner)
+        if index is None:
+            raise KeyError(f"port {key!r} belongs to unknown DUT {owner!r}")
+        return self.config.duts[index]
+
+    def _target_prompt(self, key: str) -> str:
+        """The Target Prompt of a port key's Target, from its own DUT."""
+        prompts = self._dut_config(key).get("target_prompts") or {}
+        return prompts.get(str(self.ports[key]["name"]), "")  # type: ignore[attr-defined]
+
     def set_target_prompt(
         self, dut: object, target: object, pattern: object
     ) -> dict[str, Any]:
         """Operator-only: set or clear (empty string) a Target's Target Prompt."""
-        target_name, error = self.resolve_target(dut, target)
+        key, error = self.resolve_target(dut, target)
         if error is not None:
             return {"ok": False, "error": error}
         if not isinstance(pattern, str):
@@ -544,19 +557,22 @@ class Hub:
                 return {"ok": False, "error": f"pattern is not a valid regex: {exc}"}
         with self._transition_lock:
             with self._state_lock:
-                previous = self.config.target_prompts
+                assert key is not None
+                owner = self._dut_config(key)
+                previous = owner.get("target_prompts") or {}
                 updated = dict(previous)
+                target_name = str(self.ports[key]["name"])
                 if pattern:
                     updated[target_name] = pattern
                 else:
                     updated.pop(target_name, None)
-                self.config.target_prompts = updated
+                owner["target_prompts"] = updated
                 try:
                     persist_slots(self.config, self.config.slots)
                 except (OSError, UnicodeError, ValueError) as exc:
-                    self.config.target_prompts = previous
+                    owner["target_prompts"] = previous
                     return {"ok": False, "error": f"Could not save Target Prompt: {exc}"}
-            self.clear_readiness(target_name)
+            self.clear_readiness(key)
         status = self.status()
         self.emit({"type": "status", **status})
         return {"ok": True, **status}

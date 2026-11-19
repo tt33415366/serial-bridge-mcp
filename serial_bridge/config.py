@@ -62,7 +62,6 @@ class Config:
     path: Path
     live_dir: Path = DEFAULT_LIVE_DIR
     warning: str | None = None
-    target_prompts: dict[str, str] = field(default_factory=dict)
     duts: list[dict[str, object]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -389,25 +388,60 @@ def _validated_slots(data: object) -> list[dict[str, str | int]]:
     return slots
 
 
-def _parse_saved_target_prompts(data: object) -> dict[str, str]:
-    raw = data.get("target_prompts") if isinstance(data, dict) else None
+def _parse_prompt_map(raw: object, source: str) -> dict[str, str]:
     if raw is None:
         return {}
     if not isinstance(raw, dict):
-        raise ValueError("target_prompts must be an object")
+        raise ValueError(f"{source} must be an object")
     prompts: dict[str, str] = {}
     for name, pattern in raw.items():
         if not isinstance(name, str) or not isinstance(pattern, str):
-            raise ValueError("target_prompts entries must be strings")
+            raise ValueError(f"{source} entries must be strings")
         try:
             re.compile(pattern)
         except re.error as exc:
             raise ValueError(
-                f"target_prompts[{name}] is not a valid regex: {exc}"
+                f"{source}[{name}] is not a valid regex: {exc}"
             ) from exc
         prompts[name] = pattern
     return prompts
 
+
+def _parse_saved_target_prompts(data: object, count: int) -> list[dict[str, str]]:
+    """Per-DUT Target Prompts; a legacy top-level map loads onto the first DUT."""
+    result: list[dict[str, str]] = [{} for _ in range(count)]
+    if not isinstance(data, dict):
+        return result
+    result[0].update(_parse_prompt_map(data.get("target_prompts"), "target_prompts"))
+    raw_duts = data.get("duts")
+    if isinstance(raw_duts, list):
+        for index, entry in enumerate(raw_duts[:count]):
+            if isinstance(entry, dict):
+                result[index].update(
+                    _parse_prompt_map(
+                        entry.get("target_prompts"), f"duts[{index}].target_prompts"
+                    )
+                )
+    return result
+
+
+def _duts_for_save(duts: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
+    """DUT bodies with each DUT's prompts limited to its own Targets."""
+    saved: list[dict[str, object]] = []
+    for dut in duts:
+        names = {str(slot["name"]) for slot in dut["slots"]}  # type: ignore[index]
+        prompts = dut.get("target_prompts") or {}
+        saved.append(
+            {
+                **dut,
+                "target_prompts": {
+                    name: pattern
+                    for name, pattern in prompts.items()  # type: ignore[attr-defined]
+                    if name in names
+                },
+            }
+        )
+    return saved
 
 def persist_slots(
     config: Config,
@@ -440,17 +474,7 @@ def persist_slots(
                     {
                         "live_dir": str(config.live_dir.resolve()),
                         "slots": config.duts[0]["slots"],
-                        "duts": config.duts,
-                        "target_prompts": {
-                            name: pattern
-                            for name, pattern in config.target_prompts.items()
-                            if name
-                            in {
-                                str(slot["name"])
-                                for dut in config.duts
-                                for slot in dut["slots"]  # type: ignore[index]
-                            }
-                        },
+                        "duts": _duts_for_save(config.duts),
                     },
                     ensure_ascii=False,
                     indent=2,
@@ -555,7 +579,6 @@ def load_config(
 
     path = config_path or Path(env.get("SERIAL_BRIDGE_CONFIG", DEFAULT_CONFIG_PATH))
     warning = None
-    target_prompts: dict[str, str] = {}
     duts = [_default_dut(slots)]
     if path.is_file():
         try:
@@ -581,7 +604,10 @@ def load_config(
             except ValueError as exc:
                 warning = f"Could not load config {path}: {exc}"
             try:
-                target_prompts = _parse_saved_target_prompts(raw)
+                for dut, prompts in zip(
+                    duts, _parse_saved_target_prompts(raw, len(duts))
+                ):
+                    dut["target_prompts"] = prompts
             except ValueError as exc:
                 warning = f"Could not load config {path}: target_prompts: {exc}"
         except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
@@ -599,7 +625,6 @@ def load_config(
         path=path,
         live_dir=live_dir,
         warning=warning,
-        target_prompts=target_prompts,
         duts=duts,
     )
 

@@ -2262,6 +2262,10 @@
     if (data.ok) applyStatus(data);
     else agentSwitch.checked = !agentSwitch.checked;
   });
+  function promptTargetName() {
+    const port = lastPorts && lastPorts[promptSelect.value];
+    return port ? port.name : promptSelect.value;
+  }
   promptSelect.addEventListener("change", () => {
     const selected = lastPorts && lastPorts[promptSelect.value];
     promptInput.value = (selected && selected.target_prompt) || "";
@@ -2272,7 +2276,8 @@
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        ...targetAddress(promptSelect.value),
+        dut: focusedDut,
+        target: promptTargetName(),
         pattern: promptInput.value,
       }),
     });

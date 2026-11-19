@@ -991,3 +991,145 @@ class DutAgentSwitchTest(unittest.TestCase):
             for key, worker in beta_workers.items():
                 self.assertIs(worker, hub.workers[key])
                 self.assertTrue(worker.is_open)
+
+class TargetPromptPerDutTest(unittest.TestCase):
+    @staticmethod
+    def _two_dut_config(path, live):
+        return Config(
+            slots=[_slot("linux", "Linux", "COM3")],
+            path=path,
+            live_dir=live,
+            duts=[
+                _dut("alpha", "Alpha", [_slot("linux", "Linux", "COM3")]),
+                _dut("beta", "Beta", [_slot("linux", "Linux", "COM5")]),
+            ],
+        )
+
+    def test_same_named_targets_keep_separate_prompts_and_persist_nested(self):
+        from serial_bridge.hub import Hub
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            live = Path(temp_dir)
+            path = live / "serial_bridge.json"
+            hub = Hub(self._two_dut_config(path, live))
+            self.assertTrue(hub.set_target_prompt("alpha", "linux", "A# $")["ok"])
+            self.assertTrue(hub.set_target_prompt("beta", "linux", "B> $")["ok"])
+            self.assertTrue(hub.set_target_prompt("alpha", "linux", "A2# $")["ok"])
+            status = hub.agent_status()
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            loaded = load_config(environ={}, config_path=path)
+
+        by_dut = {d["name"]: d["ports"]["linux"]["target_prompt"] for d in status["duts"]}
+        self.assertEqual({"alpha": "A2# $", "beta": "B> $"}, by_dut)
+        self.assertEqual({"linux": "A2# $"}, saved["duts"][0]["target_prompts"])
+        self.assertEqual({"linux": "B> $"}, saved["duts"][1]["target_prompts"])
+        self.assertNotIn("target_prompts", saved)
+        self.assertEqual({"linux": "B> $"}, loaded.duts[1]["target_prompts"])
+
+    def test_legacy_top_level_prompts_load_onto_first_dut_and_are_rewritten(self):
+        from serial_bridge.hub import Hub
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            live = Path(temp_dir)
+            path = live / "serial_bridge.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "duts": [
+                            _dut("alpha", "Alpha", [_slot("linux", "Linux", "COM3")]),
+                            _dut("beta", "Beta", [_slot("linux", "Linux", "COM5")]),
+                        ],
+                        "target_prompts": {"linux": "# $"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            loaded = load_config(environ={}, config_path=path)
+            first = loaded.duts[0].get("target_prompts")
+            second = loaded.duts[1].get("target_prompts", {})
+            persist_slots(loaded, loaded.duts[0]["slots"])
+            saved = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertEqual({"linux": "# $"}, first)
+        self.assertEqual({}, second)
+        self.assertNotIn("target_prompts", saved)
+        self.assertEqual({"linux": "# $"}, saved["duts"][0]["target_prompts"])
+
+    def test_legacy_slots_file_prompts_load_onto_the_implicit_dut(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "serial_bridge.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "slots": [_slot("linux", "Linux", "COM3")],
+                        "target_prompts": {"linux": "# $"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            loaded = load_config(environ={}, config_path=path)
+
+        self.assertEqual({"linux": "# $"}, loaded.duts[0]["target_prompts"])
+
+    def test_removing_a_dut_drops_its_prompts_and_a_new_dut_starts_empty(self):
+        from serial_bridge.hub import Hub
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            live = Path(temp_dir)
+            path = live / "serial_bridge.json"
+            hub = Hub(self._two_dut_config(path, live))
+            hub.set_target_prompt("beta", "linux", "B> $")
+            hub.set_target_prompt("alpha", "linux", "A# $")
+            self.assertTrue(hub.remove_dut("beta")["ok"])
+            self.assertTrue(
+                hub.add_dut("beta", "Beta", [_slot("linux", "Linux", "COM5")])["ok"]
+            )
+            status = hub.agent_status()
+            saved = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertEqual("", status["duts"][1]["ports"]["linux"]["target_prompt"])
+        self.assertEqual("A# $", status["duts"][0]["ports"]["linux"]["target_prompt"])
+        self.assertEqual({}, saved["duts"][1].get("target_prompts", {}))
+
+    def test_shell_readiness_uses_each_duts_own_prompt(self):
+        from serial_bridge.hub import Hub
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            live = Path(temp_dir)
+            hub = Hub(self._two_dut_config(live / "serial_bridge.json", live))
+            hub.set_target_prompt("alpha", "linux", r"# $")
+            hub.set_target_prompt("beta", "linux", r"> $")
+            alpha_key, _ = hub.resolve_target("alpha", "linux")
+            beta_key, _ = hub.resolve_target("beta", "linux")
+            self.assertNotEqual(alpha_key, beta_key)
+            hub.observe_rx(alpha_key, b"root# ")
+            hub.observe_rx(beta_key, b"root# ")
+            shell = {
+                d["name"]: d["ports"]["linux"]["shell"]
+                for d in hub.agent_status()["duts"]
+            }
+
+        self.assertEqual({"alpha": "ready", "beta": "unknown"}, shell)
+
+    def test_target_prompt_route_requires_dut(self):
+        import serial_bridge.app as app_module
+        from fastapi.testclient import TestClient
+        from serial_bridge.hub import Hub
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            live = Path(temp_dir)
+            hub = Hub(self._two_dut_config(live / "serial_bridge.json", live))
+            client = TestClient(app_module.app, client=("127.0.0.1", 50000))
+            with mock.patch.object(app_module, "hub", hub):
+                missing = client.post(
+                    "/api/target_prompt", json={"target": "linux", "pattern": "# $"}
+                )
+                ok = client.post(
+                    "/api/target_prompt",
+                    json={"dut": "beta", "target": "linux", "pattern": "# $"},
+                )
+
+        self.assertEqual(422, missing.status_code)
+        self.assertTrue(ok.json()["ok"])
+        beta_ports = ok.json()["duts"][1]["ports"]
+        self.assertEqual(["# $"], [p["target_prompt"] for p in beta_ports.values()])

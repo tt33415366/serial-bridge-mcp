@@ -318,7 +318,7 @@ class ConfigTest(unittest.TestCase):
             self.assertEqual(config_path.parent, observed["source"].parent)
             self.assertEqual(config_path, observed["destination"])
             saved = json.loads(observed["content"])
-            self.assertEqual({"live_dir", "slots", "duts", "target_prompts"}, set(saved.keys()))
+            self.assertEqual({"live_dir", "slots", "duts"}, set(saved.keys()))
             self.assertEqual("COM8", saved["slots"][0]["com"])
             self.assertEqual(230400, saved["slots"][1]["baud"])
             self.assertFalse(observed["source"].exists())
@@ -380,7 +380,7 @@ class ConfigTest(unittest.TestCase):
             persist_slots(config, config.slots)
             saved = json.loads(config_path.read_text(encoding="utf-8"))
 
-        self.assertEqual({"live_dir", "slots", "duts", "target_prompts"}, set(saved.keys()))
+        self.assertEqual({"live_dir", "slots", "duts"}, set(saved.keys()))
         self.assertEqual("COM60", saved["slots"][1]["com"])
 
     def test_target_name_validation_and_lowercase_storage(self):
@@ -834,19 +834,19 @@ class TargetPromptConfigTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "serial_bridge.json"
             config = load_config(environ={}, config_path=path)
-            config.target_prompts = {"linux": r"\$ $"}
+            config.duts[0]["target_prompts"] = {"linux": r"\$ $"}
             persist_slots(config, config.slots)
             loaded = load_config(environ={}, config_path=path)
-            self.assertEqual({"linux": r"\$ $"}, loaded.target_prompts)
+            self.assertEqual({"linux": r"\$ $"}, loaded.duts[0]["target_prompts"])
 
     def test_persist_slots_drops_prompts_for_removed_targets(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "serial_bridge.json"
             config = load_config(environ={}, config_path=path)
-            config.target_prompts = {"linux": "# $", "gone": "> $"}
+            config.duts[0]["target_prompts"] = {"linux": "# $", "gone": "> $"}
             persist_slots(config, config.slots)
             saved = json.loads(path.read_text(encoding="utf-8"))
-            self.assertEqual({"linux": "# $"}, saved["target_prompts"])
+            self.assertEqual({"linux": "# $"}, saved["duts"][0]["target_prompts"])
 
     def test_invalid_saved_prompt_is_dropped_with_warning(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -857,7 +857,7 @@ class TargetPromptConfigTest(unittest.TestCase):
             data["target_prompts"] = {"linux": "("}
             path.write_text(json.dumps(data), encoding="utf-8")
             loaded = load_config(environ={}, config_path=path)
-            self.assertEqual({}, loaded.target_prompts)
+            self.assertEqual({}, loaded.duts[0].get("target_prompts", {}))
             self.assertIn("target_prompts", loaded.warning)
 
 

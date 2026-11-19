@@ -2505,6 +2505,35 @@ class GroundStationExecUiTest(unittest.TestCase):
         self.assertIn("all_open", js)
         self.assertIn("mode_switch", js)
 
+    def test_prompt_save_targets_the_focused_dut_not_the_first_match(self):
+        result = run_ui_scenario(
+            """
+  await nextTurn();
+  send({
+    type: "status", mode: "crt",
+    ports: { linux: { name: "linux", title: "Linux", com: "COM8", baud: 115200 } },
+    duts: [
+      { name: "dut", title: "DUT", mode: "crt", ports: {
+        linux: { name: "linux", title: "Linux", com: "COM8", baud: 115200 },
+      } },
+      { name: "beta", title: "Beta", mode: "crt", ports: {
+        linux: { name: "linux", title: "Linux", com: "COM9", baud: 115200 },
+      } },
+    ],
+  });
+  document.getElementById("target-prompt-input").value = "# $";
+  document.getElementById("target-prompt-save").dispatch("click");
+  await nextTurn();
+  const posted = fetchRequests.filter((item) => item.url === "/api/target_prompt").pop();
+  return { body: JSON.parse(posted.options.body) };
+""",
+            local_storage={"serial-bridge.focused-dut": "beta"},
+        )
+
+        self.assertEqual(
+            {"dut": "beta", "target": "linux", "pattern": "# $"}, result["body"]
+        )
+
     def test_hidden_slot_controls_are_disabled_in_crt(self):
         result = run_ui_scenario(
             """
