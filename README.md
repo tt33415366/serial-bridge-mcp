@@ -1,7 +1,8 @@
 # Serial Bridge
 
-Serial Bridge is a Hub that shares one or two serial consoles between a local Operator
-and MCP Agents. It is not OS-specific: install the Python packages in
+Serial Bridge is a Hub that shares the serial consoles of one or more DUTs
+between a local Operator and MCP Agents. Each DUT owns one or two Targets and
+its own Bridge or CRT Mode. It is not OS-specific: install the Python packages in
 `requirements.txt` and run it on any host with Python 3.10+. The Hub lives in
 the `serial_bridge/` package; start it with `python -m serial_bridge` or the
 root `app.py` shim.
@@ -50,7 +51,8 @@ control, static frontend files, URLs, or logs.
 
 The Hub listens on `0.0.0.0:8765`, so it is reachable from the local network.
 Use an appropriate host firewall and a strong token. Remote Agents cannot
-change modes or Port Bindings.
+change Port Bindings, and can switch a DUT's mode only through `serial_set_mode`
+once the Operator granted Mode Switch Permission.
 
 ## MCP
 
@@ -67,26 +69,39 @@ Authorization: Bearer <SERIAL_BRIDGE_TOKEN>
 
 Use `/mcp` exactly; the Web UI is at `/`. The MCP Server exposes:
 
-- `serial_status`: read the current mode and each Target's Port Binding,
-  open state, busy hint, and current Session Log (`log` is the filesystem
-  path on the Hub host; `log_url` is a relative Bearer GET of that file from
-  the same origin as `/mcp`). Empty `log` / `log_url` means none assigned.
-  Last N lines are `serial_tail`, not Exec output. Do not pull the Session Log
-  into `serial_exec` output. Each Target also reports `port_state` (`closed`,
-  `open`, `lost`), `open_error` when the last open failed, and `shell`
-  (`ready` or `unknown`) with `shell_observed_at`. `shell` is judged from the
-  Operator-set Target Prompt (a regular expression) and is `unknown` without
-  fresh evidence; the Hub never sends a probe. `mode_switch` reports whether
-  the Operator has granted Mode Switch Permission.
-- `serial_set_mode(mode)`: switch the Hub to `crt` or `bridge`. Refused unless
-  the Operator granted Mode Switch Permission in the Web UI (off by default,
-  kept in memory only, so it is off again after every Hub restart), and
-  refused while any Target is busy (the result lists `busy_targets` and
-  nothing is queued). A `bridge` result is `{ok, mode, all_open, ports}`; a
-  failed port open is reported per port and never rolls back to CRT Mode.
-  Port discovery and Port Binding editing stay with the Operator; there is no
-  MCP tool for them.
-- `serial_exec`: send one text command and capture output until an idle gap,
+- `serial_status`: takes no `dut` and returns every DUT grouped:
+  `{duts: [{name, title, mode, mode_switch, ports}], config_warning?}`. `name`
+  is the DUT Name, `mode` is that DUT's `crt` or `bridge`, and `ports` holds
+  that DUT's Targets keyed by Target Name (unique only within its DUT). Each
+  Target reports its Port Binding, open state, busy hint, and current Session
+  Log (`log` is the filesystem path on the Hub host; `log_url` is a relative
+  Bearer GET of that file from the same origin as `/mcp`). Empty `log` /
+  `log_url` means none assigned. Last N lines are `serial_tail`, not Exec
+  output. Do not pull the Session Log into `serial_exec` output. Each Target
+  also reports `port_state` (`closed`, `open`, `lost`), `open_error` when the
+  last open failed, and `shell` (`ready` or `unknown`) with `shell_observed_at`.
+  `shell` is judged from that DUT's Operator-set Target Prompt (a regular
+  expression, also shown read-only as `target_prompt`) and is `unknown` without
+  fresh evidence; the Hub never sends a probe. `mode_switch` is per DUT:
+  `{allowed, busy, busy_targets, next_action}`, where `allowed` reflects the
+  Hub's single Mode Switch Permission and `busy` / `busy_targets` cover only
+  that DUT's Targets.
+- `serial_set_mode(dut, mode)`: switch one named DUT to `crt` or `bridge`; other
+  DUTs keep their mode and ports. `dut` is required and an unknown DUT is
+  rejected with the list of DUT Names. Refused unless the Operator granted Mode
+  Switch Permission in the Web UI (one permission per Hub, off by default, kept
+  in memory only, so it is off again after every Hub restart), and refused
+  while any Target of that DUT is busy (the result lists `busy_targets` and
+  nothing is queued); an Exec on another DUT does not block the switch. A
+  `bridge` result is `{ok, mode, all_open, ports}`; a failed port open is
+  reported per port and never rolls back to CRT Mode. Port discovery and Port
+  Binding editing stay with the Operator; there is no MCP tool for them.
+The tools below address a console by `dut` (DUT Name) and `target` (Target
+Name). Both are always required, even when the Hub has a single DUT, and a
+Target Name is unique only within its DUT, so `linux` in two DUTs are different
+consoles. Results echo the Target Name and `dut`.
+
+- `serial_exec(dut, target, cmd, ...)`: send one text command and capture output until an idle gap,
   an optional prompt match, or the 60-second timeout. The device's Echo of the
   command and the matched prompt text are removed from `output`; the Session
   Log keeps both. Options:
@@ -112,9 +127,10 @@ Use `/mcp` exactly; the Web UI is at `/`. The MCP Server exposes:
     a nonzero `exit_code` is still `completed`), `quiet`, `timeout`,
     `disconnected`, `aborted`, `error`. `quiet` and `timeout` only end
     observation; they do not prove the command finished.
-- `serial_send`: send a text line or Raw Payload without waiting for output.
-- `serial_tail`: read one Target's last `n` lines of the current Session Log
-  (default 40, max 200); result `{ok, target, tail, n}`. Each line is reduced
+- `serial_send(dut, target, cmd, raw_hex)`: send a text line or Raw Payload without waiting for output.
+- `serial_tail(dut, target, n, with_timestamps)`: read one Target's last `n`
+  lines of the current Session Log (default 40, max 200); result
+  `{ok, dut, target, tail, n}`. Each line is reduced
   to direction (`<<<` rx, `>>>` tx, `---` system) and text; pass
   `with_timestamps: true` to prefix `HH:MM:SS.mmm`. The whole file remains
   `log_url`.
@@ -123,16 +139,17 @@ To exercise status and Exec:
 
 1. Open the Web UI locally and switch to **Bridge Mode**.
 2. Connect the MCP client to the URL above with the Bearer header.
-3. Call `serial_status` with no arguments and confirm `mode` is `bridge` and
-   the intended Target is open.
-4. Call `serial_exec` with `{"target":"linux","cmd":"uname -a"}` or
-   `{"target":"rtos","cmd":"help"}`.
+3. Call `serial_status` with no arguments and confirm the intended DUT in
+   `duts` has `mode` `bridge` and its Target is open.
+4. Call `serial_exec` with `{"dut":"dut","target":"linux","cmd":"uname -a"}` or
+   `{"dut":"dut","target":"rtos","cmd":"help"}`. Use the DUT Name and Target
+   Name from `serial_status` (the Hub's initial DUT is named `dut`).
 5. If the device has a stable prompt, optionally pass `prompt`; set
    `prompt_is_regex` to `true` only when the prompt value is a regular
    expression.
 
-Exec accepts the Target names `linux` and `rtos`, not serial device names. The
-result is `{ok, output}`; `truncated`, `timed_out`, and `aborted` appear only
+Exec accepts a DUT Name and one of its Target Names (defaults `linux` and
+`rtos`), not serial device names. The result is `{ok, dut, target, output}`; `truncated`, `timed_out`, and `aborted` appear only
 when true, and `error` only on failure. `ok` means the capture finished
 (prompt or idle), not that the remote command succeeded — use `exit_code` for
 that on shell Targets. `truncated` is only the trailing 32KiB cap, not an
@@ -142,16 +159,18 @@ early prompt match. On Target `linux`, do not use a short shell prompt such as
 Exec output and the `live/*.log` transcripts are plain text with ANSI escapes
 removed. The Web UI instead interprets the escapes and shows device colors.
 
-The **Agent Trace** in the Web UI lists every Exec, Send, Tail, and status read
-with the bytes each returned to the Agent, and its footer shows the running
-total for this Hub session. Compare that total across the same device task
+The **Agent Trace** in the Web UI is kept per DUT: it lists that DUT's Exec,
+Send, and Tail with the bytes each returned to the Agent, and its footer shows
+that DUT's running total for this Hub session. The screen shows the focused
+DUT's list. `serial_status` names no DUT and is not traced. Compare that total across the same device task
 before and after changing how the Agent calls the tools.
 
 ## Port Binding
 
-A Port Binding assigns a Target to a serial device path and baud rate.
-Built-in defaults are Windows-style (`linux` on `COM3`, `rtos` on `COM6`, both
-115200); on Linux or macOS set paths such as `/dev/ttyUSB0` instead.
+A Port Binding assigns a Target to a serial device path and baud rate. A COM
+port belongs to at most one Target on the Hub.
+Built-in defaults describe the first DUT, named `dut`, and are Windows-style
+(`linux` on `COM3`, `rtos` on `COM6`, both 115200); on Linux or macOS set paths such as `/dev/ttyUSB0` instead.
 
 Override defaults before startup with environment variables:
 
@@ -164,27 +183,43 @@ python -m serial_bridge
 ```
 
 Equivalent CLI flags are `--linux-port`, `--linux-baud`, `--rtos-port`, and
-`--rtos-baud`. `SERIAL_BRIDGE_CONFIG` or `--config` selects the persisted JSON
+`--rtos-baud`. These environment/CLI values overlay only the first DUT in the
+persisted file's order. `SERIAL_BRIDGE_CONFIG` or `--config` selects the persisted JSON
 file. The load order is built-in defaults, then environment/CLI values, then
 the persisted file; saved Web UI values win.
 
-The persisted config file holds an ordered `slots` array. A persisted `slots` array of
-length 1 is valid and is the count. In **CRT Mode** the Operator may add a second
-Target or remove one Target.
+The persisted config file holds an ordered `duts` array. Each entry has a
+`name` (DUT Name), `title`, an ordered `slots` array, and that DUT's
+`target_prompts` map (Target Name to regular expression), so Target Prompts are
+saved nested under their DUT. A DUT's `slots` array of length 1 is valid and is
+its Target count. Mode is not saved: every DUT starts in CRT Mode when the Hub
+starts. A file that still has top-level `slots` or `ports` and no `duts` loads
+as one DUT named `dut`, and a legacy top-level `target_prompts` map loads onto
+the first DUT; the file is rewritten in the `duts` shape on the next save. In
+**CRT Mode** the Operator may add a second Target to a DUT or remove one Target.
 
 `SERIAL_BRIDGE_RTOS_PORT`, `SERIAL_BRIDGE_RTOS_BAUD`, `--rtos-port`, `--rtos-baud`,
-`SERIAL_BRIDGE_SLOT1_PORT`, and `SERIAL_BRIDGE_SLOT1_BAUD` refer to Target Slot 1. When
-the persisted file defines only one Slot, those env/CLI overrides fail startup; the
+`SERIAL_BRIDGE_SLOT1_PORT`, and `SERIAL_BRIDGE_SLOT1_BAUD` refer to Target Slot 1 of
+the first DUT. When that DUT defines only one Slot, those env/CLI overrides fail startup; the
 error states that the override refers to Target Slot 1 but only one Slot is configured.
 
-Only the Operator can edit Port Bindings, and only in **CRT Mode** while the
-Hub has released the ports. The Web UI lists the detected serial ports in a
+Only the Operator can edit Port Bindings, and only while that DUT is in
+**CRT Mode** and the Hub has released its ports; other DUTs are unaffected.
+
+The Web UI shows a tab strip with one tab per DUT; the focused DUT's Target
+panes and Agent Trace are on screen, and each browser page remembers its own
+focus. **+ Add DUT** creates a DUT with a title and one or two Target bindings
+(only free COM ports are listed); a new DUT starts in CRT Mode, and its DUT Name
+is derived from its title. **Remove DUT** is available only while that DUT is in
+CRT Mode, and the last DUT cannot be removed. Removing a DUT drops its saved
+Target Prompts. The Web UI lists the detected serial ports in a
 dropdown per Target; use **Scan** to re-enumerate after plugging in an adapter.
 Changes made in the Web UI persist for restart.
 
 ## Live Directory
 
-The Live Directory is where the Hub writes per-Target Bridge session logs and
+The Live Directory is where the Hub writes per-Target Bridge session logs (one
+Hub-wide directory shared by every DUT) and
 `bridge_status.json`. The default is `<app-dir>/live/` beside the project root
 (same directory as `serial_bridge.json` and the root `app.py` shim).
 
@@ -198,30 +233,37 @@ python -m serial_bridge
 Or pass `--live-dir`. Load order matches Port Binding: built-in default, then
 environment/CLI, then the persisted config file; Web UI saves win.
 
-Each time the Operator enters **Bridge Mode**, the Hub creates fresh log files
-named `<TargetName>-YYYY-MM-DD-HHMMSS.log` (local time, 24-hour clock). A second
-Bridge session creates new files; older logs are left in place and are not
-migrated when you change the Live Directory or rename a Target.
+Each time a DUT enters **Bridge Mode**, the Hub creates fresh log files for its
+Targets named `<DutName>-<TargetName>-YYYY-MM-DD-HHMMSS.log` (local time,
+24-hour clock). A second Bridge session creates new files; older logs are left in place and are not
+migrated when you change the Live Directory or rename a DUT or Target.
 
-Edit the Live Directory in the Web UI Bindings panel in **CRT Mode** only (same
-loopback-only write path as Port Binding). The footer shows the configured
+Edit the Live Directory in the Web UI Bindings panel (same loopback-only write
+path as Port Binding); it may change while a DUT is in Bridge Mode, each DUT
+uses the new directory on its next entry into Bridge Mode, and a DUT already in
+Bridge Mode keeps writing its current Session Log. The footer shows the configured
 directory and current session log filenames when assigned. Click a current
 Session Log filename to reveal it in the host file manager (Hub host /
 loopback). Download the current file with
-`GET /api/session-log?target=<TargetName>` (loopback or
+`GET /api/session-log?dut=<DutName>&target=<TargetName>` (loopback or
 `Authorization: Bearer`, advertised as `log_url` on each Target in
 `serial_status`). Click does not download.
 
 ## Bridge Mode and CRT Mode
 
-- **Bridge Mode:** the Hub owns the configured serial ports. The Operator and
-  Agents can send commands and observe the same live transcripts.
-- **CRT Mode:** the Hub releases the ports for SecureCRT or another exclusive
-  serial client. MCP Exec and Send fail until the Operator returns to Bridge
-  Mode.
+Mode belongs to each DUT, so one board can sit in SecureCRT while another stays
+in Bridge Mode.
 
-Disconnect SecureCRT before entering Bridge Mode. Switching to CRT Mode aborts
-an in-flight Exec and may return partial output.
+- **Bridge Mode:** the Hub owns that DUT's configured serial ports. The Operator
+  and Agents can send commands and observe the same live transcripts.
+- **CRT Mode:** the Hub releases that DUT's ports for SecureCRT or another
+  exclusive serial client. MCP Exec and Send for that DUT fail until it returns
+  to Bridge Mode.
+
+Disconnect SecureCRT before putting that DUT in Bridge Mode. Switching a DUT to
+CRT Mode aborts its in-flight Exec and may return partial output; other DUTs are
+not affected. An Agent can switch a named DUT with `serial_set_mode` only when
+the Operator granted the Hub's Mode Switch Permission.
 
 ## Raw Send warning
 
