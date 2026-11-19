@@ -860,6 +860,94 @@ class TargetPromptConfigTest(unittest.TestCase):
             self.assertEqual({}, loaded.duts[0].get("target_prompts", {}))
             self.assertIn("target_prompts", loaded.warning)
 
+    def _two_dut_path(self, temp_dir, mutate):
+        path = Path(temp_dir) / "serial_bridge.json"
+        config = load_config(environ={}, config_path=path)
+        persist_slots(config, config.slots)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["duts"] = [
+            {
+                "name": "a", "title": "A",
+                "slots": [
+                    {"name": "linux", "title": "L", "com": "COM3", "baud": 115200},
+                    {"name": "rtos", "title": "R", "com": "COM6", "baud": 115200},
+                ],
+            },
+            {
+                "name": "b", "title": "B",
+                "slots": [
+                    {"name": "linux", "title": "L", "com": "COM13", "baud": 115200},
+                    {"name": "rtos", "title": "R", "com": "COM16", "baud": 115200},
+                ],
+            },
+        ]
+        mutate(data)
+        path.write_text(json.dumps(data), encoding="utf-8")
+        return path
+
+    def test_invalid_nested_prompt_keeps_all_other_prompts(self):
+        def mutate(data):
+            data["duts"][0]["target_prompts"] = {"linux": "# $", "rtos": "> $"}
+            data["duts"][1]["target_prompts"] = {"linux": "(", "rtos": "% $"}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = self._two_dut_path(temp_dir, mutate)
+            loaded = load_config(environ={}, config_path=path)
+
+            self.assertEqual(
+                {"linux": "# $", "rtos": "> $"}, loaded.duts[0]["target_prompts"]
+            )
+            self.assertEqual({"rtos": "% $"}, loaded.duts[1]["target_prompts"])
+            self.assertIn("DUT b", loaded.warning)
+            self.assertIn("linux", loaded.warning)
+            self.assertEqual(1, loaded.warning.count("target_prompts"))
+            self.assertNotIn("duts[1]", loaded.warning)
+
+            persist_slots(loaded, loaded.slots)
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual({"rtos": "% $"}, saved["duts"][1]["target_prompts"])
+            self.assertEqual(
+                {"linux": "# $", "rtos": "> $"}, saved["duts"][0]["target_prompts"]
+            )
+
+    def test_invalid_legacy_prompt_keeps_valid_legacy_prompts(self):
+        def mutate(data):
+            del data["duts"]
+            data["target_prompts"] = {"linux": "(", "rtos": "> $"}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = self._two_dut_path(temp_dir, mutate)
+            loaded = load_config(environ={}, config_path=path)
+
+            self.assertEqual({"rtos": "> $"}, loaded.duts[0]["target_prompts"])
+            self.assertIn("linux", loaded.warning)
+            self.assertEqual(1, loaded.warning.count("target_prompts"))
+
+    def test_invalid_legacy_and_nested_prompts_both_dropped_individually(self):
+        def mutate(data):
+            data["target_prompts"] = {"linux": "(", "rtos": "> $"}
+            data["duts"][1]["target_prompts"] = {"linux": "[", "rtos": "% $"}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = self._two_dut_path(temp_dir, mutate)
+            loaded = load_config(environ={}, config_path=path)
+
+            self.assertEqual({"rtos": "> $"}, loaded.duts[0]["target_prompts"])
+            self.assertEqual({"rtos": "% $"}, loaded.duts[1]["target_prompts"])
+            self.assertIn("DUT a", loaded.warning)
+            self.assertIn("DUT b", loaded.warning)
+
+    def test_non_string_prompt_value_dropped_per_entry(self):
+        def mutate(data):
+            data["duts"][0]["target_prompts"] = {"linux": 5, "rtos": "> $"}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = self._two_dut_path(temp_dir, mutate)
+            loaded = load_config(environ={}, config_path=path)
+
+            self.assertEqual({"rtos": "> $"}, loaded.duts[0]["target_prompts"])
+            self.assertIn("linux", loaded.warning)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -388,38 +388,52 @@ def _validated_slots(data: object) -> list[dict[str, str | int]]:
     return slots
 
 
-def _parse_prompt_map(raw: object, source: str) -> dict[str, str]:
+def _parse_prompt_map(
+    raw: object, source: str, dut_name: str, dropped: list[str]
+) -> dict[str, str]:
+    """Valid entries of one prompt map; each bad entry is dropped and reported."""
     if raw is None:
         return {}
     if not isinstance(raw, dict):
         raise ValueError(f"{source} must be an object")
     prompts: dict[str, str] = {}
     for name, pattern in raw.items():
-        if not isinstance(name, str) or not isinstance(pattern, str):
-            raise ValueError(f"{source} entries must be strings")
+        where = f"{source} entry for DUT {dut_name} Target {name}"
+        if not isinstance(pattern, str):
+            dropped.append(f"dropped {where}: value must be a string")
+            continue
         try:
             re.compile(pattern)
         except re.error as exc:
-            raise ValueError(
-                f"{source}[{name}] is not a valid regex: {exc}"
-            ) from exc
+            dropped.append(f"dropped {where}: invalid regex: {exc}")
+            continue
         prompts[name] = pattern
     return prompts
 
 
-def _parse_saved_target_prompts(data: object, count: int) -> list[dict[str, str]]:
+def _parse_saved_target_prompts(
+    data: object, dut_names: Sequence[str], dropped: list[str]
+) -> list[dict[str, str]]:
     """Per-DUT Target Prompts; a legacy top-level map loads onto the first DUT."""
+    count = len(dut_names)
     result: list[dict[str, str]] = [{} for _ in range(count)]
     if not isinstance(data, dict):
         return result
-    result[0].update(_parse_prompt_map(data.get("target_prompts"), "target_prompts"))
+    result[0].update(
+        _parse_prompt_map(
+            data.get("target_prompts"), "target_prompts", dut_names[0], dropped
+        )
+    )
     raw_duts = data.get("duts")
     if isinstance(raw_duts, list):
         for index, entry in enumerate(raw_duts[:count]):
             if isinstance(entry, dict):
                 result[index].update(
                     _parse_prompt_map(
-                        entry.get("target_prompts"), f"duts[{index}].target_prompts"
+                        entry.get("target_prompts"),
+                        "target_prompts",
+                        dut_names[index],
+                        dropped,
                     )
                 )
     return result
@@ -603,13 +617,20 @@ def load_config(
                     live_dir = saved_live_dir
             except ValueError as exc:
                 warning = f"Could not load config {path}: {exc}"
+            dropped: list[str] = []
             try:
                 for dut, prompts in zip(
-                    duts, _parse_saved_target_prompts(raw, len(duts))
+                    duts,
+                    _parse_saved_target_prompts(
+                        raw, [str(dut["name"]) for dut in duts], dropped
+                    ),
                 ):
                     dut["target_prompts"] = prompts
             except ValueError as exc:
-                warning = f"Could not load config {path}: target_prompts: {exc}"
+                warning = f"Could not load config {path}: {exc}"
+            if dropped:
+                note = f"Could not load config {path}: " + "; ".join(dropped)
+                warning = f"{warning}; {note}" if warning else note
         except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
             warning = f"Could not load config {path}: {exc}"
 
