@@ -143,6 +143,7 @@ class Transcript:
             {
                 "type": "line",
                 "target": target,
+                "dut": cfg["dut"],
                 "direction": direction,
                 "who": who,
                 "text": sanitize_display(text).rstrip(),

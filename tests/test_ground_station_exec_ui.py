@@ -2595,6 +2595,217 @@ class GroundStationExecUiTest(unittest.TestCase):
         self.assertNotIn("stray-output", result["text"])
         self.assertIn("own-output", result["text"])
 
+    PER_DUT_SETUP = """
+  const alphaPorts = { linux: { name: "linux", title: "Linux", com: "COM8", baud: 115200 } };
+  const betaPorts = { "beta/linux": { name: "linux", title: "Linux", com: "COM9", baud: 115200 } };
+  const statusFor = (duts) => ({
+    type: "status", mode: "bridge", ports: alphaPorts,
+    duts: duts.map((dut) => ({
+      name: dut.name, title: dut.name, mode: "bridge", ports: dut.ports,
+    })),
+  });
+  const both = [{ name: "alpha", ports: alphaPorts }, { name: "beta", ports: betaPorts }];
+  const focusTab = async (index) => {
+    document.getElementById("dut-list").children[index].children[0].dispatch("click");
+    await nextTurn();
+  };
+  const rowTexts = (slot) => term(slot).children.map((row) => row.textContent);
+  const lineFor = (dut, target, text) =>
+    send({ type: "line", dut, target, direction: "<<<", text, ts: "10:00:00.000" });
+"""
+
+    def test_line_for_an_unfocused_dut_is_not_rendered_in_the_focused_pane(self):
+        result = run_ui_scenario(
+            self.PER_DUT_SETUP
+            + """
+  await nextTurn();
+  send(statusFor(both));
+  lineFor("alpha", "linux", "alpha-out");
+  lineFor("beta", "beta/linux", "beta-out");
+  return { text: term("slot0").textContent };
+"""
+        )
+
+        self.assertIn("alpha-out", result["text"])
+        self.assertNotIn("beta-out", result["text"])
+
+    def test_switching_to_a_dut_shows_the_lines_it_received_while_unfocused(self):
+        result = run_ui_scenario(
+            self.PER_DUT_SETUP
+            + """
+  await nextTurn();
+  send(statusFor(both));
+  lineFor("alpha", "linux", "alpha-out");
+  lineFor("beta", "beta/linux", "beta-early");
+  await focusTab(1);
+  lineFor("beta", "beta/linux", "beta-late");
+  return { texts: rowTexts("slot0"), rtosRows: term("slot1").children.length };
+"""
+        )
+
+        self.assertEqual(
+            ["10:00:00.000beta-early", "10:00:00.000beta-late"], result["texts"]
+        )
+        self.assertEqual(0, result["rtosRows"])
+
+    def test_switching_back_restores_the_first_duts_lines(self):
+        result = run_ui_scenario(
+            self.PER_DUT_SETUP
+            + """
+  await nextTurn();
+  send(statusFor(both));
+  lineFor("alpha", "linux", "alpha-out");
+  await focusTab(1);
+  lineFor("beta", "beta/linux", "beta-out");
+  lineFor("alpha", "linux", "alpha-while-away");
+  await focusTab(0);
+  return { texts: rowTexts("slot0") };
+"""
+        )
+
+        self.assertEqual(
+            ["10:00:00.000alpha-out", "10:00:00.000alpha-while-away"], result["texts"]
+        )
+
+    def test_removing_a_dut_drops_its_buffer(self):
+        result = run_ui_scenario(
+            self.PER_DUT_SETUP
+            + """
+  await nextTurn();
+  send(statusFor(both));
+  lineFor("beta", "beta/linux", "beta-stale");
+  send(statusFor([both[0]]));
+  send(statusFor(both));
+  await focusTab(1);
+  return { text: term("slot0").textContent };
+"""
+        )
+
+        self.assertNotIn("beta-stale", result["text"])
+
+    def test_each_dut_buffer_is_bounded_by_the_retention_budget(self):
+        # Widening the budget before the switch makes the replayed depth equal the buffer's.
+        result = run_ui_scenario(
+            self.PER_DUT_SETUP
+            + """
+  document.getElementById("live-depth-500").dispatch("click");
+  await nextTurn();
+  send(statusFor(both));
+  for (let index = 0; index < 620; index += 1) lineFor("beta", "beta/linux", `line-${index}`);
+  document.getElementById("live-depth-5000").dispatch("click");
+  await focusTab(1);
+  flushFrames();
+  const rows = term("slot0").children;
+  return {
+    modelCounted: paneModelSpies[0].countedSize(),
+    firstText: rows[0].textContent,
+    lastText: rows[rows.length - 1].textContent,
+  };
+"""
+        )
+
+        self.assertEqual(500, result["modelCounted"])
+        self.assertIn("line-380", result["firstText"])
+        self.assertIn("line-619", result["lastText"])
+
+    def test_shrinking_the_budget_trims_every_dut_buffer(self):
+        result = run_ui_scenario(
+            self.PER_DUT_SETUP
+            + """
+  document.getElementById("live-depth-5000").dispatch("click");
+  await nextTurn();
+  send(statusFor(both));
+  for (let index = 0; index < 700; index += 1) lineFor("beta", "beta/linux", `line-${index}`);
+  document.getElementById("live-depth-500").dispatch("click");
+  document.getElementById("live-depth-5000").dispatch("click");
+  await focusTab(1);
+  return { modelCounted: paneModelSpies[0].countedSize() };
+"""
+        )
+
+        self.assertEqual(500, result["modelCounted"])
+
+    def test_a_line_without_dut_renders_but_is_not_buffered(self):
+        result = run_ui_scenario(
+            self.PER_DUT_SETUP
+            + """
+  await nextTurn();
+  send(statusFor(both));
+  send({ type: "line", target: "linux", direction: "<<<", text: "legacy", ts: "10:00:00.000" });
+  const live = rowTexts("slot0");
+  await focusTab(1);
+  await focusTab(0);
+  return { live, restored: rowTexts("slot0") };
+"""
+        )
+
+        self.assertEqual(["10:00:00.000legacy"], result["live"])
+        self.assertEqual([], result["restored"])
+
+    def test_a_stale_line_for_a_removed_dut_does_not_resurrect_its_buffer(self):
+        result = run_ui_scenario(
+            self.PER_DUT_SETUP
+            + """
+  await nextTurn();
+  send(statusFor(both));
+  lineFor("beta", "beta/linux", "beta-old");
+  send(statusFor([both[0]]));
+  lineFor("beta", "beta/linux", "beta-stale");
+  send(statusFor(both));
+  await focusTab(1);
+  return { texts: rowTexts("slot0") };
+"""
+        )
+
+        self.assertEqual([], result["texts"])
+
+    def test_replay_leaves_the_pane_following_and_does_not_duplicate_rows(self):
+        result = run_ui_scenario(
+            self.PER_DUT_SETUP
+            + """
+  await nextTurn();
+  send(statusFor(both));
+  const alpha = term("slot0");
+  alpha.clientHeight = 100;
+  alpha.scrollHeight = 200;
+  alpha.scrollTop = 40;
+  alpha.dispatch("scroll");
+  lineFor("beta", "beta/linux", "beta-1");
+  lineFor("beta", "beta/linux", "beta-2");
+  await focusTab(1);
+  const replayed = rowTexts("slot0");
+  lineFor("beta", "beta/linux", "beta-3");
+  await socket.onopen();
+  send(statusFor(both));
+  return { replayed, after: rowTexts("slot0") };
+"""
+        )
+
+        self.assertEqual(2, len(result["replayed"]))
+        self.assertEqual(
+            ["10:00:00.000beta-1", "10:00:00.000beta-2", "10:00:00.000beta-3"],
+            result["after"],
+        )
+
+    def test_clear_empties_only_the_focused_duts_buffer(self):
+        result = run_ui_scenario(
+            self.PER_DUT_SETUP
+            + """
+  await nextTurn();
+  send(statusFor(both));
+  lineFor("alpha", "linux", "alpha-out");
+  lineFor("beta", "beta/linux", "beta-out");
+  document.getElementById("btn-clear").dispatch("click");
+  await focusTab(1);
+  const betaText = term("slot0").textContent;
+  await focusTab(0);
+  return { betaText, alphaText: term("slot0").textContent };
+"""
+        )
+
+        self.assertIn("beta-out", result["betaText"])
+        self.assertNotIn("alpha-out", result["alphaText"])
+
     def test_hidden_slot_controls_are_disabled_in_crt(self):
         result = run_ui_scenario(
             """

@@ -601,6 +601,7 @@
   function applyStatus(s) {
     lastStatus = s;
     const view = focusedView(s);
+    if (Array.isArray(s.duts)) dropGoneDutBuffers(s.duts);
     if (focusedDut !== traceDut) hydrateAgentLog();
     mode = view.mode || "crt";
     btnBridge.classList.toggle("active-bridge", mode === "bridge");
@@ -728,6 +729,7 @@
     liveViewBudget = budget;
     localStorage.setItem(LIVE_VIEW_BUDGET_KEY, String(budget));
     updateLiveDepthInstrument();
+    trimDutLineBuffers();
     for (const slot of SLOT_KEYS) {
       paneModels[slot].setBudget(budget);
       if (historyStates[slot]) rebuildHistoryIndex(slot);
@@ -1942,10 +1944,24 @@
       for (const slot of SLOT_KEYS) forgetPaneRows(slot);
       for (const target of Object.keys(openCaptures)) delete openCaptures[target];
     }
+    const switched = !!traceDut;
     traceDut = dut;
     spineEntries = [];
     returnedTotal = 0;
     renderSpine();
+    if (switched) rebuildPanesFromBuffer(dut);
+  }
+
+  /**
+   * Done in the same step as the swap, so no live line can land between the reset and the
+   * replay: the new DUT's ports are bound first because the status that triggers a swap has
+   * not bound them yet.
+   */
+  function rebuildPanesFromBuffer(dut) {
+    const view = lastStatus && (lastStatus.duts || []).find((item) => item.name === dut);
+    if (!view) return;
+    syncTargetMaps(view.ports || {});
+    replayFocusedDutBuffer();
   }
 
   async function hydrateAgentLog() {
@@ -2089,6 +2105,63 @@
     schedulePaneScroll(slot);
   }
 
+  /**
+   * Panes show only the focused DUT, so every DUT's rows are also kept here, per port key and
+   * bounded by the Live View Budget like a pane. Switching DUT rebuilds the panes from them.
+   */
+  const dutLineBuffers = new Map();
+
+  function rememberDutLine(item) {
+    let ports = dutLineBuffers.get(item.dut);
+    if (!ports) dutLineBuffers.set(item.dut, (ports = new Map()));
+    let rows = ports.get(item.target);
+    if (!rows) ports.set(item.target, (rows = []));
+    rows.push({
+      target: item.target,
+      direction: item.direction,
+      text: item.text,
+      who: item.who,
+      tstamp: item.ts,
+    });
+    if (rows.length > liveViewBudget) rows.splice(0, rows.length - liveViewBudget);
+  }
+
+  function trimDutLineBuffers() {
+    for (const ports of dutLineBuffers.values()) {
+      for (const rows of ports.values()) {
+        if (rows.length > liveViewBudget) rows.splice(0, rows.length - liveViewBudget);
+      }
+    }
+  }
+
+  function dropGoneDutBuffers(duts) {
+    const names = new Set(duts.map((dut) => dut.name));
+    for (const name of [...dutLineBuffers.keys()]) {
+      if (!names.has(name)) dutLineBuffers.delete(name);
+    }
+  }
+
+  /** Each port's rows are already in arrival order and belong to their own pane. */
+  function replayFocusedDutBuffer() {
+    const ports = dutLineBuffers.get(focusedDut);
+    if (!ports) return;
+    for (const rows of ports.values()) {
+      for (const row of rows) {
+        appendLine(row.target, row.direction, row.text, row.who, row.tstamp);
+      }
+    }
+  }
+
+  function receiveLine(item) {
+    if (item.dut) {
+      const duts = lastStatus && lastStatus.duts;
+      if (Array.isArray(duts) && !duts.some((dut) => dut.name === item.dut)) return;
+      rememberDutLine(item);
+      if (focusedDut && item.dut !== focusedDut) return;
+    }
+    appendLine(item.target, item.direction, item.text, item.who, item.ts);
+  }
+
   function connect() {
     const proto = location.protocol === "https:" ? "wss" : "ws";
     ws = new WebSocket(`${proto}://${location.host}/ws`);
@@ -2113,7 +2186,7 @@
       if (msg.type === "line") {
         const items = msg.items || [msg];
         for (const item of items) {
-          appendLine(item.target, item.direction, item.text, item.who, item.ts);
+          receiveLine(item);
         }
       }
       if (msg.type === "exec" && msg.phase === "start") onExecStart(msg);
@@ -2526,6 +2599,7 @@
 
   document.getElementById("btn-clear").addEventListener("click", () => {
     for (const slot of SLOT_KEYS) forgetPaneRows(slot);
+    dutLineBuffers.delete(focusedDut);
     overflowProbes.length = 0;
     for (const target of Object.keys(openCaptures)) {
       delete openCaptures[target];

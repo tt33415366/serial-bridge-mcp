@@ -40,6 +40,16 @@ class LineCoalescerTest(unittest.TestCase):
         self.assertEqual(["one", "two"], [item["text"] for item in self.sent[0]["items"]])
         self.assertEqual("exec", self.sent[1]["type"])
 
+    def test_batched_items_keep_each_lines_dut(self):
+        self.coalescer.emit({**self._line("one"), "dut": "alpha"})
+        self.coalescer.emit({**self._line("two", "beta/linux"), "dut": "beta"})
+        self.coalescer.flush()
+
+        self.assertEqual(
+            [("alpha", "linux"), ("beta", "beta/linux")],
+            [(item["dut"], item["target"]) for item in self.sent[0]["items"]],
+        )
+
     def test_single_flushed_line_keeps_legacy_shape(self):
         self.coalescer.emit(self._line("only"))
         self.coalescer.emit({"type": "status", "mode": "bridge"})

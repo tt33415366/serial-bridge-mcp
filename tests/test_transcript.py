@@ -84,6 +84,7 @@ class TranscriptTest(unittest.TestCase):
                 {
                     "type": "line",
                     "target": "linux",
+                    "dut": "dut",
                     "direction": "<<<",
                     "who": "agent",
                     "text": "\x1b[1;34mbin\x1b[m\tdata\x1b[2K",
@@ -91,6 +92,27 @@ class TranscriptTest(unittest.TestCase):
                 },
                 emitted[0],
             )
+
+    def test_line_event_carries_the_ports_dut_next_to_the_port_key(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ports = {
+                "beta/linux": {
+                    "name": "linux", "dut": "beta", "title": "Linux", "log": None,
+                },
+            }
+            emitted = []
+            transcript = Transcript(
+                lambda: ports,
+                lambda: Path(temp_dir),
+                emitted.append,
+                lambda: datetime(2026, 8, 19, 9, 30, 45, 123000),
+            )
+            transcript.assign_session_logs()
+
+            transcript.append_log("beta/linux", "<<<", "hello")
+
+            self.assertEqual("beta/linux", emitted[0]["target"])
+            self.assertEqual("beta", emitted[0]["dut"])
 
     def test_get_tail_reads_requested_lines_and_preserves_missing_targets(self):
         with tempfile.TemporaryDirectory() as temp_dir:
