@@ -94,7 +94,7 @@ class AppSendTest(unittest.IsolatedAsyncioTestCase):
         with patch.object(app_module, "hub", fake_hub):
             response = client.post(
                 "/api/send",
-                json={"target": "Linux", "cmd": "uname -a"},
+                json={"dut": "dut", "target": "Linux", "cmd": "uname -a"},
             )
 
         self.assertEqual(200, response.status_code)
@@ -107,7 +107,7 @@ class AppSendTest(unittest.IsolatedAsyncioTestCase):
     async def test_websocket_send_normalizes_mixed_case_target_name(self):
         fake_hub = FakeHub()
         ws = FakeWebSocket(
-            {"type": "send", "target": "Linux", "cmd": "uname -a"}
+            {"type": "send", "dut": "dut", "target": "Linux", "cmd": "uname -a"}
         )
         with patch.object(app_module, "hub", fake_hub):
             await ws_endpoint(ws)
@@ -127,7 +127,7 @@ class AppSendTest(unittest.IsolatedAsyncioTestCase):
     async def test_websocket_send_forwards_raw_hex(self):
         fake_hub = FakeHub()
         ws = FakeWebSocket(
-            {"type": "send", "target": "linux", "raw_hex": "03"}
+            {"type": "send", "dut": "dut", "target": "linux", "raw_hex": "03"}
         )
         with patch.object(app_module, "hub", fake_hub):
             await ws_endpoint(ws)
@@ -148,7 +148,7 @@ class AppSendTest(unittest.IsolatedAsyncioTestCase):
     async def test_websocket_send_raw_hex_rejected_in_crt_mode(self):
         crt_hub = _default_hub()
         ws = FakeWebSocket(
-            {"type": "send", "target": "linux", "raw_hex": "03"}
+            {"type": "send", "dut": "dut", "target": "linux", "raw_hex": "03"}
         )
         with patch.object(app_module, "hub", crt_hub):
             await ws_endpoint(ws)
@@ -165,7 +165,7 @@ class AppSendTest(unittest.IsolatedAsyncioTestCase):
         with patch.object(app_module, "hub", fake_hub):
             response = client.post(
                 "/api/send",
-                json={"target": "COM3", "cmd": "uname -a"},
+                json={"dut": "dut", "target": "COM3", "cmd": "uname -a"},
             )
 
         self.assertFalse(response.json()["ok"])
@@ -175,7 +175,7 @@ class AppSendTest(unittest.IsolatedAsyncioTestCase):
     async def test_websocket_send_rejects_com_alias(self):
         fake_hub = FakeHub()
         ws = FakeWebSocket(
-            {"type": "send", "target": "COM6", "cmd": "help", "who": "agent"}
+            {"type": "send", "dut": "dut", "target": "COM6", "cmd": "help", "who": "agent"}
         )
         with patch.object(app_module, "hub", fake_hub):
             await ws_endpoint(ws)
@@ -187,7 +187,7 @@ class AppSendTest(unittest.IsolatedAsyncioTestCase):
     async def test_websocket_non_loopback_send_requires_token(self):
         fake_hub = FakeHub()
         ws = FakeWebSocket(
-            {"type": "send", "target": "linux", "cmd": "uname -a"},
+            {"type": "send", "dut": "dut", "target": "linux", "cmd": "uname -a"},
             host="192.0.2.10",
         )
         with (
@@ -205,7 +205,7 @@ class AppSendTest(unittest.IsolatedAsyncioTestCase):
     async def test_websocket_non_loopback_send_accepts_bearer_token(self):
         fake_hub = FakeHub()
         ws = FakeWebSocket(
-            {"type": "send", "target": "linux", "cmd": "uname -a"},
+            {"type": "send", "dut": "dut", "target": "linux", "cmd": "uname -a"},
             host="192.0.2.10",
             authorization="Bearer secret",
         )
@@ -230,7 +230,7 @@ class AppSendTest(unittest.IsolatedAsyncioTestCase):
     async def test_websocket_ignores_client_supplied_who(self):
         fake_hub = FakeHub()
         ws = FakeWebSocket(
-            {"type": "send", "target": "linux", "cmd": "uname -a", "who": "agent"}
+            {"type": "send", "dut": "dut", "target": "linux", "cmd": "uname -a", "who": "agent"}
         )
         with patch.object(app_module, "hub", fake_hub):
             await ws_endpoint(ws)
@@ -322,7 +322,7 @@ class SessionLogDownloadTest(unittest.TestCase):
     def test_loopback_download_returns_file_snapshot(self):
         client = TestClient(app_module.app, client=("127.0.0.1", 50000))
         with patch.object(app_module, "hub", self.fake_hub):
-            response = client.get("/api/session-log?target=linux")
+            response = client.get("/api/session-log?dut=dut&target=linux")
         self.assertEqual(200, response.status_code)
         self.assertEqual(b"first snapshot\n", response.content)
         self.assertIn("text/plain", response.headers["content-type"])
@@ -333,9 +333,9 @@ class SessionLogDownloadTest(unittest.TestCase):
     def test_download_is_a_snapshot_not_a_follow(self):
         client = TestClient(app_module.app, client=("127.0.0.1", 50000))
         with patch.object(app_module, "hub", self.fake_hub):
-            first = client.get("/api/session-log?target=linux")
+            first = client.get("/api/session-log?dut=dut&target=linux")
             self.log_path.write_bytes(b"first snapshot\nlater line\n")
-            second = client.get("/api/session-log?target=linux")
+            second = client.get("/api/session-log?dut=dut&target=linux")
         self.assertEqual(b"first snapshot\n", first.content)
         self.assertEqual(b"first snapshot\nlater line\n", second.content)
 
@@ -355,7 +355,7 @@ class SessionLogDownloadTest(unittest.TestCase):
             patch.object(app_module, "hub", self.fake_hub),
             patch.object(Path, "stat", stat_then_grow),
         ):
-            response = client.get("/api/session-log?target=linux")
+            response = client.get("/api/session-log?dut=dut&target=linux")
 
         self.assertEqual(200, response.status_code)
         self.assertEqual(b"first snapshot\n", response.content)
@@ -367,7 +367,7 @@ class SessionLogDownloadTest(unittest.TestCase):
             patch.object(app_module, "hub", self.fake_hub),
             patch.dict("os.environ", {"SERIAL_BRIDGE_TOKEN": "secret"}, clear=False),
         ):
-            response = client.get("/api/session-log?target=linux")
+            response = client.get("/api/session-log?dut=dut&target=linux")
         self.assertEqual(401, response.status_code)
         self.assertEqual("Bearer", response.headers["www-authenticate"])
 
@@ -378,7 +378,7 @@ class SessionLogDownloadTest(unittest.TestCase):
             patch.dict("os.environ", {"SERIAL_BRIDGE_TOKEN": "secret"}, clear=False),
         ):
             response = client.get(
-                "/api/session-log?target=linux",
+                "/api/session-log?dut=dut&target=linux",
                 headers={"Authorization": "Bearer secret"},
             )
         self.assertEqual(200, response.status_code)
@@ -387,7 +387,7 @@ class SessionLogDownloadTest(unittest.TestCase):
     def test_download_unknown_target_returns_400(self):
         client = TestClient(app_module.app, client=("127.0.0.1", 50000))
         with patch.object(app_module, "hub", self.fake_hub):
-            response = client.get("/api/session-log?target=both")
+            response = client.get("/api/session-log?dut=dut&target=both")
         self.assertEqual(400, response.status_code)
         self.assertIn("unknown target", response.json()["detail"])
 
@@ -395,14 +395,14 @@ class SessionLogDownloadTest(unittest.TestCase):
         self.fake_hub.ports["linux"]["log"] = None
         client = TestClient(app_module.app, client=("127.0.0.1", 50000))
         with patch.object(app_module, "hub", self.fake_hub):
-            response = client.get("/api/session-log?target=linux")
+            response = client.get("/api/session-log?dut=dut&target=linux")
         self.assertEqual(404, response.status_code)
 
     def test_download_missing_file_returns_404(self):
         self.log_path.unlink()
         client = TestClient(app_module.app, client=("127.0.0.1", 50000))
         with patch.object(app_module, "hub", self.fake_hub):
-            response = client.get("/api/session-log?target=linux")
+            response = client.get("/api/session-log?dut=dut&target=linux")
         self.assertEqual(404, response.status_code)
 
 
@@ -430,7 +430,7 @@ class SessionLogRevealTest(unittest.TestCase):
             patch.object(app_module, "hub", self.fake_hub),
             patch.object(bridge_operator, "reveal_session_log") as reveal,
         ):
-            response = client.post("/api/session-log/reveal?target=linux")
+            response = client.post("/api/session-log/reveal?dut=dut&target=linux")
         self.assertEqual(200, response.status_code)
         self.assertEqual({"ok": True}, response.json())
         reveal.assert_called_once()
@@ -445,7 +445,7 @@ class SessionLogRevealTest(unittest.TestCase):
             patch.object(bridge_operator, "reveal_session_log") as reveal,
         ):
             response = client.post(
-                "/api/session-log/reveal?target=linux",
+                "/api/session-log/reveal?dut=dut&target=linux",
                 headers={"Authorization": "Bearer secret"},
             )
         self.assertEqual(403, response.status_code)
@@ -458,7 +458,7 @@ class SessionLogRevealTest(unittest.TestCase):
             patch.object(app_module, "hub", self.fake_hub),
             patch.object(bridge_operator, "reveal_session_log") as reveal,
         ):
-            response = client.post("/api/session-log/reveal?target=linux")
+            response = client.post("/api/session-log/reveal?dut=dut&target=linux")
         self.assertEqual(404, response.status_code)
         reveal.assert_not_called()
 
@@ -778,7 +778,7 @@ class AppHttpAuthorizationTest(unittest.TestCase):
         ):
             response = client.post(
                 "/api/send",
-                json={"target": "linux", "cmd": "uname -a"},
+                json={"dut": "dut", "target": "linux", "cmd": "uname -a"},
             )
 
         self.assertEqual(401, response.status_code)
@@ -794,7 +794,7 @@ class AppHttpAuthorizationTest(unittest.TestCase):
         ):
             response = client.post(
                 "/api/send",
-                json={"target": "linux", "cmd": "uname -a"},
+                json={"dut": "dut", "target": "linux", "cmd": "uname -a"},
                 headers={"Authorization": "Bearer wrong"},
             )
 
@@ -807,7 +807,7 @@ class AppHttpAuthorizationTest(unittest.TestCase):
         with patch.object(app_module, "hub", fake_hub):
             response = client.post(
                 "/api/send",
-                json={"target": "linux", "cmd": "uname -a"},
+                json={"dut": "dut", "target": "linux", "cmd": "uname -a"},
             )
 
         self.assertEqual(200, response.status_code)
@@ -823,7 +823,7 @@ class AppHttpAuthorizationTest(unittest.TestCase):
         with patch.object(app_module, "hub", fake_hub):
             response = client.post(
                 "/api/send",
-                json={"target": "linux", "raw_hex": "03"},
+                json={"dut": "dut", "target": "linux", "raw_hex": "03"},
             )
 
         self.assertEqual(200, response.status_code)
@@ -847,7 +847,7 @@ class AppHttpAuthorizationTest(unittest.TestCase):
         with patch.object(app_module, "hub", hub):
             response = client.post(
                 "/api/send",
-                json={"target": "linux", "cmd": "uname -a", "raw_hex": "03"},
+                json={"dut": "dut", "target": "linux", "cmd": "uname -a", "raw_hex": "03"},
             )
 
         self.assertEqual(200, response.status_code)
@@ -862,7 +862,7 @@ class AppHttpAuthorizationTest(unittest.TestCase):
         with patch.object(app_module, "hub", crt_hub):
             response = client.post(
                 "/api/send",
-                json={"target": "linux", "raw_hex": "03"},
+                json={"dut": "dut", "target": "linux", "raw_hex": "03"},
             )
 
         self.assertEqual(200, response.status_code)
@@ -881,7 +881,7 @@ class AppHttpAuthorizationTest(unittest.TestCase):
         with patch.object(app_module, "hub", hub):
             response = client.post(
                 "/api/send",
-                json={"target": "linux", "raw_hex": "04"},
+                json={"dut": "dut", "target": "linux", "raw_hex": "04"},
             )
 
         self.assertEqual(200, response.status_code)
@@ -899,7 +899,7 @@ class AppHttpAuthorizationTest(unittest.TestCase):
         ):
             response = client.post(
                 "/api/send",
-                json={"target": "linux", "cmd": "uname -a", "who": "user"},
+                json={"dut": "dut", "target": "linux", "cmd": "uname -a", "who": "user"},
                 headers={"Authorization": "Bearer secret"},
             )
 
@@ -962,7 +962,7 @@ class AppHttpAuthorizationTest(unittest.TestCase):
 
     def test_target_prompt_endpoint_is_operator_only(self):
         fake_hub = FakeHub()
-        body = {"target": "linux", "pattern": "# $"}
+        body = {"dut": "dut", "target": "linux", "pattern": "# $"}
         local_client = TestClient(app_module.app, client=("127.0.0.1", 50000))
         remote_client = TestClient(app_module.app, client=("192.0.2.10", 50000))
         with patch.object(app_module, "hub", fake_hub):
@@ -970,7 +970,7 @@ class AppHttpAuthorizationTest(unittest.TestCase):
             denied = remote_client.post("/api/target_prompt", json=body)
 
         self.assertEqual(200, ok.status_code)
-        self.assertEqual([("target_prompt", "linux", "# $")], fake_hub.calls)
+        self.assertEqual([("target_prompt", "dut", "linux", "# $")], fake_hub.calls)
         self.assertEqual(403, denied.status_code)
 
     def test_mode_switch_permission_endpoint_is_operator_only(self):

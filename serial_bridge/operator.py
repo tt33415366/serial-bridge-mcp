@@ -28,14 +28,14 @@ _get_hub: Callable[[], Hub]
 
 
 def _send(
-    target: object, cmd: str, who: str, raw_hex: str | None = None
+    dut: object, target: object, cmd: str, who: str, raw_hex: str | None = None
 ) -> dict[str, Any]:
-    return _get_hub().send(target, cmd, who=who, raw_hex=raw_hex)
+    return _get_hub().send(dut, target, cmd, who=who, raw_hex=raw_hex)
 
 
-def _assigned_session_log(target: object) -> Path:
+def _assigned_session_log(dut: object, target: object) -> Path:
     hub = _get_hub()
-    target_name, error = hub.resolve_target(target)
+    target_name, error = hub.resolve_target(dut, target)
     if error is not None:
         raise HTTPException(status_code=400, detail=error)
     path = hub.ports[target_name].get("log")
@@ -98,11 +98,13 @@ class PermissionBody(BaseModel):
 
 
 class TargetPromptBody(BaseModel):
+    dut: str = Field(min_length=1)
     target: str = Field(min_length=1)
     pattern: str = ""
 
 
 class SendBody(BaseModel):
+    dut: str
     target: str
     cmd: str = ""
     raw_hex: str | None = None
@@ -128,11 +130,12 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 continue
             if msg.get("type") == "send":
                 if _send_authorized(host, authorization):
+                    dut = msg.get("dut", "")
                     target = msg.get("target", "")
                     cmd = msg.get("cmd", "")
                     raw_hex = msg.get("raw_hex")
                     result = await offload(
-                        _send, target, cmd, _who_for(authorization), raw_hex
+                        _send, dut, target, cmd, _who_for(authorization), raw_hex
                     )
                 else:
                     result = {"ok": False, "error": "Unauthorized"}
@@ -219,7 +222,9 @@ def register_operator_routes(
 
     @app.post("/api/target_prompt", dependencies=[Depends(_require_operator_access)])
     async def api_target_prompt(body: TargetPromptBody) -> dict[str, Any]:
-        return await offload(_get_hub().set_target_prompt, body.target, body.pattern)
+        return await offload(
+            _get_hub().set_target_prompt, body.dut, body.target, body.pattern
+        )
 
     @app.post("/api/send", dependencies=[Depends(_require_send_access)])
     async def api_send(
@@ -227,12 +232,17 @@ def register_operator_routes(
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
         return await offload(
-            _send, body.target, body.cmd, _who_for(authorization), body.raw_hex
+            _send,
+            body.dut,
+            body.target,
+            body.cmd,
+            _who_for(authorization),
+            body.raw_hex,
         )
 
     @app.get(SESSION_LOG_ROUTE, dependencies=[Depends(_require_send_access)])
-    async def api_session_log(target: str) -> StreamingResponse:
-        path = _assigned_session_log(target)
+    async def api_session_log(dut: str, target: str) -> StreamingResponse:
+        path = _assigned_session_log(dut, target)
         size = path.stat().st_size
         headers = {
             "Content-Disposition": f'attachment; filename="{path.name}"',
@@ -248,8 +258,8 @@ def register_operator_routes(
         f"{SESSION_LOG_ROUTE}/reveal",
         dependencies=[Depends(_require_operator_access)],
     )
-    async def api_reveal_session_log(target: str) -> dict[str, Any]:
-        path = _assigned_session_log(target)
+    async def api_reveal_session_log(dut: str, target: str) -> dict[str, Any]:
+        path = _assigned_session_log(dut, target)
         reveal_session_log(path)
         return {"ok": True}
 

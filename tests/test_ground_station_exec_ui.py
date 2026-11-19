@@ -16,7 +16,7 @@ def run_ui_scenario(scenario: str, agent_log_entries=None, local_storage=None):
     if not node:
         raise unittest.SkipTest("node not available")
     agent_log_entries = agent_log_entries or []
-    local_storage = local_storage or {}
+    local_storage = {"serial-bridge.focused-dut": "dut", **(local_storage or {})}
     script = f"""
 const fs = require("fs");
 
@@ -825,7 +825,7 @@ class GroundStationExecUiTest(unittest.TestCase):
         self.assertIn("hidden-while-detached", result["finalText"])
         self.assertIn("uname -a", result["finalText"])
         self.assertEqual(
-            {"type": "send", "target": "linux", "cmd": "uname -a"},
+            {"type": "send", "dut": "dut", "target": "linux", "cmd": "uname -a"},
             result["sent"][0],
         )
 
@@ -963,7 +963,7 @@ class GroundStationExecUiTest(unittest.TestCase):
         )
 
         self.assertEqual(
-            [{"type": "send", "target": "linux", "raw_hex": "03"}],
+            [{"type": "send", "dut": "dut", "target": "linux", "raw_hex": "03"}],
             result["sent"],
         )
         self.assertEqual("do not submit", result["draft"])
@@ -989,7 +989,7 @@ class GroundStationExecUiTest(unittest.TestCase):
         )
 
         self.assertEqual(
-            [{"type": "send", "target": "linux", "raw_hex": "04"}],
+            [{"type": "send", "dut": "dut", "target": "linux", "raw_hex": "04"}],
             result["sent"],
         )
         self.assertEqual("keep draft", result["draft"])
@@ -1015,8 +1015,8 @@ class GroundStationExecUiTest(unittest.TestCase):
 
         self.assertEqual(
             [
-                {"type": "send", "target": "linux", "raw_hex": "03"},
-                {"type": "send", "target": "linux", "raw_hex": "04"},
+                {"type": "send", "dut": "dut", "target": "linux", "raw_hex": "03"},
+                {"type": "send", "dut": "dut", "target": "linux", "raw_hex": "04"},
             ],
             result["sent"],
         )
@@ -1077,8 +1077,8 @@ class GroundStationExecUiTest(unittest.TestCase):
 
         self.assertEqual(
             [
-                {"type": "send", "target": "linux", "raw_hex": "04"},
-                {"type": "send", "target": "linux", "raw_hex": "04"},
+                {"type": "send", "dut": "dut", "target": "linux", "raw_hex": "04"},
+                {"type": "send", "dut": "dut", "target": "linux", "raw_hex": "04"},
             ],
             result["sent"],
         )
@@ -1119,7 +1119,7 @@ class GroundStationExecUiTest(unittest.TestCase):
         )
 
         self.assertEqual(
-            [{"type": "send", "target": "rtos", "raw_hex": "03"}],
+            [{"type": "send", "dut": "dut", "target": "rtos", "raw_hex": "03"}],
             result["sent"],
         )
         self.assertEqual(1, result["afterOther"])
@@ -1144,8 +1144,8 @@ class GroundStationExecUiTest(unittest.TestCase):
         self.assertEqual(0, result["wsCount"])
         self.assertEqual(
             [
-                {"target": "linux", "raw_hex": "03"},
-                {"target": "linux", "raw_hex": "04"},
+                {"dut": "dut", "target": "linux", "raw_hex": "03"},
+                {"dut": "dut", "target": "linux", "raw_hex": "04"},
             ],
             result["bodies"],
         )
@@ -2276,16 +2276,37 @@ class GroundStationExecUiTest(unittest.TestCase):
       linux: {
         name: "linux", title: "Linux", com: "COM8", baud: 115200,
         open: true, busy: false,
-        log: "D:\\\\logs\\\\serial-bridge\\\\linux-2026-08-18-093045.log",
-        log_url: "/api/session-log?target=linux",
+        log: "D:\\\\logs\\\\serial-bridge\\\\dut-linux-2026-08-18-093045.log",
+        log_url: "/api/session-log?dut=dut&target=linux",
+      },
+      "beta/linux": {
+        name: "linux", title: "Linux", com: "COM9", baud: 115200,
+        open: true, busy: false,
+        log: "D:\\\\logs\\\\serial-bridge\\\\beta-linux-2026-08-18-093045.log",
+        log_url: "/api/session-log?dut=beta&target=linux",
       },
       rtos: {
-        name: "rtos", title: "RTOS", com: "COM9", baud: 115200,
+        name: "rtos", title: "RTOS", com: "COM10", baud: 115200,
         open: true, busy: false,
-        log: "D:\\\\logs\\\\serial-bridge\\\\rtos-2026-08-18-093045.log",
-        log_url: "/api/session-log?target=rtos",
+        log: "D:\\\\logs\\\\serial-bridge\\\\beta-rtos-2026-08-18-093045.log",
+        log_url: "/api/session-log?dut=beta&target=rtos",
       },
     },
+    duts: [
+      { name: "dut", title: "DUT", mode: "bridge", ports: {
+        linux: { name: "linux", title: "Linux", com: "COM8", baud: 115200 },
+      } },
+      { name: "beta", title: "Beta", mode: "bridge", ports: {
+        "beta/linux": {
+          name: "linux", title: "Linux", com: "COM9", baud: 115200,
+          log: "D:\\\\logs\\\\serial-bridge\\\\beta-linux-2026-08-18-093045.log",
+        },
+        rtos: {
+          name: "rtos", title: "RTOS", com: "COM10", baud: 115200,
+          log: "D:\\\\logs\\\\serial-bridge\\\\beta-rtos-2026-08-18-093045.log",
+        },
+      } },
+    ],
   });
   const host = document.getElementById("foot-session-logs");
   const labels = host.children.map((child) => child.textContent);
@@ -2300,14 +2321,15 @@ class GroundStationExecUiTest(unittest.TestCase):
     tags,
     fetchRequests,
   };
-"""
+""",
+            local_storage={"serial-bridge.focused-dut": "beta"},
         )
         self.assertFalse(result["labelHidden"])
         self.assertEqual(
-            ["linux-2026-08-18-093045.log", "rtos-2026-08-18-093045.log"],
+            ["beta-linux-2026-08-18-093045.log", "beta-rtos-2026-08-18-093045.log"],
             result["labels"],
         )
-        self.assertEqual(["linux", "rtos"], result["targets"])
+        self.assertEqual(["beta/linux", "rtos"], result["targets"])
         self.assertEqual(["BUTTON", "BUTTON"], result["tags"])
         reveal = [
             entry
@@ -2315,7 +2337,7 @@ class GroundStationExecUiTest(unittest.TestCase):
             if str(entry.get("url", "")).startswith("/api/session-log/reveal")
         ]
         self.assertEqual(1, len(reveal))
-        self.assertEqual("/api/session-log/reveal?target=linux", reveal[0]["url"])
+        self.assertEqual("/api/session-log/reveal?dut=beta&target=linux", reveal[0]["url"])
         self.assertEqual("POST", (reveal[0].get("options") or {}).get("method"))
         self.assertFalse(
             any(

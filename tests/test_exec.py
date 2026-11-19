@@ -1228,7 +1228,7 @@ class HubExecTest(unittest.TestCase):
         hub.mode = "bridge"
         hub.workers["linux"] = worker
 
-        result = hub.exec(ExecSpec(target="linux", cmd="show", prompt="device> "))
+        result = hub.exec(ExecSpec(dut="dut", target="linux", cmd="show", prompt="device> "))
 
         self.assertTrue(result["ok"])
         self.assertEqual(1, len(worker.calls))
@@ -1243,7 +1243,7 @@ class HubExecTest(unittest.TestCase):
         self.assertFalse(options["exit_code"])
 
     def test_exec_in_crt_mode_fails_with_result_fields(self):
-        result = self.make_hub().exec(ExecSpec(target="linux", cmd="show"))
+        result = self.make_hub().exec(ExecSpec(dut="dut", target="linux", cmd="show"))
 
         self.assertEqual(
             {
@@ -1251,6 +1251,8 @@ class HubExecTest(unittest.TestCase):
                 "status": "error",
                 "output": "",
                 "error": "CRT Mode is active; switch to Bridge Mode before Exec",
+                "target": "linux",
+                "dut": "dut",
             },
             result,
         )
@@ -1273,7 +1275,7 @@ class HubExecTest(unittest.TestCase):
         worker._tx.enqueue_exec = pausing_enqueue
         result = {}
         exec_thread = threading.Thread(
-            target=lambda: result.update(hub.exec(ExecSpec(target="linux", cmd="show"))),
+            target=lambda: result.update(hub.exec(ExecSpec(dut="dut", target="linux", cmd="show"))),
             daemon=True,
         )
         stop_thread = threading.Thread(target=hub.stop_bridge)

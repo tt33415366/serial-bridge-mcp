@@ -175,7 +175,9 @@ class McpHttpTest(unittest.TestCase):
             response = call_tool(self.client, "serial_status")
 
         self.assertEqual(200, response.status_code)
-        self.assertEqual(fake_hub.status(), response.json()["result"]["structuredContent"])
+        self.assertEqual(
+            fake_hub.agent_status(), response.json()["result"]["structuredContent"]
+        )
 
     def test_serial_tail_returns_last_n_lines(self):
         fake_hub = FakeHub()
@@ -187,7 +189,7 @@ class McpHttpTest(unittest.TestCase):
                 response = call_tool(
                     self.client,
                     "serial_tail",
-                    {"target": "linux", "n": 2},
+                    {"dut": "dut", "target": "linux", "n": 2},
                 )
 
         result = response.json()["result"]["structuredContent"]
@@ -219,12 +221,12 @@ class McpHttpTest(unittest.TestCase):
             fake_hub.ports["linux"]["log"] = log
             with patch.object(app_module, "hub", fake_hub):
                 compact = call_tool(
-                    self.client, "serial_tail", {"target": "linux"}
+                    self.client, "serial_tail", {"dut": "dut", "target": "linux"}
                 )
                 timed = call_tool(
                     self.client,
                     "serial_tail",
-                    {"target": "linux", "with_timestamps": True},
+                    {"dut": "dut", "target": "linux", "with_timestamps": True},
                 )
 
         self.assertEqual(
@@ -246,12 +248,12 @@ class McpHttpTest(unittest.TestCase):
             fake_hub.ports["linux"]["log"] = log
             with patch.object(app_module, "hub", fake_hub):
                 defaulted = call_tool(
-                    self.client, "serial_tail", {"target": "linux"}
+                    self.client, "serial_tail", {"dut": "dut", "target": "linux"}
                 )
                 bad = call_tool(
                     self.client,
                     "serial_tail",
-                    {"target": "linux", "n": 201},
+                    {"dut": "dut", "target": "linux", "n": 201},
                 )
 
         self.assertEqual(
@@ -267,10 +269,10 @@ class McpHttpTest(unittest.TestCase):
         fake_hub = FakeHub()
         with patch.object(app_module, "hub", fake_hub):
             unknown = call_tool(
-                self.client, "serial_tail", {"target": "both"}
+                self.client, "serial_tail", {"dut": "dut", "target": "both"}
             )
             missing = call_tool(
-                self.client, "serial_tail", {"target": "linux"}
+                self.client, "serial_tail", {"dut": "dut", "target": "linux"}
             )
 
         unknown_result = unknown.json()["result"]["structuredContent"]
@@ -294,6 +296,7 @@ class McpHttpTest(unittest.TestCase):
                 self.client,
                 "serial_exec",
                 {
+                    "dut": "dut",
                     "target": "linux",
                     "cmd": "uname -a",
                     "prompt": r"\$ $",
@@ -315,6 +318,7 @@ class McpHttpTest(unittest.TestCase):
                 self.client,
                 "serial_exec",
                 {
+                    "dut": "dut",
                     "target": "linux",
                     "cmd": "dmesg",
                     "grep": "error",
@@ -341,14 +345,14 @@ class McpHttpTest(unittest.TestCase):
             response = call_tool(
                 self.client,
                 "serial_exec",
-                {"target": "linux", "cmd": "uname -a"},
+                {"dut": "dut", "target": "linux", "cmd": "uname -a"},
             )
 
         result = response.json()["result"]["structuredContent"]
         self.assertFalse(result["ok"])
         self.assertNotIn("timed_out", result)
         self.assertNotIn("aborted", result)
-        self.assertNotIn("target", result)
+        self.assertEqual(("dut", "linux"), (result["dut"], result["target"]))
         self.assertIn("Bridge Mode", result["error"])
 
     def test_serial_send_delegates_text_line_without_waiting_for_output(self):
@@ -357,7 +361,7 @@ class McpHttpTest(unittest.TestCase):
             response = call_tool(
                 self.client,
                 "serial_send",
-                {"target": "linux", "cmd": "reboot"},
+                {"dut": "dut", "target": "linux", "cmd": "reboot"},
             )
 
         result = response.json()["result"]["structuredContent"]
@@ -373,7 +377,7 @@ class McpHttpTest(unittest.TestCase):
             response = call_tool(
                 self.client,
                 "serial_send",
-                {"target": "rtos", "raw_hex": "03"},
+                {"dut": "dut", "target": "rtos", "raw_hex": "03"},
             )
 
         result = response.json()["result"]["structuredContent"]
@@ -396,7 +400,7 @@ class McpHttpTest(unittest.TestCase):
             response = call_tool(
                 self.client,
                 "serial_send",
-                {"target": "linux", "cmd": "reboot"},
+                {"dut": "dut", "target": "linux", "cmd": "reboot"},
             )
 
         result = response.json()["result"]["structuredContent"]
@@ -408,9 +412,47 @@ class McpHttpTest(unittest.TestCase):
         with patch.object(app_module, "hub", fake_hub):
             response = call_tool(self.client, "serial_status")
 
-        linux = response.json()["result"]["structuredContent"]["ports"]["linux"]
-        self.assertEqual("linux", linux["name"])
-        self.assertEqual("Linux", linux["title"])
+        (dut,) = response.json()["result"]["structuredContent"]["duts"]
+        self.assertEqual("dut", dut["name"])
+        self.assertEqual("Linux", dut["ports"]["linux"]["title"])
+
+    def test_serial_status_takes_no_argument(self):
+        tools = self.list_tools()
+        self.assertEqual({}, tools["serial_status"]["inputSchema"].get("properties", {}))
+
+    def test_addressing_tools_require_dut_and_target(self):
+        tools = self.list_tools()
+        for name in ("serial_exec", "serial_send", "serial_tail"):
+            schema = tools[name]["inputSchema"]
+            self.assertIn("dut", schema["required"], name)
+            self.assertIn("target", schema["required"], name)
+            description = tools[name]["description"]
+            self.assertIn("dut", description, name)
+            self.assertIn("unique only within its DUT", description, name)
+        self.assertIn("duts", tools["serial_status"]["description"])
+
+    def test_addressing_tools_reject_a_call_without_dut_or_target(self):
+        fake_hub = FakeHub()
+        with patch.object(app_module, "hub", fake_hub):
+            for name, args in (
+                ("serial_exec", {"cmd": "ls"}),
+                ("serial_send", {"cmd": "ls"}),
+                ("serial_tail", {}),
+                ("serial_exec", {"dut": "dut", "cmd": "ls"}),
+                ("serial_tail", {"target": "linux"}),
+            ):
+                response = call_tool(self.client, name, args)
+                result = response.json()["result"]
+                self.assertTrue(result.get("isError"), (name, args))
+        self.assertEqual([], fake_hub.calls)
+
+    def list_tools(self):
+        response = self.client.post(
+            "/mcp",
+            headers=MCP_HEADERS,
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+        )
+        return {tool["name"]: tool for tool in response.json()["result"]["tools"]}
 
     def test_mcp_serial_exec_normalizes_mixed_case_target_name(self):
         fake_hub = FakeHub()
@@ -418,7 +460,7 @@ class McpHttpTest(unittest.TestCase):
             response = call_tool(
                 self.client,
                 "serial_exec",
-                {"target": "Linux", "cmd": "uname -a"},
+                {"dut": "dut", "target": "Linux", "cmd": "uname -a"},
             )
 
         result = response.json()["result"]["structuredContent"]
@@ -477,7 +519,7 @@ class McpHttpTest(unittest.TestCase):
             call_tool(
                 self.client,
                 "serial_exec",
-                {"target": "linux", "cmd": "ls", "raw": True},
+                {"dut": "dut", "target": "linux", "cmd": "ls", "raw": True},
             )
 
         options = [c for c in fake_hub.calls if c[0] == "linux" and c[1] == "ls"][-1][2]
@@ -490,6 +532,7 @@ class McpHttpTest(unittest.TestCase):
                 self.client,
                 "serial_exec",
                 {
+                    "dut": "dut",
                     "target": "rtos",
                     "cmd": "svc_app get_flicker all",
                     "prompt": "a:\\>",
@@ -514,7 +557,7 @@ class McpHttpTest(unittest.TestCase):
             response = call_tool(
                 self.client,
                 "serial_send",
-                {"target": "RTOS", "cmd": "reboot"},
+                {"dut": "dut", "target": "RTOS", "cmd": "reboot"},
             )
 
         result = response.json()["result"]["structuredContent"]
@@ -528,12 +571,12 @@ class McpHttpTest(unittest.TestCase):
         with patch.object(app_module, "hub", fake_hub):
             http = client.post(
                 "/api/send",
-                json={"target": "Missing", "cmd": "help"},
+                json={"dut": "dut", "target": "Missing", "cmd": "help"},
             )
             mcp = call_tool(
                 self.client,
                 "serial_send",
-                {"target": "Missing", "cmd": "help"},
+                {"dut": "dut", "target": "Missing", "cmd": "help"},
             )
 
         http_error = http.json()["error"]
@@ -555,12 +598,12 @@ class McpHttpTest(unittest.TestCase):
             missing = call_tool(
                 self.client,
                 "serial_exec",
-                {"target": "linux", "cmd": "uname -a"},
+                {"dut": "dut", "target": "linux", "cmd": "uname -a"},
             )
             ok = call_tool(
                 self.client,
                 "serial_exec",
-                {"target": "embedded", "cmd": "uname -a"},
+                {"dut": "dut", "target": "embedded", "cmd": "uname -a"},
             )
 
         missing_result = missing.json()["result"]["structuredContent"]
@@ -575,7 +618,7 @@ class EventLoopResponsivenessTest(unittest.IsolatedAsyncioTestCase):
     async def test_mode_and_status_respond_while_exec_is_in_flight(self):
         blocking = BlockingExecHub()
         with patch.object(app_module, "hub", blocking):
-            in_flight = asyncio.create_task(app_module.serial_exec("linux", "reboot"))
+            in_flight = asyncio.create_task(app_module.serial_exec("dut", "linux", "reboot"))
             self.assertTrue(await asyncio.to_thread(blocking.exec_started.wait, 5))
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app_module.app),

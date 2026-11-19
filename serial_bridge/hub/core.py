@@ -8,6 +8,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import urlencode
 
 from serial_bridge.config import (
     MAX_SLOT_COUNT,
@@ -149,23 +150,27 @@ class Hub:
         if index == 0:
             self.config.slots = slots
         self.config.warning = None
-    def _unknown_target_error(self, target: str) -> str:
-        known = ", ".join(sorted(self.ports))
-        return f"unknown target {target!r}; known targets: {known}"
-
-    def resolve_target(self, target: object) -> tuple[str | None, str | None]:
+    def resolve_target(
+        self, dut: object, target: object
+    ) -> tuple[str | None, str | None]:
+        """Map (DUT Name, Target Name) to the internal port key, or an error."""
+        if not isinstance(dut, str):
+            return None, "dut must be a DUT Name string"
+        dut_name = dut.strip().lower()
+        if self._dut_index(dut_name) is None:
+            known = ", ".join(str(d["name"]) for d in self.config.duts)
+            return None, f"unknown DUT {dut_name!r}; known DUTs: {known}"
         if not isinstance(target, str):
             return None, "target must be a Target Name string"
         target_name = target.strip().lower()
-        if target_name not in self.ports:
-            return target_name, self._unknown_target_error(target_name)
-        return target_name, None
-
-    def _unknown_target_exec(self, target: str) -> dict[str, Any]:
-        return exec_result(
-            target,
-            ok=False,
-            error=self._unknown_target_error(target),
+        keys = self.port_keys(dut_name)
+        for key in keys:
+            if self.ports[key]["name"] == target_name:
+                return key, None
+        known = ", ".join(sorted(str(self.ports[k]["name"]) for k in keys))
+        return target_name, (
+            f"unknown target {target_name!r} in DUT {dut_name!r}; "
+            f"known targets: {known}"
         )
 
     async def broadcast(self, msg: dict[str, Any]) -> None:
@@ -273,7 +278,10 @@ class Hub:
                     "shell_observed_at": shell[k][1],
                     "log": str(v["log"]) if v.get("log") else "",
                     "log_url": (
-                        f"{SESSION_LOG_ROUTE}?target={k}" if v.get("log") else ""
+                        f"{SESSION_LOG_ROUTE}?"
+                        + urlencode({"dut": v["dut"], "target": v["name"]})
+                        if v.get("log")
+                        else ""
                     ),
                 }
                 for k, v in self.ports.items()
@@ -301,9 +309,35 @@ class Hub:
         ]
         return status
 
+    def agent_status(self) -> dict[str, Any]:
+        """Agent-facing status: every DUT grouped, Targets keyed by Target Name."""
+        status = self.status()
+        allowed = status["mode_switch"]["allowed"]
+        duts = []
+        for dut in status["duts"]:
+            ports = {p["name"]: p for p in dut["ports"].values()}
+            busy_targets = sorted(n for n, p in ports.items() if p["busy"])
+            duts.append(
+                {
+                    "name": dut["name"],
+                    "title": dut["title"],
+                    "mode": dut["mode"],
+                    "mode_switch": self._mode_switch_for(busy_targets, allowed),
+                    "ports": ports,
+                }
+            )
+        result: dict[str, Any] = {"duts": duts}
+        if "config_warning" in status:
+            result["config_warning"] = status["config_warning"]
+        return result
+
     @staticmethod
     def _mode_switch_info(workers: dict[str, Any], allowed: bool) -> dict[str, Any]:
         busy_targets = sorted(k for k, w in workers.items() if w.is_busy)
+        return Hub._mode_switch_for(busy_targets, allowed)
+
+    @staticmethod
+    def _mode_switch_for(busy_targets: list[str], allowed: bool) -> dict[str, Any]:
         if not allowed:
             next_action = "ask_operator_to_enable_mode_switch"
         elif busy_targets:
@@ -367,18 +401,28 @@ class Hub:
 
     def tail(
         self,
+        dut: str,
         target: str,
         n: int = TAIL_DEFAULT_N,
         with_timestamps: bool = False,
     ) -> dict[str, Any]:
-        return tail_response(
+        result = tail_response(
             target,
             n,
             with_timestamps,
-            resolve=self.resolve_target,
+            resolve=lambda value: self.resolve_target(dut, value),
             session_log=lambda name: self.ports[name].get("log"),
             read_tail=lambda name, count: self.get_tail(target=name, n=count)[name],
         )
+        key, error = self.resolve_target(dut, target)
+        return result if error is not None else self._echo_target(result, key)
+
+    def _echo_target(self, result: dict[str, Any], key: str | None) -> dict[str, Any]:
+        """Report the caller's (DUT, Target Name) instead of the internal port key."""
+        assert key is not None
+        result["target"] = self.ports[key]["name"]
+        result["dut"] = self._owner(key)
+        return result
 
     def update_slots(
         self,
@@ -446,9 +490,11 @@ class Hub:
     def clear_all_readiness(self) -> None:
         self._readiness.clear()
 
-    def set_target_prompt(self, target: object, pattern: object) -> dict[str, Any]:
+    def set_target_prompt(
+        self, dut: object, target: object, pattern: object
+    ) -> dict[str, Any]:
         """Operator-only: set or clear (empty string) a Target's Target Prompt."""
-        target_name, error = self.resolve_target(target)
+        target_name, error = self.resolve_target(dut, target)
         if error is not None:
             return {"ok": False, "error": error}
         if not isinstance(pattern, str):
@@ -644,12 +690,14 @@ class Hub:
 
     def send(
         self,
+        dut: object,
         target: object,
         cmd: str = "",
         who: str = "user",
         raw_hex: str | None = None,
     ) -> dict[str, Any]:
-        result = self._send(target, cmd, who, raw_hex)
+        result = self._send(dut, target, cmd, who, raw_hex)
+        key = result.get("target")
         if who == "agent":
             self._agent_trace.record_read(
                 "send",
@@ -658,16 +706,17 @@ class Hub:
                 returned_bytes=payload_bytes(result),
                 cmd=cmd if raw_hex is None else f"[raw] {raw_hex}",
             )
-        return result
+        return self._echo_target(result, key) if key in self.ports else result
 
     def _send(
         self,
+        dut: object,
         target: object,
         cmd: str,
         who: str,
         raw_hex: str | None,
     ) -> dict[str, Any]:
-        target_name, error = self.resolve_target(target)
+        target_name, error = self.resolve_target(dut, target)
         if error is not None:
             return {"ok": False, "error": error}
         assert target_name is not None
@@ -704,11 +753,12 @@ class Hub:
         return result
 
     def exec(self, spec: ExecSpec) -> dict[str, Any]:
-        target_name, error = self.resolve_target(spec.target)
+        key, error = self.resolve_target(spec.dut, spec.target)
         if error is not None:
-            if target_name is not None:
-                return self._unknown_target_exec(target_name)
-            return exec_result("", ok=False, error=error)
+            return exec_result(key or "", ok=False, error=error)
+        return self._echo_target(self._exec(key, spec), key)
+
+    def _exec(self, target_name: str | None, spec: ExecSpec) -> dict[str, Any]:
         assert target_name is not None
         target = target_name
         with self._state_lock:

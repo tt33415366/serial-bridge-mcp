@@ -15,6 +15,7 @@ class ExecSpec:
     ``ExecSpec`` into an ``ExecRequest`` at enqueue time.
     """
 
+    dut: object
     target: object
     cmd: str
     prompt: str | None = None
@@ -32,7 +33,7 @@ class ExecSpec:
         return {
             item.name: getattr(self, item.name)
             for item in fields(self)
-            if item.name not in {"target", "cmd"}
+            if item.name not in {"dut", "target", "cmd"}
         }
 
 

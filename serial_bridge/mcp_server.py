@@ -17,14 +17,15 @@ _get_hub: Callable[[], Hub]
 
 
 async def serial_status() -> dict[str, Any]:
-    """Return Hub mode, mode_switch {allowed, busy, busy_targets, next_action}, and each Target's Port Binding plus port_state (closed|open|lost), busy, shell (ready|unknown; ready only while the newest device output ends at the Operator-configured Target Prompt, otherwise unknown), shell_observed_at, target_prompt (read-only; the Operator-configured regex behind shell), open_error (only when present: why the Target is not open), and the current Session Log (`log` path on the Hub host; relative `log_url` for a Bearer GET from the same origin as /mcp). Empty log/log_url means none assigned. Use serial_tail for a Tail (last N lines). Do not pull the Session Log into serial_exec output."""
+    """Return every DUT grouped: duts [{name, title, mode, mode_switch {allowed, busy, busy_targets, next_action} for that DUT's Targets, ports}]. ports holds that DUT's Targets keyed by Target Name (unique only within its DUT); pass the DUT name as `dut` and the Target Name as `target` to the other tools. Each Target has its Port Binding plus port_state (closed|open|lost), busy, shell (ready|unknown; ready only while the newest device output ends at the Operator-configured Target Prompt, otherwise unknown), shell_observed_at, target_prompt (read-only; the Operator-configured regex behind shell), open_error (only when present: why the Target is not open), and the current Session Log (`log` path on the Hub host; relative `log_url` for a Bearer GET from the same origin as /mcp). Empty log/log_url means none assigned. Use serial_tail for a Tail (last N lines). Do not pull the Session Log into serial_exec output."""
     hub = _get_hub()
-    result = await offload(hub.status)
+    result = await offload(hub.agent_status)
     await offload(hub.record_agent_read, "status", result)
     return result
 
 
 async def serial_exec(
+    dut: str,
     target: str,
     cmd: str,
     prompt: str | None = None,
@@ -38,10 +39,11 @@ async def serial_exec(
     exit_code: bool = False,
     raw: bool = False,
 ) -> dict[str, Any]:
-    """Run one text command through the Hub and capture its serial output (Echo and matched prompt removed). Returns status: completed (prompt or exit-code evidence; a nonzero exit_code is still completed), quiet or timeout (observation ended only; the command may still be running, do not resend automatically), disconnected (port lost, partial output kept), aborted, or error. completed does not mean asynchronous work such as an upgrade finished. Shell Targets: exit_code=true reports the remote exit status. Prompt-first consoles: prompt + prompt_settle_ms. Trim with grep (grep_invert drops matches) and max_lines (keeps the tail). raw=true also returns raw_base64: the first 32 KiB of the unmodified capture window (echo, ANSI, wrapper included) and raw_truncated."""
+    """Run one text command on one Target and capture its serial output (Echo and matched prompt removed). Returns status: completed (prompt or exit-code evidence; a nonzero exit_code is still completed), quiet or timeout (observation ended only; the command may still be running, do not resend automatically), disconnected (port lost, partial output kept), aborted, or error. completed does not mean asynchronous work such as an upgrade finished. Shell Targets: exit_code=true reports the remote exit status. Prompt-first consoles: prompt + prompt_settle_ms. Trim with grep (grep_invert drops matches) and max_lines (keeps the tail). raw=true also returns raw_base64: the first 32 KiB of the unmodified capture window (echo, ANSI, wrapper included) and raw_truncated. Address the console with `dut` (DUT Name) and `target` (Target Name), both required; a Target Name is unique only within its DUT, so linux in two DUTs are different consoles. The result echoes `dut` and `target`."""
     return await offload(
         _get_hub().exec,
         ExecSpec(
+            dut=dut,
             target=target,
             cmd=cmd,
             prompt=prompt,
@@ -59,24 +61,26 @@ async def serial_exec(
 
 
 async def serial_send(
+    dut: str,
     target: str,
     cmd: str = "",
     raw_hex: str | None = None,
 ) -> dict[str, Any]:
-    """Send one text line or hex-encoded Raw Payload without waiting for RX."""
+    """Send one text line or hex-encoded Raw Payload without waiting for RX. Address the console with `dut` (DUT Name) and `target` (Target Name), both required; a Target Name is unique only within its DUT, so linux in two DUTs are different consoles. The result echoes `dut` and `target`."""
     return await offload(
-        _get_hub().send, target, cmd, who="agent", raw_hex=raw_hex
+        _get_hub().send, dut, target, cmd, who="agent", raw_hex=raw_hex
     )
 
 
 async def serial_tail(
+    dut: str,
     target: str,
     n: int = TAIL_DEFAULT_N,
     with_timestamps: bool = False,
 ) -> dict[str, Any]:
-    """Return a Tail of the current Session Log: last n lines (default 40, max 200) for one Target Name, each reduced to direction (<<< rx, >>> tx) and text; with_timestamps adds HH:MM:SS.mmm. The whole file is log_url from serial_status, not this tool."""
+    """Return a Tail of the current Session Log: last n lines (default 40, max 200) for one Target, each reduced to direction (<<< rx, >>> tx) and text; with_timestamps adds HH:MM:SS.mmm. The whole file is log_url from serial_status, not this tool. Address the console with `dut` (DUT Name) and `target` (Target Name), both required; a Target Name is unique only within its DUT, so linux in two DUTs are different consoles. The result echoes `dut` and `target`."""
     hub = _get_hub()
-    result = await offload(hub.tail, target, n, with_timestamps)
+    result = await offload(hub.tail, dut, target, n, with_timestamps)
     await offload(
         hub.record_agent_read,
         "tail",

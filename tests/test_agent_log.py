@@ -217,8 +217,8 @@ class AgentLogTest(unittest.TestCase):
         hub = make_hub()
         emitted = []
         with patch.object(hub, "emit", emitted.append):
-            result = hub.send("rtos", "reboot", who="agent")
-            hub.send("rtos", "status", who="user")
+            result = hub.send("dut", "rtos", "reboot", who="agent")
+            hub.send("dut", "rtos", "status", who="user")
 
         entries = hub.get_agent_log()
         self.assertEqual(1, len(entries))

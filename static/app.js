@@ -351,8 +351,19 @@
     return parts[parts.length - 1] || path;
   }
 
-  function revealSessionLog(target) {
-    fetch(`/api/session-log/reveal?target=${encodeURIComponent(target)}`, {
+  function targetAddress(key) {
+    const duts = lastStatus && Array.isArray(lastStatus.duts) ? lastStatus.duts : [];
+    for (const dut of duts) {
+      const port = dut.ports && dut.ports[key];
+      if (port) return { dut: dut.name, target: port.name };
+    }
+    return { dut: focusedDut, target: key };
+  }
+
+  function revealSessionLog(key) {
+    const { dut, target } = targetAddress(key);
+    const query = `dut=${encodeURIComponent(dut)}&target=${encodeURIComponent(target)}`;
+    fetch(`/api/session-log/reveal?${query}`, {
       method: "POST",
     }).catch(() => {});
   }
@@ -2108,15 +2119,16 @@
     await refreshPorts();
   }
 
-  function sendRawHex(target, rawHex) {
-    if (!target) return;
+  function sendRawHex(key, rawHex) {
+    if (!key) return;
+    const address = targetAddress(key);
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "send", target, raw_hex: rawHex }));
+      ws.send(JSON.stringify({ type: "send", ...address, raw_hex: rawHex }));
     } else {
       fetch("/api/send", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target, raw_hex: rawHex }),
+        body: JSON.stringify({ ...address, raw_hex: rawHex }),
       });
     }
   }
@@ -2233,7 +2245,10 @@
     const res = await fetch("/api/target_prompt", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ target: promptSelect.value, pattern: promptInput.value }),
+      body: JSON.stringify({
+        ...targetAddress(promptSelect.value),
+        pattern: promptInput.value,
+      }),
     });
     const data = await res.json();
     promptNote.textContent = data.ok ? "saved" : data.error || data.detail || "save failed";
@@ -2452,12 +2467,12 @@
       if (!trimmed || !target) return;
       returnPaneToFollow(slot);
       if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "send", target, cmd }));
+        ws.send(JSON.stringify({ type: "send", ...targetAddress(target), cmd }));
       } else {
         fetch("/api/send", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ target, cmd }),
+          body: JSON.stringify({ ...targetAddress(target), cmd }),
         });
       }
       historyState.history = CommandHistory.recordCommand(historyState.history, trimmed);

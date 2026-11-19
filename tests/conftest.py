@@ -30,7 +30,9 @@ class FakeHub:
             },
         }
 
-    def resolve_target(self, target):
+    def resolve_target(self, dut, target):
+        if dut != "dut":
+            return None, f"unknown DUT {dut!r}; known DUTs: dut"
         if not isinstance(target, str):
             return None, "target must be a Target Name string"
         target_name = target.strip().lower()
@@ -55,11 +57,30 @@ class FakeHub:
             },
         }
 
+    def agent_status(self):
+        ports = self.status()["ports"]
+        return {
+            "duts": [
+                {
+                    "name": "dut",
+                    "title": "DUT",
+                    "mode": "bridge",
+                    "mode_switch": {
+                        "allowed": False,
+                        "busy": True,
+                        "busy_targets": ["rtos"],
+                        "next_action": "ask_operator_to_enable_mode_switch",
+                    },
+                    "ports": ports,
+                }
+            ]
+        }
+
     def record_agent_read(self, kind, result, *, target=None, **fields):
         self.calls.append(("trace", kind, target, result.get("ok"), fields))
 
-    def send(self, target, cmd="", who="agent", raw_hex=None):
-        target_name, error = self.resolve_target(target)
+    def send(self, dut, target, cmd="", who="agent", raw_hex=None):
+        target_name, error = self.resolve_target(dut, target)
         if error is not None:
             return {"ok": False, "error": error}
         self.calls.append((target_name, cmd, who, raw_hex))
@@ -74,7 +95,7 @@ class FakeHub:
         return result
 
     def exec(self, spec: ExecSpec):
-        target_name, error = self.resolve_target(spec.target)
+        target_name, error = self.resolve_target(spec.dut, spec.target)
         if error is not None:
             if target_name is not None:
                 return exec_result(target_name, ok=False, error=error)
@@ -82,8 +103,8 @@ class FakeHub:
         self.calls.append((target_name, spec.cmd, spec.as_exec_options()))
         return {"ok": True, "output": "Linux\n"}
 
-    def set_target_prompt(self, target, pattern):
-        self.calls.append(("target_prompt", target, pattern))
+    def set_target_prompt(self, dut, target, pattern):
+        self.calls.append(("target_prompt", dut, target, pattern))
         return {"ok": True}
 
     def set_mode_switch_permission(self, allowed):
@@ -124,12 +145,12 @@ class FakeHub:
                 out[key] = ""
         return out
 
-    def tail(self, target, n=TAIL_DEFAULT_N, with_timestamps=False):
+    def tail(self, dut, target, n=TAIL_DEFAULT_N, with_timestamps=False):
         result = tail_response(
             target,
             n,
             with_timestamps,
-            resolve=self.resolve_target,
+            resolve=lambda value: self.resolve_target(dut, value),
             session_log=lambda name: self.ports[name].get("log"),
             read_tail=lambda name, count: self.get_tail(target=name, n=count)[name],
         )

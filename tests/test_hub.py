@@ -307,14 +307,14 @@ class HubTest(unittest.TestCase):
     def test_resolve_target_normalizes_case_and_rejects_unknown(self):
         hub = Hub(make_config())
 
-        self.assertEqual(("linux", None), hub.resolve_target("Linux"))
-        self.assertEqual(("rtos", None), hub.resolve_target("  RTOS  "))
-        name, error = hub.resolve_target("Missing")
+        self.assertEqual(("linux", None), hub.resolve_target("dut", "Linux"))
+        self.assertEqual(("rtos", None), hub.resolve_target("dut", "  RTOS  "))
+        name, error = hub.resolve_target("dut", "Missing")
         self.assertEqual("missing", name)
         self.assertIn("unknown target 'missing'", error)
         self.assertEqual(
             (None, "target must be a Target Name string"),
-            hub.resolve_target(42),
+            hub.resolve_target("dut", 42),
         )
 
     def test_status_and_bridge_use_configured_port_bindings(self):
@@ -551,10 +551,11 @@ class HubTest(unittest.TestCase):
                     {
                         "ok": True,
                         "target": "linux",
+                        "dut": "dut",
                         "cmd": "uname -a",
                         "who": "agent",
                     },
-                    hub.send("linux", "uname -a", who="agent"),
+                    hub.send("dut", "linux", "uname -a", who="agent"),
                 )
                 self.assertEqual([("uname -a", "agent", None)], hub.workers["linux"].sent)
 
@@ -578,7 +579,7 @@ class HubTest(unittest.TestCase):
                 hub = Hub(make_config(live / "serial_bridge.json", live_dir=live))
                 hub.start_bridge()
 
-                result = hub.send("linux", raw_hex="not hex", who="agent")
+                result = hub.send("dut", "linux", raw_hex="not hex", who="agent")
 
                 self.assertFalse(result["ok"])
                 self.assertIn("hex", result["error"].lower())
@@ -608,7 +609,7 @@ class HubTest(unittest.TestCase):
             worker.abort_agent_work = abort_agent_work
             result = {}
             send_thread = threading.Thread(
-                target=lambda: result.update(hub.send("linux", "show", who="agent")),
+                target=lambda: result.update(hub.send("dut", "linux", "show", who="agent")),
                 daemon=True,
             )
             stop_thread = threading.Thread(
@@ -931,18 +932,18 @@ class HubTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             live = Path(temp_dir)
             hub = Hub(make_config(live / "serial_bridge.json", live_dir=live))
-            bad = hub.set_target_prompt("linux", "(")
+            bad = hub.set_target_prompt("dut", "linux", "(")
             self.assertFalse(bad["ok"])
             self.assertEqual("", hub.status()["ports"]["linux"]["target_prompt"])
-            good = hub.set_target_prompt("linux", r"# $")
+            good = hub.set_target_prompt("dut", "linux", r"# $")
             self.assertTrue(good["ok"])
             self.assertEqual(r"# $", hub.status()["ports"]["linux"]["target_prompt"])
             self.assertIn(
                 "target_prompts",
                 json.loads((live / "serial_bridge.json").read_text(encoding="utf-8")),
             )
-            self.assertFalse(hub.set_target_prompt("nope", "x")["ok"])
-            self.assertTrue(hub.set_target_prompt("linux", "")["ok"])
+            self.assertFalse(hub.set_target_prompt("dut", "nope", "x")["ok"])
+            self.assertTrue(hub.set_target_prompt("dut", "linux", "")["ok"])
             self.assertEqual("", hub.status()["ports"]["linux"]["target_prompt"])
 
     def test_status_shell_ready_then_cleared_by_each_freshness_event(self):
@@ -950,7 +951,7 @@ class HubTest(unittest.TestCase):
             live = Path(temp_dir)
             with patch.object(hub_module, "PortWorker", FakePortWorker):
                 hub = Hub(make_config(live / "serial_bridge.json", live_dir=live))
-                hub.set_target_prompt("linux", r"# $")
+                hub.set_target_prompt("dut", "linux", r"# $")
                 hub.start_bridge()
                 self.assertEqual("unknown", hub.status()["ports"]["linux"]["shell"])
 
@@ -973,10 +974,10 @@ class HubTest(unittest.TestCase):
                 hub.start_bridge()
                 self.assertEqual("unknown", hub.status()["ports"]["linux"]["shell"])
 
-                hub.set_target_prompt("linux", r"\$ $")
+                hub.set_target_prompt("dut", "linux", r"\$ $")
                 hub.observe_rx("linux", b"$ ")
                 self.assertEqual("ready", hub.status()["ports"]["linux"]["shell"])
-                hub.set_target_prompt("linux", r"\$ $")
+                hub.set_target_prompt("dut", "linux", r"\$ $")
                 self.assertEqual("unknown", hub.status()["ports"]["linux"]["shell"])
 
     def test_hub_send_clears_readiness(self):
@@ -984,10 +985,10 @@ class HubTest(unittest.TestCase):
             live = Path(temp_dir)
             with patch.object(hub_module, "PortWorker", FakePortWorker):
                 hub = Hub(make_config(live / "serial_bridge.json", live_dir=live))
-                hub.set_target_prompt("linux", r"# $")
+                hub.set_target_prompt("dut", "linux", r"# $")
                 hub.start_bridge()
                 hub.observe_rx("linux", b"# ")
-                hub.send("linux", "ls", who="user")
+                hub.send("dut", "linux", "ls", who="user")
                 self.assertEqual("unknown", hub.status()["ports"]["linux"]["shell"])
 
     def test_saving_port_bindings_preserves_target_prompts(self):
@@ -995,7 +996,7 @@ class HubTest(unittest.TestCase):
             live = Path(temp_dir)
             path = live / "serial_bridge.json"
             hub = Hub(make_config(path, live_dir=live))
-            self.assertTrue(hub.set_target_prompt("linux", r"# $")["ok"])
+            self.assertTrue(hub.set_target_prompt("dut", "linux", r"# $")["ok"])
             result = hub.update_slots(
                 [
                     {"name": "linux", "title": "Linux", "com": "COM8", "baud": 57600},
@@ -1094,7 +1095,7 @@ class HubTest(unittest.TestCase):
                 hub = self._perm_hub(temp_dir)
                 hub.start_bridge()
                 hub._switching = True
-                result = hub.exec(ExecSpec(target="linux", cmd="ls"))
+                result = hub.exec(ExecSpec(dut="dut", target="linux", cmd="ls"))
             self.assertFalse(result["ok"])
             self.assertEqual("error", result["status"])
             self.assertIn("switch in progress", result["error"])
@@ -1108,13 +1109,13 @@ class HubTest(unittest.TestCase):
                 seen = {}
 
                 def fake_stop(*_args, **_kwargs):
-                    seen["exec"] = hub.exec(ExecSpec(target="linux", cmd="ls"))
-                    seen["send"] = hub.send("linux", "ls")
+                    seen["exec"] = hub.exec(ExecSpec(dut="dut", target="linux", cmd="ls"))
+                    seen["send"] = hub.send("dut", "linux", "ls")
                     return {"ok": True, "mode": "crt"}
 
                 with patch.object(hub, "stop_bridge", fake_stop):
                     result = hub.set_mode_agent("crt")
-                after = hub.send("linux", "ls")
+                after = hub.send("dut", "linux", "ls")
             self.assertTrue(result["ok"])
             for key in ("exec", "send"):
                 self.assertFalse(seen[key]["ok"])
@@ -1172,12 +1173,13 @@ class HubSerialTailTest(unittest.TestCase):
             hub = Hub(make_config())
             hub.ports["linux"]["log"] = log
 
-            result = hub.tail("linux", n=5)
+            result = hub.tail("dut", "linux", n=5)
 
         self.assertEqual(
             {
                 "ok": True,
                 "target": "linux",
+                "dut": "dut",
                 "tail": "\n".join(f"line{i}" for i in range(95, 100)),
                 "n": 5,
             },
@@ -1191,7 +1193,7 @@ class HubSerialTailTest(unittest.TestCase):
             hub = Hub(make_config())
             hub.ports["linux"]["log"] = log
 
-            result = hub.tail("linux")
+            result = hub.tail("dut", "linux")
 
         self.assertEqual(40, TAIL_DEFAULT_N)
         self.assertEqual(TAIL_DEFAULT_N, result["n"])
@@ -1213,8 +1215,8 @@ class HubSerialTailTest(unittest.TestCase):
             hub = Hub(make_config())
             hub.ports["linux"]["log"] = log
 
-            compact = hub.tail("linux")
-            timed = hub.tail("linux", with_timestamps=True)
+            compact = hub.tail("dut", "linux")
+            timed = hub.tail("dut", "linux", with_timestamps=True)
 
         self.assertEqual(
             ">>> (agent) cat /tmp/x\n<<< # cat /tmp/x\n--- (system) closed COM3\nnot a log line",
@@ -1231,7 +1233,7 @@ class HubSerialTailTest(unittest.TestCase):
     def test_tail_rejects_n_outside_1_to_200(self):
         hub = Hub(make_config())
         for bad in (0, 201, -1):
-            result = hub.tail("linux", n=bad)
+            result = hub.tail("dut", "linux", n=bad)
             self.assertFalse(result["ok"], bad)
             self.assertEqual("linux", result["target"])
             self.assertEqual("", result["tail"])
@@ -1240,7 +1242,7 @@ class HubSerialTailTest(unittest.TestCase):
 
     def test_tail_unknown_target_is_error(self):
         hub = Hub(make_config())
-        result = hub.tail("both")
+        result = hub.tail("dut", "both")
         self.assertFalse(result["ok"])
         self.assertEqual("both", result["target"])
         self.assertEqual("", result["tail"])
@@ -1249,11 +1251,12 @@ class HubSerialTailTest(unittest.TestCase):
 
     def test_tail_missing_assignment_is_error(self):
         hub = Hub(make_config())
-        result = hub.tail("linux")
+        result = hub.tail("dut", "linux")
         self.assertEqual(
             {
                 "ok": False,
                 "target": "linux",
+                "dut": "dut",
                 "tail": "",
                 "n": TAIL_DEFAULT_N,
                 "error": "no current Session Log",
@@ -1264,7 +1267,7 @@ class HubSerialTailTest(unittest.TestCase):
     def test_tail_missing_file_is_error(self):
         hub = Hub(make_config())
         hub.ports["linux"]["log"] = Path("missing-session.log")
-        result = hub.tail("linux")
+        result = hub.tail("dut", "linux")
         self.assertFalse(result["ok"])
         self.assertEqual("no current Session Log", result["error"])
 
@@ -1275,12 +1278,13 @@ class HubSerialTailTest(unittest.TestCase):
             hub = Hub(make_config())
             hub.ports["linux"]["log"] = log
 
-            result = hub.tail("linux")
+            result = hub.tail("dut", "linux")
 
         self.assertEqual(
             {
                 "ok": True,
                 "target": "linux",
+                "dut": "dut",
                 "tail": "",
                 "n": TAIL_DEFAULT_N,
             },
@@ -1296,7 +1300,7 @@ class HubSerialTailTest(unittest.TestCase):
             log.write_text("kept after crt\n", encoding="utf-8")
             hub.stop_bridge()
 
-            result = hub.tail("linux")
+            result = hub.tail("dut", "linux")
 
         self.assertTrue(result["ok"])
         self.assertEqual("kept after crt", result["tail"])
@@ -1337,11 +1341,11 @@ class LiveDirectoryTest(unittest.TestCase):
                 self.assertEqual(str(linux_log.resolve()), status["ports"]["linux"]["log"])
                 self.assertEqual(str(rtos_log.resolve()), status["ports"]["rtos"]["log"])
                 self.assertEqual(
-                    "/api/session-log?target=linux",
+                    "/api/session-log?dut=dut&target=linux",
                     status["ports"]["linux"]["log_url"],
                 )
                 self.assertEqual(
-                    "/api/session-log?target=rtos",
+                    "/api/session-log?dut=dut&target=rtos",
                     status["ports"]["rtos"]["log_url"],
                 )
                 self.assertTrue((live / "bridge_status.json").is_file())
@@ -1381,7 +1385,7 @@ class LiveDirectoryTest(unittest.TestCase):
                 self.assertEqual(expected, hub.ports["linux"]["log"])
                 self.assertEqual(str(expected.resolve()), hub.status()["ports"]["linux"]["log"])
                 self.assertEqual(
-                    "/api/session-log?target=linux",
+                    "/api/session-log?dut=dut&target=linux",
                     hub.status()["ports"]["linux"]["log_url"],
                 )
 
